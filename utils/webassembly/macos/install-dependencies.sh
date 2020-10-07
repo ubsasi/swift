@@ -2,7 +2,10 @@
 
 set -ex
 
-brew uninstall $(brew list | grep python@2)
+if [ -n "$(brew list | grep python@2)" ]; then
+  brew uninstall $(brew list | grep python@2)
+fi
+
 brew install cmake ninja llvm sccache
 
 # Install latest wasmer
