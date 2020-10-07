@@ -27,6 +27,8 @@ FLAGS="--release $CACHE_FLAGS --verbose"
 
 $BUILD_SCRIPT $FLAGS
 
+echo "Build script completed, will attempt to run test suites..."
+
 if [[ "$(uname)" == "Darwin" ]]; then
   # workaround: host target test directory is necessary to use run-test
   mkdir -p $TARGET_BUILD_DIR/swift-macosx-x86_64/test-macosx-x86_64
@@ -46,3 +48,5 @@ else
   # Run test but ignore failure temporarily
   $BUILD_SCRIPT $FLAGS -t || true
 fi
+
+echo "The test suite has finished"
