@@ -45,7 +45,7 @@
        "indexstore-db": {
             "remote": { "id": "apple/indexstore-db" } },
         "sourcekit-lsp": {
-            "remote": { "id": "apple/sourcekit-lsp" } },
+            "remote": { "id": "swiftwasm/sourcekit-lsp" } },
         "swift-format": {
             "remote": { "id": "apple/swift-format" } },
         "llvm-project": {
@@ -97,7 +97,7 @@
                 "icu": "release-65-1",
                 "cmake": "v3.16.5",               
                 "indexstore-db": "release/5.3",
-                "sourcekit-lsp": "release/5.3",
+                "sourcekit-lsp": "swiftwasm-release/5.3",
                 "swift-format": "main"
             }
         },
