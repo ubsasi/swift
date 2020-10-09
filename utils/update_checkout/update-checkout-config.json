@@ -58,7 +58,7 @@
             "repos": {
                 "llvm-project": "swiftwasm",
                 "swift": "swiftwasm",
-                "cmark": "master",
+                "cmark": "main",
                 "llbuild": "main",
                 "swift-tools-support-core": "main",
                 "swiftpm": "swiftwasm",
