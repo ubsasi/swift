@@ -130,28 +130,15 @@ public:
 class IncrementalJobAction : public JobAction {
 public:
   struct InputInfo {
-    /// The status of an input known to the driver. These are used to affect
-    /// the scheduling decisions made during an incremental build.
-    ///
-    /// \Note The order of cases matters. They are ordered from least to
-    /// greatest impact on the incremental build schedule.
-    enum class Status {
-      /// The input to this job is up to date.
+    enum Status {
       UpToDate,
-      /// The input to this job has changed in a way that requires this job to
-      /// be rerun, but not in such a way that it requires a cascading rebuild.
-      NeedsNonCascadingBuild,
-      /// The input to this job has changed in a way that requires this job to
-      /// be rerun, and in such a way that all jobs dependent upon this one
-      /// must be scheduled as well.
       NeedsCascadingBuild,
-      /// The input to this job was not known to the driver when it was last
-      /// run.
+      NeedsNonCascadingBuild,
       NewlyAdded
     };
 
   public:
-    Status status = Status::UpToDate;
+    Status status = UpToDate;
     llvm::sys::TimePoint<> previousModTime;
 
     InputInfo() = default;
@@ -159,11 +146,7 @@ public:
         : status(stat), previousModTime(time) {}
 
     static InputInfo makeNewlyAdded() {
-      return {Status::NewlyAdded, llvm::sys::TimePoint<>::max()};
-    }
-
-    static InputInfo makeNeedsCascadingRebuild() {
-      return {Status::NeedsCascadingBuild, llvm::sys::TimePoint<>::min()};
+      return InputInfo(Status::NewlyAdded, llvm::sys::TimePoint<>::max());
     }
   };
 
@@ -183,8 +166,7 @@ public:
 
 public:
   static bool classof(const Action *A) {
-    return A->getKind() == Action::Kind::CompileJob ||
-           A->getKind() == Action::Kind::MergeModuleJob;
+    return A->getKind() == Action::Kind::CompileJob;
   }
 };
 
@@ -281,12 +263,12 @@ public:
   }
 };
 
-class MergeModuleJobAction : public IncrementalJobAction {
+class MergeModuleJobAction : public JobAction {
   virtual void anchor() override;
 public:
-  MergeModuleJobAction(ArrayRef<const Action *> Inputs, InputInfo input)
-      : IncrementalJobAction(Action::Kind::MergeModuleJob, Inputs,
-                             file_types::TY_SwiftModuleFile, input) {}
+  MergeModuleJobAction(ArrayRef<const Action *> Inputs)
+      : JobAction(Action::Kind::MergeModuleJob, Inputs,
+                  file_types::TY_SwiftModuleFile) {}
 
   static bool classof(const Action *A) {
     return A->getKind() == Action::Kind::MergeModuleJob;
