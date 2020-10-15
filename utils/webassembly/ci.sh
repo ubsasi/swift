@@ -27,18 +27,26 @@ FLAGS="--release $CACHE_FLAGS --verbose"
 
 $BUILD_SCRIPT $FLAGS
 
+echo "Build script completed, will attempt to run test suites..."
+
 if [[ "$(uname)" == "Darwin" ]]; then
   # workaround: host target test directory is necessary to use run-test
   mkdir -p $TARGET_BUILD_DIR/swift-macosx-x86_64/test-macosx-x86_64
+  HOST_PLATFORM=macosx
+else
+  HOST_PLATFORM=linux
 fi
 
 if [[ "$(uname)" == "Linux" ]]; then
-  $RUN_TEST_BIN --build-dir $TARGET_BUILD_DIR --target wasi-wasm32 test/stdlib/
+  $RUN_TEST_BIN --build-dir $TARGET_BUILD_DIR --target wasi-wasm32 \
+    $TARGET_BUILD_DIR/swift-${HOST_PLATFORM}-x86_64/test-wasi-wasm32/stdlib
   echo "Skip running test suites for Linux"
 else
-
-  $RUN_TEST_BIN --build-dir $TARGET_BUILD_DIR --target wasi-wasm32 test/stdlib/
+  $RUN_TEST_BIN --build-dir $TARGET_BUILD_DIR --target wasi-wasm32 \
+ 	$TARGET_BUILD_DIR/swift-${HOST_PLATFORM}-x86_64/test-wasi-wasm32/stdlib
 
   # Run test but ignore failure temporarily
   $BUILD_SCRIPT $FLAGS -t || true
 fi
+
+echo "The test suite has finished"
