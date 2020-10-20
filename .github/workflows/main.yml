@@ -51,7 +51,7 @@ jobs:
         uses: actions/upload-artifact@v1
         with:
           name: ubuntu18.04-installable
-          path: ../swift-wasm-5.3-SNAPSHOT-ubuntu18.04-x86_64.tar.gz
+          path: ../swift-wasm-5.3-SNAPSHOT-ubuntu18.04_x86_64.tar.gz
 #      - name: Pack test results
 #        run: tar cJf swift-test-results.tar.gz ../build/*/swift-linux-x86_64/swift-test-results
 #      - name: Upload test results
@@ -98,7 +98,7 @@ jobs:
         uses: actions/upload-artifact@v1
         with:
           name: ubuntu20.04-installable
-          path: ../swift-wasm-5.3-SNAPSHOT-ubuntu20.04-x86_64.tar.gz
+          path: ../swift-wasm-5.3-SNAPSHOT-ubuntu20.04_x86_64.tar.gz
 #      - name: Pack test results
 #        run: tar cJf swift-test-results.tar.gz ../build/*/swift-linux-x86_64/swift-test-results
 #      - name: Upload test results
@@ -135,7 +135,7 @@ jobs:
         uses: actions/upload-artifact@v1
         with:
           name: macos-installable
-          path: ../swift-wasm-5.3-SNAPSHOT-macos-x86_64.tar.gz
+          path: ../swift-wasm-5.3-SNAPSHOT-macos_x86_64.tar.gz
       - name: Pack test results
         run: tar cJf swift-test-results.tar.gz ../target-build/*/swift-macosx-x86_64/swift-test-results
       - name: Upload test results
