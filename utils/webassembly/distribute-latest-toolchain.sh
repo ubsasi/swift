@@ -17,7 +17,7 @@ github() {
   curl --header "authorization: Bearer $GITHUB_TOKEN" "$@"
 }
 
-latest_run=$(github "${gh_api}/repos/${repository}/actions/workflows/${workflow_name}/runs?head_branch=${branch}&status=completed&conclusion=success" \
+latest_run=$(github "${gh_api}/repos/${repository}/actions/workflows/${workflow_name}/runs?head_branch=${branch}&status=success" \
   | jq ".workflow_runs | map(select(.head_branch == \"$branch\")) | sort_by(.run_number) | last")
 
 if [ -z "$latest_run" ] || [ "$latest_run" == "null" ]; then
@@ -27,7 +27,6 @@ fi
 
 artifacts_url=$(echo $latest_run | jq .artifacts_url --raw-output)
 head_sha=$(echo $latest_run | jq .head_sha --raw-output)
-
 
 get_artifact_url() {
   local name=$1
@@ -112,7 +111,7 @@ sign_toolchain() {
     fi
   done
 
-  ${codesign_bin} "${codesign_args[@]}" "${darwin_toolchain}/usr/"
+  ${codesign_bin} "${codesign_args[@]}" "${darwin_toolchain}/"
 }
 
 create_installer() {
@@ -120,8 +119,8 @@ create_installer() {
   local darwin_toolchain_name=$(basename "$darwin_toolchain")
   local darwin_toolchain_installer_package="$darwin_toolchain.pkg"
   local darwin_toolchain_install_location="/Library/Developer/Toolchains/${darwin_toolchain_name}.xctoolchain"
-  local darwin_toolchain_version=$(/usr/libexec/PlistBuddy  -c "Print Version string" "$darwin_toolchain"/usr/Info.plist)
-  local darwin_toolchain_bundle_identifier=$(/usr/libexec/PlistBuddy  -c "Print CFBundleIdentifier string" "$darwin_toolchain"/usr/Info.plist)
+  local darwin_toolchain_version=$(/usr/libexec/PlistBuddy  -c "Print Version string" "$darwin_toolchain"/Info.plist)
+  local darwin_toolchain_bundle_identifier=$(/usr/libexec/PlistBuddy  -c "Print CFBundleIdentifier string" "$darwin_toolchain"/Info.plist)
 
   "${swift_source_dir}/utils/toolchain-installer" "${darwin_toolchain}/" "${darwin_toolchain_bundle_identifier}" \
     "${DARWIN_TOOLCHAIN_INSTALLER_CERT}" "${darwin_toolchain_installer_package}" "${darwin_toolchain_install_location}" \
