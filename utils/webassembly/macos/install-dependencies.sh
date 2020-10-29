@@ -22,7 +22,7 @@ cd $SWIFT_PATH
 
 cd $SOURCE_PATH
 
-$SWIFT_PATH/utils/webassembly/install-wasi-sdk.sh macos macos
+$SWIFT_PATH/utils/webassembly/install-wasi-sdk.sh macos macos-10.15
 
 # Link sysroot/usr/include to sysroot/include because Darwin sysroot doesn't 
 # find header files in sysroot/include but sysroot/usr/include
