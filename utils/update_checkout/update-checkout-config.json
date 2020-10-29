@@ -13,7 +13,7 @@
         "swift-driver": {
             "remote": { "id": "apple/swift-driver" } },
         "swift-tools-support-core": {
-            "remote": { "id": "apple/swift-tools-support-core" } },
+            "remote": { "id": "swiftwasm/swift-tools-support-core" } },
         "swiftpm": {
             "remote": { "id": "swiftwasm/swift-package-manager" } },
         "swift-syntax": {
@@ -88,7 +88,7 @@
                 "swift": "swiftwasm-release/5.3",
                 "cmark": "release/5.3",
                 "llbuild": "release/5.3",
-                "swift-tools-support-core": "release/5.3",
+                "swift-tools-support-core": "swiftwasm-release/5.3",
                 "swiftpm": "swiftwasm-release/5.3",
                 "swift-argument-parser": "0.3.0",
                 "swift-syntax": "release/5.3",
@@ -103,7 +103,9 @@
                 "cmake": "v3.16.5",               
                 "indexstore-db": "release/5.3",
                 "sourcekit-lsp": "swiftwasm-release/5.3",
-                "swift-format": "main"
+                "swift-format": "main",
+                "yams": "3.0.1",
+                "swift-driver": "main"
             }
         },
        "main": {
