@@ -6,7 +6,7 @@ jobs:
   nightly-distribution:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v1
+      - uses: actions/checkout@v2
       - name: Setup keychain
         run: |
           echo "$DARWIN_TOOLCHAIN_APPLICATION_CERT_BASE64" | base64 --decode -o developerID_application.p12
