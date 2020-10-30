@@ -528,7 +528,8 @@ ToolChain::constructInvocation(const CompileJobAction &job,
   if (context.Args.hasFlag(options::OPT_static_executable,
                            options::OPT_no_static_executable, false) ||
       context.Args.hasFlag(options::OPT_static_stdlib,
-                           options::OPT_no_static_stdlib, false)) {
+                           options::OPT_no_static_stdlib, false) ||
+      getTriple().isOSBinFormatWasm()) {
     Arguments.push_back("-use-static-resource-dir");
   }
 
@@ -1023,7 +1024,8 @@ ToolChain::constructInvocation(const MergeModuleJobAction &job,
   if (context.Args.hasFlag(options::OPT_static_executable,
                             options::OPT_no_static_executable, false) ||
       context.Args.hasFlag(options::OPT_static_stdlib,
-                            options::OPT_no_static_stdlib, false)) {
+                            options::OPT_no_static_stdlib, false) ||
+      getTriple().isOSBinFormatWasm()) {
     Arguments.push_back("-use-static-resource-dir");
   }
 
@@ -1190,6 +1192,14 @@ ToolChain::constructInvocation(const GeneratePCHJobAction &job,
 
   addInputsOfType(Arguments, context.InputActions, file_types::TY_ObjCHeader);
   context.Args.AddLastArg(Arguments, options::OPT_index_store_path);
+
+  if (context.Args.hasFlag(options::OPT_static_executable,
+                   options::OPT_no_static_executable, false) ||
+      context.Args.hasFlag(options::OPT_static_stdlib, options::OPT_no_static_stdlib,
+                   false) ||
+      getTriple().isOSBinFormatWasm()) {
+    Arguments.push_back("-use-static-resource-dir");
+  }
 
   if (job.isPersistentPCH()) {
     Arguments.push_back("-emit-pch");
