@@ -28,3 +28,6 @@ mv $DESTINATION_TOOLCHAIN/usr/lib/swift/wasi/wasm32/Foundation.swiftmodule \
   $DESTINATION_TOOLCHAIN/usr/lib/swift_static/wasi/wasm32/Foundation.swiftmodule
 mv $DESTINATION_TOOLCHAIN/usr/lib/swift/wasi/wasm32/Foundation.swiftdoc \
   $DESTINATION_TOOLCHAIN/usr/lib/swift_static/wasi/wasm32/Foundation.swiftdoc
+
+rm $DESTINATION_TOOLCHAIN/usr/lib/swift_static/wasi/wasm32/FoundationXML.swiftmodule \
+  $DESTINATION_TOOLCHAIN/usr/lib/swift_static/wasi/wasm32/FoundationXML.swiftdoc
