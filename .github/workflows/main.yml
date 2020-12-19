@@ -5,10 +5,12 @@ on:
     branches:
       - swiftwasm
       - swiftwasm-release/5.3
+      - swiftwasm-release/5.4
   pull_request:
     branches:
       - swiftwasm
       - swiftwasm-release/5.3
+      - swiftwasm-release/5.4
 
 jobs:
   ubuntu1804_build:
@@ -49,7 +51,7 @@ jobs:
         uses: actions/upload-artifact@v1
         with:
           name: ubuntu18.04-installable
-          path: ../swift-wasm-DEVELOPMENT-SNAPSHOT-ubuntu18.04_x86_64.tar.gz
+          path: ../swift-wasm-5.4-SNAPSHOT-ubuntu18.04_x86_64.tar.gz
 #      - name: Pack test results
 #        run: tar cJf swift-test-results.tar.gz ../build/*/swift-linux-x86_64/swift-test-results
 #      - name: Upload test results
@@ -95,7 +97,7 @@ jobs:
         uses: actions/upload-artifact@v1
         with:
           name: ubuntu20.04-installable
-          path: ../swift-wasm-DEVELOPMENT-SNAPSHOT-ubuntu20.04_x86_64.tar.gz
+          path: ../swift-wasm-5.4-SNAPSHOT-ubuntu20.04_x86_64.tar.gz
 #      - name: Pack test results
 #        run: tar cJf swift-test-results.tar.gz ../build/*/swift-linux-x86_64/swift-test-results
 #      - name: Upload test results
@@ -135,7 +137,7 @@ jobs:
         uses: actions/upload-artifact@v1
         with:
           name: macos-installable
-          path: ../swift-wasm-DEVELOPMENT-SNAPSHOT-macos_x86_64.tar.gz
+          path: ../swift-wasm-5.4-SNAPSHOT-macos_x86_64.tar.gz
       - name: Pack test results
         working-directory: ${{ github.workspace }}/../
         run: |
