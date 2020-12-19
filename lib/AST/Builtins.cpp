@@ -16,6 +16,7 @@
 
 #include "swift/AST/Builtins.h"
 #include "swift/AST/ASTContext.h"
+#include "swift/AST/ASTSynthesis.h"
 #include "swift/AST/FileUnit.h"
 #include "swift/AST/Module.h"
 #include "swift/AST/ParameterList.h"
@@ -78,6 +79,10 @@ Type swift::getBuiltinType(ASTContext &Context, StringRef Name) {
 
   if (Name == "RawPointer")
     return Context.TheRawPointerType;
+  if (Name == "RawUnsafeContinuation")
+    return Context.TheRawUnsafeContinuationType;
+  if (Name == "Job")
+    return Context.TheJobType;
   if (Name == "NativeObject")
     return Context.TheNativeObjectType;
   if (Name == "BridgeObject")
@@ -176,6 +181,38 @@ getBuiltinFunction(Identifier Id, ArrayRef<Type> argTypes, Type ResType) {
   return FD;
 }
 
+template <class ExtInfoS, class ParamsS, class ResultS>
+static FuncDecl *
+getBuiltinFunction(ASTContext &ctx, Identifier id,
+                   const ExtInfoS &extInfoS, const ParamsS &paramsS,
+                   const ResultS &resultS) {
+  ModuleDecl *M = ctx.TheBuiltinModule;
+  DeclContext *DC = &M->getMainFile(FileUnitKind::Builtin);
+
+  SynthesisContext SC(ctx, DC);
+  auto params = synthesizeParameterList(SC, paramsS);
+  auto extInfo = synthesizeExtInfo(SC, extInfoS);
+  auto resultType = synthesizeType(SC, resultS);
+
+  DeclName name(ctx, id, params);
+  auto *FD = FuncDecl::createImplicit(
+      ctx, StaticSpellingKind::None, name, /*NameLoc=*/SourceLoc(),
+      extInfo.isAsync(), extInfo.isThrowing(),
+      /*GenericParams=*/nullptr, params, resultType, DC);
+  FD->setAccess(AccessLevel::Public);
+  return FD;
+}
+
+namespace {
+
+enum class BuiltinThrowsKind : uint8_t {
+  None,
+  Throws,
+  Rethrows
+};
+
+}
+
 /// Build a builtin function declaration.
 static FuncDecl *
 getBuiltinGenericFunction(Identifier Id,
@@ -183,7 +220,7 @@ getBuiltinGenericFunction(Identifier Id,
                           Type ResType,
                           GenericParamList *GenericParams,
                           GenericSignature Sig,
-                          bool Rethrows = false) {
+                          bool Async, BuiltinThrowsKind Throws) {
   assert(GenericParams && "Missing generic parameters");
   auto &Context = ResType->getASTContext();
 
@@ -209,13 +246,15 @@ getBuiltinGenericFunction(Identifier Id,
 
   DeclName Name(Context, Id, paramList);
   auto *const func = FuncDecl::createImplicit(
-      Context, StaticSpellingKind::None, Name, /*NameLoc=*/SourceLoc(),
-      /*Async=*/false,
-      /*Throws=*/Rethrows, GenericParams, paramList, ResType, DC);
+      Context, StaticSpellingKind::None, Name,
+      /*NameLoc=*/SourceLoc(),
+      Async,
+      Throws != BuiltinThrowsKind::None,
+      GenericParams, paramList, ResType, DC);
 
   func->setAccess(AccessLevel::Public);
   func->setGenericSignature(Sig);
-  if (Rethrows)
+  if (Throws == BuiltinThrowsKind::Rethrows)
     func->getAttrs().add(new (Context) RethrowsAttr(/*ThrowsLoc*/ SourceLoc()));
 
   return func;
@@ -443,7 +482,8 @@ namespace {
     GenericParamList *TheGenericParamList;
     SmallVector<AnyFunctionType::Param, 4> InterfaceParams;
     Type InterfaceResult;
-    bool Rethrows = false;
+    bool Async = false;
+    BuiltinThrowsKind Throws = BuiltinThrowsKind::None;
 
     // Accumulate params and requirements here, so that we can make the
     // appropriate `AbstractGenericSignatureRequest` when `build()` is called.
@@ -488,8 +528,16 @@ namespace {
       addedRequirements.push_back(req);
     }
 
-    void setRethrows(bool rethrows = true) {
-      Rethrows = rethrows;
+    void setAsync() {
+      Async = true;
+    }
+
+    void setThrows() {
+      Throws = BuiltinThrowsKind::Throws;
+    }
+
+    void setRethrows() {
+      Throws = BuiltinThrowsKind::Rethrows;
     }
 
     FuncDecl *build(Identifier name) {
@@ -500,7 +548,8 @@ namespace {
         nullptr);
       return getBuiltinGenericFunction(name, InterfaceParams,
                                        InterfaceResult,
-                                       TheGenericParamList, GenericSig);
+                                       TheGenericParamList, GenericSig,
+                                       Async, Throws);
     }
 
     // Don't use these generator classes directly; call the make{...}
@@ -1383,6 +1432,39 @@ static ValueDecl *getCreateAsyncTaskFuture(ASTContext &ctx, Identifier id) {
   return builder.build(id);
 }
 
+static ValueDecl *getConvertTaskToJob(ASTContext &ctx, Identifier id) {
+  return getBuiltinFunction(ctx, id,
+                            _thin,
+                            _parameters(_owned(_nativeObject)),
+                            _job);
+}
+
+static ValueDecl *getDefaultActorInitDestroy(ASTContext &ctx,
+                                             Identifier id) {
+  return getBuiltinFunction(ctx, id, _thin,
+                            _parameters(_nativeObject),
+                            _void);
+}
+
+static ValueDecl *getAutoDiffCreateLinearMapContext(ASTContext &ctx,
+                                                    Identifier id) {
+  return getBuiltinFunction(
+      id, {BuiltinIntegerType::getWordType(ctx)}, ctx.TheNativeObjectType);
+}
+
+static ValueDecl *getAutoDiffProjectTopLevelSubcontext(ASTContext &ctx,
+                                                       Identifier id) {
+  return getBuiltinFunction(
+      id, {ctx.TheNativeObjectType}, ctx.TheRawPointerType);
+}
+
+static ValueDecl *getAutoDiffAllocateSubcontext(ASTContext &ctx,
+                                                Identifier id) {
+  return getBuiltinFunction(
+      id, {ctx.TheNativeObjectType, BuiltinIntegerType::getWordType(ctx)},
+      ctx.TheRawPointerType);
+}
+
 static ValueDecl *getPoundAssert(ASTContext &Context, Identifier Id) {
   auto int1Type = BuiltinIntegerType::get(1, Context);
   auto optionalRawPointerType = BoundGenericEnumType::get(
@@ -1609,6 +1691,29 @@ static ValueDecl *getPolymorphicBinaryOperation(ASTContext &ctx,
   builder.addParameter(makeGenericParam());
   builder.addParameter(makeGenericParam());
   builder.setResult(makeGenericParam());
+  return builder.build(id);
+}
+
+static ValueDecl *getWithUnsafeContinuation(ASTContext &ctx,
+                                            Identifier id,
+                                            bool throws) {
+  BuiltinFunctionBuilder builder(ctx);
+
+  auto contTy = ctx.TheRawUnsafeContinuationType;
+  SmallVector<AnyFunctionType::Param, 1> params;
+  params.emplace_back(contTy);
+
+  auto voidTy = ctx.TheEmptyTupleType;
+  auto extInfo = FunctionType::ExtInfoBuilder().withNoEscape().build();
+  auto *fnTy = FunctionType::get(params, voidTy, extInfo);
+
+  builder.addParameter(makeConcrete(fnTy));
+  builder.setResult(makeGenericParam());
+
+  builder.setAsync();
+  if (throws)
+    builder.setThrows();
+
   return builder.build(id);
 }
 
@@ -2521,6 +2626,9 @@ ValueDecl *swift::getBuiltinValueDecl(ASTContext &Context, Identifier Id) {
   case BuiltinValueKind::CreateAsyncTaskFuture:
     return getCreateAsyncTaskFuture(Context, Id);
 
+  case BuiltinValueKind::ConvertTaskToJob:
+    return getConvertTaskToJob(Context, Id);
+
   case BuiltinValueKind::PoundAssert:
     return getPoundAssert(Context, Id);
 
@@ -2549,6 +2657,25 @@ ValueDecl *swift::getBuiltinValueDecl(ASTContext &Context, Identifier Id) {
 
   case BuiltinValueKind::TriggerFallbackDiagnostic:
     return getTriggerFallbackDiagnosticOperation(Context, Id);
+
+  case BuiltinValueKind::InitializeDefaultActor:
+  case BuiltinValueKind::DestroyDefaultActor:
+    return getDefaultActorInitDestroy(Context, Id);
+
+  case BuiltinValueKind::WithUnsafeContinuation:
+    return getWithUnsafeContinuation(Context, Id, /*throws=*/false);
+
+  case BuiltinValueKind::WithUnsafeThrowingContinuation:
+    return getWithUnsafeContinuation(Context, Id, /*throws=*/true);
+
+  case BuiltinValueKind::AutoDiffCreateLinearMapContext:
+    return getAutoDiffCreateLinearMapContext(Context, Id);
+
+  case BuiltinValueKind::AutoDiffProjectTopLevelSubcontext:
+    return getAutoDiffProjectTopLevelSubcontext(Context, Id);
+
+  case BuiltinValueKind::AutoDiffAllocateSubcontext:
+    return getAutoDiffAllocateSubcontext(Context, Id);
   }
 
   llvm_unreachable("bad builtin value!");
@@ -2599,6 +2726,12 @@ StringRef BuiltinType::getTypeName(SmallVectorImpl<char> &result,
   switch (getBuiltinTypeKind()) {
   case BuiltinTypeKind::BuiltinRawPointer:
     printer << MAYBE_GET_NAMESPACED_BUILTIN(BUILTIN_TYPE_NAME_RAWPOINTER);
+    break;
+  case BuiltinTypeKind::BuiltinRawUnsafeContinuation:
+    printer << MAYBE_GET_NAMESPACED_BUILTIN(BUILTIN_TYPE_NAME_RAWUNSAFECONTINUATION);
+    break;
+  case BuiltinTypeKind::BuiltinJob:
+    printer << MAYBE_GET_NAMESPACED_BUILTIN(BUILTIN_TYPE_NAME_JOB);
     break;
   case BuiltinTypeKind::BuiltinNativeObject:
     printer << MAYBE_GET_NAMESPACED_BUILTIN(BUILTIN_TYPE_NAME_NATIVEOBJECT);

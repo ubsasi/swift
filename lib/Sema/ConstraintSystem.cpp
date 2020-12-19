@@ -2802,6 +2802,11 @@ void ConstraintSystem::resolveOverload(ConstraintLocator *locator,
       choice.getDecl()->getAttrs().hasAttribute<DisfavoredOverloadAttr>()) {
     increaseScore(SK_DisfavoredOverload);
   }
+
+  if (choice.getKind() == OverloadChoiceKind::DeclViaUnwrappedOptional &&
+      locator->isLastElement<LocatorPathElt::UnresolvedMember>()) {
+    increaseScore(SK_UnresolvedMemberViaOptional);
+  }
 }
 
 Type ConstraintSystem::simplifyTypeImpl(Type type,
@@ -4408,9 +4413,16 @@ Solution::getFunctionArgApplyInfo(ConstraintLocator *locator) const {
     // If we didn't resolve an overload for the callee, we should be dealing
     // with a call of an arbitrary function expr.
     auto *call = castToExpr<CallExpr>(anchor);
+    rawFnType = getType(call->getFn());
+
+    // If callee couldn't be resolved due to expression
+    // issues e.g. it's a reference to an invalid member
+    // let's just return here.
+    if (simplifyType(rawFnType)->is<UnresolvedType>())
+      return None;
+
     assert(!shouldHaveDirectCalleeOverload(call) &&
              "Should we have resolved a callee for this?");
-    rawFnType = getType(call->getFn());
   }
 
   // Try to resolve the function type by loading lvalues and looking through
@@ -5314,6 +5326,85 @@ bool ConstraintSystem::isReadOnlyKeyPathComponent(
     if (maybeUnavail.hasValue()) {
       return true;
     }
+  }
+
+  return false;
+}
+
+TypeVarBindingProducer::TypeVarBindingProducer(
+    ConstraintSystem::PotentialBindings &bindings)
+    : BindingProducer(bindings.CS, bindings.TypeVar->getImpl().getLocator()),
+      TypeVar(bindings.TypeVar),
+      CanBeNil(llvm::any_of(bindings.Protocols, [](Constraint *constraint) {
+        auto *protocol = constraint->getProtocol();
+        return protocol->isSpecificProtocol(
+            KnownProtocolKind::ExpressibleByNilLiteral);
+      })) {
+  if (bindings.isDirectHole()) {
+    auto *locator = getLocator();
+    // If this type variable is associated with a code completion token
+    // and it failed to infer any bindings let's adjust hole's locator
+    // to point to a code completion token to avoid attempting to "fix"
+    // this problem since its rooted in the fact that constraint system
+    // is under-constrained.
+    if (bindings.AssociatedCodeCompletionToken) {
+      locator = CS.getConstraintLocator(bindings.AssociatedCodeCompletionToken);
+    }
+
+    Bindings.push_back(Binding::forHole(TypeVar, locator));
+    return;
+  }
+
+  // A binding to `Any` which should always be considered as a last resort.
+  Optional<Binding> Any;
+
+  for (const auto &binding : bindings.Bindings) {
+    auto type = binding.BindingType;
+
+    // Adjust optionality of existing bindings based on presence of
+    // `ExpressibleByNilLiteral` requirement.
+    if (requiresOptionalAdjustment(binding)) {
+      Bindings.push_back(binding.withType(OptionalType::get(type)));
+    } else if (type->isAny()) {
+      Any.emplace(binding);
+    } else {
+      Bindings.push_back(binding);
+    }
+  }
+
+  // Let's always consider `Any` to be a last resort binding because
+  // it's always better to infer concrete type and erase it if required
+  // by the context.
+  if (Any) {
+    Bindings.push_back(*Any);
+  }
+}
+
+bool TypeVarBindingProducer::requiresOptionalAdjustment(
+    const Binding &binding) const {
+  // If type variable can't be `nil` then adjustment is
+  // not required.
+  if (!CanBeNil)
+    return false;
+
+  if (binding.Kind == BindingKind::Supertypes) {
+    auto type = binding.BindingType->getRValueType();
+    // If the type doesn't conform to ExpressibleByNilLiteral,
+    // produce an optional of that type as a potential binding. We
+    // overwrite the binding in place because the non-optional type
+    // will fail to type-check against the nil-literal conformance.
+    bool conformsToExprByNilLiteral = false;
+    if (auto *nominalBindingDecl = type->getAnyNominal()) {
+      SmallVector<ProtocolConformance *, 2> conformances;
+      conformsToExprByNilLiteral = nominalBindingDecl->lookupConformance(
+          CS.DC->getParentModule(),
+          CS.getASTContext().getProtocol(
+              KnownProtocolKind::ExpressibleByNilLiteral),
+          conformances);
+    }
+    return !conformsToExprByNilLiteral;
+  } else if (binding.isDefaultableBinding() && binding.BindingType->isAny()) {
+    return true;
   }
 
   return false;

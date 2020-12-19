@@ -1677,7 +1677,7 @@ private:
 } // end anonymous namespace
 
 namespace {
-static bool isTopLevelContext(const DeclContext *DC) {
+static bool isTopLevelSubcontext(const DeclContext *DC) {
   for (; DC && DC->isLocalContext(); DC = DC->getParent()) {
     switch (DC->getContextKind()) {
     case DeclContextKind::TopLevelCodeDecl:
@@ -2139,7 +2139,7 @@ public:
       if (CurrDeclContext && D->getModuleContext() == CurrModule) {
         // Treat global variables from the same source file as local when
         // completing at top-level.
-        if (isa<VarDecl>(D) && isTopLevelContext(CurrDeclContext) &&
+        if (isa<VarDecl>(D) && isTopLevelSubcontext(CurrDeclContext) &&
             D->getDeclContext()->getParentSourceFile() ==
                 CurrDeclContext->getParentSourceFile()) {
           return SemanticContextKind::Local;
@@ -5737,11 +5737,15 @@ static void addObserverKeywords(CodeCompletionResultSink &Sink) {
   addKeyword(Sink, "didSet", CodeCompletionKeywordKind::None);
 }
 
-static void addExprKeywords(CodeCompletionResultSink &Sink) {
+static void addExprKeywords(CodeCompletionResultSink &Sink,
+                            bool IsConcurrencyEnabled) {
   // Expr keywords.
   addKeyword(Sink, "try", CodeCompletionKeywordKind::kw_try);
   addKeyword(Sink, "try!", CodeCompletionKeywordKind::kw_try);
   addKeyword(Sink, "try?", CodeCompletionKeywordKind::kw_try);
+  if (IsConcurrencyEnabled) {
+    addKeyword(Sink, "await", CodeCompletionKeywordKind::None);
+  }
 }
 
 static void addOpaqueTypeKeyword(CodeCompletionResultSink &Sink) {
@@ -5808,7 +5812,7 @@ void CodeCompletionCallbacksImpl::addKeywords(CodeCompletionResultSink &Sink,
   case CompletionKind::ForEachSequence:
     addSuperKeyword(Sink);
     addLetVarKeywords(Sink);
-    addExprKeywords(Sink);
+    addExprKeywords(Sink, Context.LangOpts.EnableExperimentalConcurrency);
     addAnyTypeKeyword(Sink, CurDeclContext->getASTContext().TheAnyType);
     break;
 
@@ -6635,7 +6639,7 @@ void CodeCompletionCallbacksImpl::doneParsing() {
           addStmtKeywords(Sink, MaybeFuncBody);
           addSuperKeyword(Sink);
           addLetVarKeywords(Sink);
-          addExprKeywords(Sink);
+          addExprKeywords(Sink, Context.LangOpts.EnableExperimentalConcurrency);
           addAnyTypeKeyword(Sink, Context.TheAnyType);
           DoPostfixExprBeginning();
         }

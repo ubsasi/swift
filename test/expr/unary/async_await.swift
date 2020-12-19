@@ -22,7 +22,7 @@ func test2(
   print("foo")
 }
 
-func test3() { // expected-note{{add 'async' to function 'test3()' to make it asynchronous}}
+func test3() { // expected-note{{add 'async' to function 'test3()' to make it asynchronous}} {{none}}
   // expected-note@-1{{add '@asyncHandler' to function 'test3()' to create an implicit asynchronous context}}{{1-1=@asyncHandler }}
   _ = await getInt() // expected-error{{'async' in a function that does not support concurrency}}
 }
@@ -41,7 +41,7 @@ func acceptAutoclosureAsync(_: @autoclosure () async -> Int) async { }
 
 func acceptAutoclosureNonAsyncBad(_: @autoclosure () async -> Int) -> Int { 0 }
 // expected-error@-1{{'async' autoclosure parameter in a non-'async' function}}
-// expected-note@-2{{add 'async' to function 'acceptAutoclosureNonAsyncBad' to make it asynchronous}}
+// expected-note@-2{{add 'async' to function 'acceptAutoclosureNonAsyncBad' to make it asynchronous}} {{none}}
 
 struct HasAsyncBad {
   init(_: @autoclosure () async -> Int) { }
@@ -65,14 +65,14 @@ func testClosure() {
      await getInt()
   }
 
-  let _: () -> Int = closure // expected-error{{cannot convert value of type '() async -> Int' to specified type '() -> Int'}}
+  let _: () -> Int = closure // expected-error{{invalid conversion from 'async' function of type '() async -> Int' to synchronous function type '() -> Int'}}
 
   let closure2 = { () async -> Int in
     print("here")
     return await getInt()
   }
 
-  let _: () -> Int = closure2 // expected-error{{cannot convert value of type '() async -> Int' to specified type '() -> Int'}}
+  let _: () -> Int = closure2 // expected-error{{invalid conversion from 'async' function of type '() async -> Int' to synchronous function type '() -> Int'}}
 }
 
 // Nesting async and await together
@@ -84,7 +84,7 @@ enum HomeworkError : Error {
 
 func testThrowingAndAsync() async throws {
   _ = await try throwingAndAsync()
-  _ = try await throwingAndAsync()
+  _ = try await throwingAndAsync() // expected-error{{'await' must precede 'try'}}{{11-17=}}{{7-7=await }}
   _ = await (try throwingAndAsync())
   _ = try (await throwingAndAsync())
 
@@ -136,13 +136,12 @@ func testStringInterpolation() async throws {
   _ = await "Eventually produces \(getInt())"
 }
 
-// Make sure try await works too
 func invalidAsyncFunction() async {
-  _ = try await throwingAndAsync() // expected-error {{errors thrown from here are not handled}}
+  _ = await try throwingAndAsync() // expected-error {{errors thrown from here are not handled}}
 }
 
 func validAsyncFunction() async throws {
-  _ = try await throwingAndAsync()
+  _ = await try throwingAndAsync()
 }
 
 // Async let checking
@@ -184,8 +183,8 @@ func testAsyncLet() async throws {
   _ = await x5
 }
 
-// expected-note@+2 4{{add 'async' to function 'testAsyncLetOutOfAsync()' to make it asynchronous}}
-// expected-note@+1 4{{add '@asyncHandler' to function 'testAsyncLetOutOfAsync()' to create an implicit asynchronous context}}
+// expected-note@+2 4{{add 'async' to function 'testAsyncLetOutOfAsync()' to make it asynchronous}} {{none}}
+// expected-note@+1 4{{add '@asyncHandler' to function 'testAsyncLetOutOfAsync()' to create an implicit asynchronous context}} {{1-1=@asyncHandler }}
 func testAsyncLetOutOfAsync() {
   async let x = 1 // expected-error{{'async let' in a function that does not support concurrency}}
   // FIXME: expected-error@-1{{'async' in a function that does not support concurrency}}
@@ -193,4 +192,3 @@ func testAsyncLetOutOfAsync() {
   _ = await x  // expected-error{{'async let' in a function that does not support concurrency}}
   _ = x // expected-error{{'async let' in a function that does not support concurrency}}
 }
-

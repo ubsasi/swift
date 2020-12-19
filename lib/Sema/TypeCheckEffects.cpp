@@ -985,8 +985,9 @@ public:
   }
 
   static Context forTopLevelCode(TopLevelCodeDecl *D) {
-    // Top-level code implicitly handles errors and 'async' calls.
-    return Context(/*handlesErrors=*/true, /*handlesAsync=*/true, None);
+    // Top-level code implicitly handles errors.
+    // TODO: Eventually, it will handle async as well.
+    return Context(/*handlesErrors=*/true, /*handlesAsync=*/false, None);
   }
 
   static Context forFunction(AbstractFunctionDecl *D) {
@@ -1381,11 +1382,8 @@ public:
     if (!Function)
       return;
 
-    auto func = dyn_cast_or_null<FuncDecl>(Function->getAbstractFunctionDecl());
-    if (!func)
-      return;
-
-    addAsyncNotes(func);
+    if (auto func = Function->getAbstractFunctionDecl())
+      addAsyncNotes(func);
   }
 
   void diagnoseUnhandledAsyncSite(DiagnosticEngine &Diags, ASTNode node) {

@@ -785,6 +785,8 @@ enum ScoreKind {
   SK_ForwardTrailingClosure,
   /// A use of a disfavored overload.
   SK_DisfavoredOverload,
+  /// A member for an \c UnresolvedMemberExpr found via unwrapped optional base.
+  SK_UnresolvedMemberViaOptional,
   /// An implicit force of an implicitly unwrapped optional value.
   SK_ForceUnchecked,
   /// A user-defined conversion.
@@ -4706,6 +4708,11 @@ private:
       return {type, kind, BindingSource};
     }
 
+    /// Determine whether this binding could be a viable candidate
+    /// to be "joined" with some other binding. It has to be at least
+    /// a non-default r-value supertype binding with no type variables.
+    bool isViableForJoin() const;
+
     static PotentialBinding forHole(TypeVariableType *typeVar,
                                     ConstraintLocator *locator) {
       return {HoleType::get(typeVar->getASTContext(), typeVar),
@@ -4717,6 +4724,9 @@ private:
   struct PotentialBindings {
     using BindingScore =
         std::tuple<bool, bool, bool, bool, bool, unsigned char, int>;
+
+    /// The constraint system this type variable and its bindings belong to.
+    ConstraintSystem &CS;
 
     TypeVariableType *TypeVar;
 
@@ -4733,20 +4743,21 @@ private:
     /// The set of constraints which would be used to infer default types.
     llvm::TinyPtrVector<Constraint *> Defaults;
 
-    /// Whether these bindings should be delayed until the rest of the
-    /// constraint system is considered "fully bound".
-    bool FullyBound = false;
+    /// The set of constraints which delay attempting this type variable.
+    llvm::TinyPtrVector<Constraint *> DelayedBy;
 
-    /// Whether the bindings of this type involve other type variables.
-    bool InvolvesTypeVariables = false;
+    /// The set of type variables adjacent to the current one.
+    ///
+    /// Type variables contained here are either related through the
+    /// bindings (contained in the binding type e.g. `Foo<$T0>`), or
+    /// reachable through subtype/conversion  relationship e.g.
+    /// `$T0 subtype of $T1` or `$T0 arg conversion $T1`.
+    llvm::SmallPtrSet<TypeVariableType *, 2> AdjacentVars;
 
     ASTNode AssociatedCodeCompletionToken = ASTNode();
 
     /// Whether this type variable has literal bindings.
     LiteralBindingKind LiteralBinding = LiteralBindingKind::None;
-
-    /// Tracks the position of the last known supertype in the group.
-    Optional<unsigned> lastSupertypeIndex;
 
     /// A set of all not-yet-resolved type variables this type variable
     /// is a subtype of, supertype of or is equivalent to. This is used
@@ -4756,10 +4767,29 @@ private:
     llvm::SmallMapVector<TypeVariableType *, Constraint *, 4> SupertypeOf;
     llvm::SmallMapVector<TypeVariableType *, Constraint *, 4> EquivalentTo;
 
-    PotentialBindings(TypeVariableType *typeVar) : TypeVar(typeVar) {}
+    PotentialBindings(ConstraintSystem &cs, TypeVariableType *typeVar)
+        : CS(cs), TypeVar(typeVar) {}
 
     /// Determine whether the set of bindings is non-empty.
-    explicit operator bool() const { return !Bindings.empty(); }
+    explicit operator bool() const {
+      return !Bindings.empty() || isDirectHole();
+    }
+
+    /// Determine whether attempting this type variable should be
+    /// delayed until the rest of the constraint system is considered
+    /// "fully bound" meaning constraints, which affect completeness
+    /// of the binding set, for this type variable such as - member
+    /// constraint, disjunction, function application etc. - are simplified.
+    ///
+    /// Note that in some situations i.e. when there are no more
+    /// disjunctions or type variables left to attempt, it's still
+    /// okay to attempt "delayed" type variable to make forward progress.
+    bool isDelayed() const;
+
+    /// Whether the bindings of this type involve other type variables,
+    /// or the type variable itself is adjacent to other type variables
+    /// that could become valid bindings in the future.
+    bool involvesTypeVariables() const;
 
     /// Whether the bindings represent (potentially) incomplete set,
     /// there is no way to say with absolute certainty if that's the
@@ -4767,15 +4797,32 @@ private:
     /// `bind param` are present in the system.
     bool isPotentiallyIncomplete() const;
 
-    /// If there is only one binding and it's to a hole type, consider
-    /// this type variable to be a hole in a constraint system regardless
-    /// of where hole type originated.
+    /// If this type variable doesn't have any viable bindings, or
+    /// if there is only one binding and it's a hole type, consider
+    /// this type variable to be a hole in a constraint system
+    /// regardless of where hole type originated.
     bool isHole() const {
+      if (isDirectHole())
+        return true;
+
       if (Bindings.size() != 1)
         return false;
 
-      auto &binding = Bindings.front();
+      const auto &binding = Bindings.front();
       return binding.BindingType->is<HoleType>();
+    }
+
+    /// Determines whether the only possible binding for this type variable
+    /// would be a hole type. This is different from `isHole` method because
+    /// type variable could also acquire a hole type transitively if one
+    /// of the type variables in its subtype/equivalence chain has been
+    /// bound to a hole type.
+    bool isDirectHole() const {
+      // Direct holes are only allowed in "diagnostic mode".
+      if (!CS.shouldAttemptFixes())
+        return false;
+
+      return Bindings.empty() && TypeVar->getImpl().canBindToHole();
     }
 
     /// Determine if the bindings only constrain the type variable from above
@@ -4792,22 +4839,26 @@ private:
     }
 
     unsigned getNumDefaultableBindings() const {
-      return llvm::count_if(Bindings, [](const PotentialBinding &binding) {
-        return binding.isDefaultableBinding();
-      });
+      return isDirectHole()
+                 ? 1
+                 : llvm::count_if(Bindings,
+                                  [](const PotentialBinding &binding) {
+                                    return binding.isDefaultableBinding();
+                                  });
     }
 
     static BindingScore formBindingScore(const PotentialBindings &b) {
       auto numDefaults = b.getNumDefaultableBindings();
-      auto hasNoDefaultableBindings = b.Bindings.size() > numDefaults;
+      auto numNonDefaultableBindings =
+          b.isDirectHole() ? 0 : b.Bindings.size() - numDefaults;
 
       return std::make_tuple(b.isHole(),
-                             !hasNoDefaultableBindings,
-                             b.FullyBound,
+                             numNonDefaultableBindings == 0,
+                             b.isDelayed(),
                              b.isSubtypeOfExistentialType(),
-                             b.InvolvesTypeVariables,
+                             b.involvesTypeVariables(),
                              static_cast<unsigned char>(b.LiteralBinding),
-                             -(b.Bindings.size() - numDefaults));
+                             -numNonDefaultableBindings);
     }
 
     /// Compare two sets of bindings, where \c x < y indicates that
@@ -4823,8 +4874,10 @@ private:
       if (yScore < xScore)
         return false;
 
-      auto xDefaults = x.Bindings.size() + std::get<6>(xScore);
-      auto yDefaults = y.Bindings.size() + std::get<6>(yScore);
+      auto xDefaults =
+          x.isDirectHole() ? 1 : x.Bindings.size() + std::get<6>(xScore);
+      auto yDefaults =
+          y.isDirectHole() ? 1 : y.Bindings.size() + std::get<6>(yScore);
 
       // If there is a difference in number of default types,
       // prioritize bindings with fewer of them.
@@ -4948,15 +5001,17 @@ public:
     void dump(llvm::raw_ostream &out,
               unsigned indent = 0) const LLVM_ATTRIBUTE_USED {
       out.indent(indent);
+      if (isDirectHole())
+        out << "hole ";
       if (isPotentiallyIncomplete())
         out << "potentially_incomplete ";
-      if (FullyBound)
-        out << "fully_bound ";
+      if (isDelayed())
+        out << "delayed ";
       if (isSubtypeOfExistentialType())
         out << "subtype_of_existential ";
       if (LiteralBinding != LiteralBindingKind::None)
         out << "literal=" << static_cast<int>(LiteralBinding) << " ";
-      if (InvolvesTypeVariables)
+      if (involvesTypeVariables())
         out << "involves_type_vars ";
 
       auto numDefaultable = getNumDefaultableBindings();
@@ -5793,14 +5848,19 @@ class TypeVarBindingProducer : public BindingProducer<TypeVariableBinding> {
   llvm::SmallPtrSet<CanType, 4> ExploredTypes;
   llvm::SmallPtrSet<TypeBase *, 4> BoundTypes;
 
+  /// Determines whether this type variable has a
+  /// `ExpressibleByNilLiteral` requirement which
+  /// means that bindings have to either conform
+  /// to that protocol or be wrapped in an optional.
+  bool CanBeNil;
+
 public:
   using Element = TypeVariableBinding;
 
-  TypeVarBindingProducer(ConstraintSystem &cs,
-                         ConstraintSystem::PotentialBindings &bindings)
-      : BindingProducer(cs, bindings.TypeVar->getImpl().getLocator()),
-        TypeVar(bindings.TypeVar),
-        Bindings(bindings.Bindings.begin(), bindings.Bindings.end()) {}
+  TypeVarBindingProducer(ConstraintSystem::PotentialBindings &bindings);
+
+  /// Retrieve a set of bindings available in the current state.
+  ArrayRef<Binding> getCurrentBindings() const { return Bindings; }
 
   Optional<Element> operator()() override {
     // Once we reach the end of the current bindings
@@ -5822,6 +5882,10 @@ private:
   /// \returns true if some new bindings were sucessfully computed,
   /// false otherwise.
   bool computeNext();
+
+  /// Check whether binding type is required to either conform to
+  /// `ExpressibleByNilLiteral` protocol or be wrapped into an optional type.
+  bool requiresOptionalAdjustment(const Binding &binding) const;
 };
 
 /// Iterator over disjunction choices, makes it

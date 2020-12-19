@@ -964,20 +964,29 @@ bool NoEscapeFuncToTypeConversionFailure::diagnoseParameterUse() const {
   return true;
 }
 
-ASTNode MissingForcedDowncastFailure::getAnchor() const {
+ASTNode InvalidCoercionFailure::getAnchor() const {
   auto anchor = FailureDiagnostic::getAnchor();
   if (auto *assignExpr = getAsExpr<AssignExpr>(anchor))
     return assignExpr->getSrc();
   return anchor;
 }
 
-bool MissingForcedDowncastFailure::diagnoseAsError() {
+bool InvalidCoercionFailure::diagnoseAsError() {
   auto fromType = getFromType();
   auto toType = getToType();
 
-  emitDiagnostic(diag::missing_forced_downcast, fromType, toType)
-      .highlight(getSourceRange())
-      .fixItReplace(getLoc(), "as!");
+  emitDiagnostic(diag::cannot_coerce_to_type, fromType, toType);
+
+  if (UseConditionalCast) {
+    emitDiagnostic(diag::missing_optional_downcast)
+        .highlight(getSourceRange())
+        .fixItReplace(getLoc(), "as?");
+  } else {
+    emitDiagnostic(diag::missing_forced_downcast)
+        .highlight(getSourceRange())
+        .fixItReplace(getLoc(), "as!");
+  }
+
   return true;
 }
 
@@ -1051,10 +1060,19 @@ bool MissingExplicitConversionFailure::diagnoseAsError() {
   if (needsParensOutside)
     insertAfter += ")";
 
-  auto diagID =
-      useAs ? diag::missing_explicit_conversion : diag::missing_forced_downcast;
-  auto diag = emitDiagnostic(diagID, fromType, toType);
+  auto diagnose = [&]() {
+    if (useAs) {
+      return emitDiagnostic(diag::missing_explicit_conversion, fromType,
+                            toType);
+    } else {
+      // Emit error diagnostic.
+      emitDiagnostic(diag::cannot_coerce_to_type, fromType, toType);
+      // Emit and return note suggesting as! where the fix-it will be placed.
+      return emitDiagnostic(diag::missing_forced_downcast);
+    }
+  };
 
+  auto diag = diagnose();
   if (!insertBefore.empty()) {
     diag.fixItInsert(getSourceRange().Start, insertBefore);
   }
@@ -2102,7 +2120,9 @@ bool ContextualFailure::diagnoseAsError() {
     }
 
     if (isExpr<AssignExpr>(anchor)) {
-      emitDiagnostic(diag::cannot_convert_assign, getFromType(), getToType());
+      auto diagnostic = emitDiagnostic(diag::cannot_convert_assign,
+                                       getFromType(), getToType());
+      tryIntegerCastFixIts(diagnostic);
       return true;
     }
 
@@ -2711,6 +2731,15 @@ bool ContextualFailure::tryIntegerCastFixIts(
   auto fromType = getFromType();
   auto toType = getToType();
 
+  auto anchor = getAnchor();
+  auto exprRange = getSourceRange();
+
+  if (auto *assignment = getAsExpr<AssignExpr>(anchor)) {
+    toType = toType->lookThroughAllOptionalTypes();
+    anchor = assignment->getSrc();
+    exprRange = assignment->getSrc()->getSourceRange();
+  }
+
   if (!isIntegerType(fromType) || !isIntegerType(toType))
     return false;
 
@@ -2729,8 +2758,8 @@ bool ContextualFailure::tryIntegerCastFixIts(
     return parenE->getSubExpr();
   };
 
-  if (auto *anchor = getAsExpr(getAnchor())) {
-    if (Expr *innerE = getInnerCastedExpr(anchor)) {
+  if (auto *expr = getAsExpr(anchor)) {
+    if (Expr *innerE = getInnerCastedExpr(expr)) {
       Type innerTy = getType(innerE);
       if (TypeChecker::isConvertibleTo(innerTy, toType, getDC())) {
         // Remove the unnecessary cast.
@@ -2745,7 +2774,6 @@ bool ContextualFailure::tryIntegerCastFixIts(
   std::string convWrapBefore = toType.getString();
   convWrapBefore += "(";
   std::string convWrapAfter = ")";
-  SourceRange exprRange = getSourceRange();
   diagnostic.fixItInsert(exprRange.Start, convWrapBefore);
   diagnostic.fixItInsertAfter(exprRange.End, convWrapAfter);
   return true;
@@ -5744,6 +5772,12 @@ bool ThrowingFunctionConversionFailure::diagnoseAsError() {
   return true;
 }
 
+bool AsyncFunctionConversionFailure::diagnoseAsError() {
+  emitDiagnostic(diag::async_functiontype_mismatch, getFromType(),
+                 getToType());
+  return true;
+}
+
 bool InOutConversionFailure::diagnoseAsError() {
   auto *locator = getLocator();
   auto path = locator->getPath();
@@ -7050,5 +7084,76 @@ bool ReferenceToInvalidDeclaration::diagnoseAsError() {
 
   emitDiagnostic(diag::reference_to_invalid_decl, decl->getName());
   emitDiagnosticAt(decl, diag::decl_declared_here, decl->getName());
+  return true;
+}
+
+bool InvalidReturnInResultBuilderBody::diagnoseAsError() {
+  auto *closure = castToExpr<ClosureExpr>(getAnchor());
+
+  auto returnStmts = TypeChecker::findReturnStatements(closure);
+  assert(!returnStmts.empty());
+
+  auto loc = returnStmts.front()->getReturnLoc();
+  emitDiagnosticAt(loc, diag::result_builder_disabled_by_return, BuilderType);
+
+  // Note that one can remove all of the return statements.
+  {
+    auto diag = emitDiagnosticAt(loc, diag::result_builder_remove_returns);
+    for (auto returnStmt : returnStmts)
+      diag.fixItRemove(returnStmt->getReturnLoc());
+  }
+
+  return true;
+}
+
+bool MemberMissingExplicitBaseTypeFailure::diagnoseAsError() {
+  auto UME = castToExpr<UnresolvedMemberExpr>(getAnchor());
+  auto memberName = UME->getName().getBaseIdentifier().str();
+  auto &DE = getASTContext().Diags;
+  auto &solution = getSolution();
+
+  auto selected = solution.getOverloadChoice(getLocator());
+  auto baseType =
+      resolveType(selected.choice.getBaseType()->getMetatypeInstanceType());
+
+  SmallVector<Type, 4> optionals;
+  auto baseTyUnwrapped = baseType->lookThroughAllOptionalTypes(optionals);
+
+  if (!optionals.empty()) {
+    auto baseTyName = baseType->getCanonicalType().getString();
+    auto baseTyUnwrappedName = baseTyUnwrapped->getString();
+    auto loc = UME->getLoc();
+    auto startLoc = UME->getStartLoc();
+
+    DE.diagnoseWithNotes(
+        DE.diagnose(loc, diag::optional_ambiguous_case_ref, baseTyName,
+                    baseTyUnwrappedName, memberName),
+        [&]() {
+          DE.diagnose(UME->getDotLoc(), diag::optional_fixit_ambiguous_case_ref)
+              .fixItInsert(startLoc, "Optional");
+          DE.diagnose(UME->getDotLoc(),
+                      diag::type_fixit_optional_ambiguous_case_ref,
+                      baseTyUnwrappedName, memberName)
+              .fixItInsert(startLoc, baseTyUnwrappedName);
+        });
+  } else {
+    auto baseTypeName = baseType->getCanonicalType().getString();
+    auto baseOptionalTypeName =
+        OptionalType::get(baseType)->getCanonicalType().getString();
+
+    DE.diagnoseWithNotes(
+        DE.diagnose(UME->getLoc(), diag::optional_ambiguous_case_ref,
+                    baseTypeName, baseOptionalTypeName, memberName),
+        [&]() {
+          DE.diagnose(UME->getDotLoc(),
+                      diag::type_fixit_optional_ambiguous_case_ref,
+                      baseOptionalTypeName, memberName)
+              .fixItInsert(UME->getDotLoc(), baseOptionalTypeName);
+          DE.diagnose(UME->getDotLoc(),
+                      diag::type_fixit_optional_ambiguous_case_ref,
+                      baseTypeName, memberName)
+              .fixItInsert(UME->getDotLoc(), baseTypeName);
+        });
+  }
   return true;
 }

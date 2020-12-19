@@ -52,8 +52,9 @@ void SILGenFunction::emitDestroyingDestructor(DestructorDecl *dd) {
   SILValue resultSelfValue;
   SILType objectPtrTy = SILType::getNativeObjectType(F.getASTContext());
   SILType classTy = selfValue->getType();
-  if (cd->hasSuperclass()) {
-    Type superclassTy = dd->mapTypeIntoContext(cd->getSuperclass());
+  if (cd->hasSuperclass() && !cd->isNativeNSObjectSubclass()) {
+    Type superclassTy =
+      dd->mapTypeIntoContext(cd->getSuperclass());
     ClassDecl *superclass = superclassTy->getClassOrBoundGenericClass();
     auto superclassDtorDecl = superclass->getDestructor();
     SILDeclRef dtorConstant =
@@ -191,6 +192,15 @@ void SILGenFunction::emitClassMemberDestruction(ManagedValue selfValue,
       B.createDestroyAddr(cleanupLoc, addr);
       B.createEndAccess(cleanupLoc, addr, false /*is aborting*/);
     }
+  }
+
+  if (cd->isRootDefaultActor()) {
+    auto builtinName = getASTContext().getIdentifier(
+      getBuiltinName(BuiltinValueKind::DestroyDefaultActor));
+    auto resultTy = SGM.Types.getEmptyTupleType();
+
+    B.createBuiltin(cleanupLoc, builtinName, resultTy, /*subs*/{},
+                    { selfValue.getValue() });
   }
 }
 

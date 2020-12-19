@@ -15,6 +15,7 @@
 #include "swift/AST/DiagnosticEngine.h"
 #include "swift/AST/DiagnosticsDriver.h"
 #include "swift/AST/FineGrainedDependencies.h"
+#include "swift/AST/FineGrainedDependencyFormat.h"
 #include "swift/Basic/OutputFileMap.h"
 #include "swift/Basic/Program.h"
 #include "swift/Basic/STLExtras.h"
@@ -244,7 +245,7 @@ namespace driver {
     std::unique_ptr<TaskQueue> TQ;
 
     /// Cumulative result of PerformJobs(), accumulated from subprocesses.
-    int Result = EXIT_SUCCESS;
+    int ResultCode = EXIT_SUCCESS;
 
     /// True if any Job crashed.
     bool AnyAbnormalExit = false;
@@ -488,13 +489,6 @@ namespace driver {
     reloadAndRemarkDepsOnNormalExit(const Job *FinishedCmd,
                                     const bool cmdFailed, const bool forRanges,
                                     StringRef DependenciesFile) {
-      return reloadAndRemarkFineGrainedDepsOnNormalExit(
-          FinishedCmd, cmdFailed, forRanges, DependenciesFile);
-    }
-
-    std::vector<const Job *> reloadAndRemarkFineGrainedDepsOnNormalExit(
-        const Job *FinishedCmd, const bool cmdFailed, const bool forRanges,
-        StringRef DependenciesFile) {
       const auto changedNodes = getFineGrainedDepGraph(forRanges).loadFromPath(
           FinishedCmd, DependenciesFile, Comp.getDiags());
       const bool loadFailed = !changedNodes;
@@ -726,8 +720,8 @@ namespace driver {
       // Store this task's ReturnCode as our Result if we haven't stored
       // anything yet.
 
-      if (Result == EXIT_SUCCESS)
-        Result = ReturnCode;
+      if (ResultCode == EXIT_SUCCESS)
+        ResultCode = ReturnCode;
 
       if (!isa<CompileJobAction>(FinishedCmd->getSource()) ||
           ReturnCode != EXIT_FAILURE) {
@@ -832,7 +826,7 @@ namespace driver {
       }
 
       // Since the task signalled, unconditionally set result to -2.
-      Result = -2;
+      ResultCode = -2;
       AnyAbnormalExit = true;
 
       return TaskFinishedResponse::StopExecution;
@@ -1192,6 +1186,30 @@ namespace driver {
       return ExternallyDependentJobs;
     }
 
+    using ChangeSet = fine_grained_dependencies::ModuleDepGraph::Changes::value_type;
+    static void
+    pruneChangeSetFromExternalDependency(ChangeSet &changes) {
+      // The changeset includes detritus from the graph that gets consed up
+      // in \c writePriorDependencyGraph. We need to ignore the fake
+      // source file provides nodes and the fake incremental external
+      // dependencies linked to them.
+      swift::erase_if(
+          changes, [&](fine_grained_dependencies::ModuleDepGraphNode *node) {
+            if (node->getKey().getKind() ==
+                    fine_grained_dependencies::NodeKind::sourceFileProvide ||
+                node->getKey().getKind() ==
+                    fine_grained_dependencies::NodeKind::
+                        incrementalExternalDepend) {
+              return true;
+            }
+            if (node->getKey().getAspect() ==
+                fine_grained_dependencies::DeclAspect::implementation) {
+              return true;
+            }
+            return !node->getIsProvides();
+          });
+    }
+  
     SmallVector<const Job *, 16>
     collectIncrementalExternallyDependentJobsFromDependencyGraph(
         const bool forRanges) {
@@ -1202,6 +1220,17 @@ namespace driver {
           ExternallyDependentJobs.push_back(cmd);
         }
       };
+
+      // Load our priors, which are always adjacent to the build record. We
+      // don't care if this load succeeds or not. If it fails, and we succeed at
+      // integrating one of the external files below, the changeset will be the
+      // entire module!
+      const auto *externalPriorJob = Comp.addExternalJob(
+          std::make_unique<Job>(Comp.getDerivedOutputFileMap(),
+                                Comp.getExternalSwiftDepsFilePath()));
+      getFineGrainedDepGraph(forRanges).loadFromPath(
+          externalPriorJob, Comp.getExternalSwiftDepsFilePath(),
+          Comp.getDiags());
 
       for (auto external : getFineGrainedDepGraph(forRanges)
                                .getIncrementalExternalDependencies()) {
@@ -1238,20 +1267,23 @@ namespace driver {
         // code's internal invariants.
         const auto *externalJob = Comp.addExternalJob(
             std::make_unique<Job>(Comp.getDerivedOutputFileMap(), external));
-        auto subChanges =
+        auto maybeChanges =
             getFineGrainedDepGraph(forRanges).loadFromSwiftModuleBuffer(
                 externalJob, *buffer.get(), Comp.getDiags());
 
         // If the incremental dependency graph failed to load, fall back to
         // treating this as plain external job.
-        if (!subChanges.hasValue()) {
+        if (!maybeChanges.hasValue()) {
           fallbackToExternalBehavior(external);
           continue;
         }
 
-        for (auto *CMD :
-             getFineGrainedDepGraph(forRanges)
-                 .findJobsToRecompileWhenNodesChange(subChanges.getValue())) {
+        // Prune away the detritus from the build record.
+        auto &changes = maybeChanges.getValue();
+        pruneChangeSetFromExternalDependency(changes);
+
+        for (auto *CMD : getFineGrainedDepGraph(forRanges)
+                             .findJobsToRecompileWhenNodesChange(changes)) {
           if (CMD == externalJob) {
             continue;
           }
@@ -1543,7 +1575,7 @@ namespace driver {
                                   _3, _4, _5, _6),
                         std::bind(&PerformJobsState::taskSignalled, this, _1,
                                   _2, _3, _4, _5, _6, _7))) {
-          if (Result == EXIT_SUCCESS) {
+          if (ResultCode == EXIT_SUCCESS) {
             // FIXME: Error from task queue while Result == EXIT_SUCCESS most
             // likely means some fork/exec or posix_spawn failed; TaskQueue saw
             // "an error" at some stage before even calling us with a process
@@ -1553,7 +1585,7 @@ namespace driver {
             Comp.getDiags().diagnose(SourceLoc(),
                                      diag::error_unable_to_execute_command,
                                      "<unknown>");
-            Result = -2;
+            ResultCode = -2;
             AnyAbnormalExit = true;
             return;
           }
@@ -1561,13 +1593,13 @@ namespace driver {
 
         // Returning without error from TaskQueue::execute should mean either an
         // empty TaskQueue or a failed subprocess.
-        assert(!(Result == 0 && TQ->hasRemainingTasks()));
+        assert(!(ResultCode == 0 && TQ->hasRemainingTasks()));
 
         // Task-exit callbacks from TaskQueue::execute may have unblocked jobs,
         // which means there might be PendingExecution jobs to enqueue here. If
         // there are, we need to continue trying to make progress on the
         // TaskQueue before we start marking deferred jobs as skipped, below.
-        if (!PendingExecution.empty() && Result == 0) {
+        if (!PendingExecution.empty() && ResultCode == 0) {
           formBatchJobsAndAddPendingJobsToTaskQueue();
           continue;
         }
@@ -1592,11 +1624,11 @@ namespace driver {
 
         // If we added jobs to the TaskQueue, and we are not in an error state,
         // we want to give the TaskQueue another run.
-      } while (Result == 0 && TQ->hasRemainingTasks());
+      } while (ResultCode == 0 && TQ->hasRemainingTasks());
     }
 
     void checkUnfinishedJobs() {
-      if (Result == 0) {
+      if (ResultCode == 0) {
         assert(BlockingCommands.empty() &&
                "some blocking commands never finished properly");
       } else {
@@ -1700,10 +1732,14 @@ namespace driver {
                            });
     }
 
-    int getResult() {
-      if (Result == 0)
-        Result = Comp.getDiags().hadAnyError();
-      return Result;
+    Compilation::Result takeResult() && {
+      if (ResultCode == 0)
+        ResultCode = Comp.getDiags().hadAnyError();
+      const bool forRanges = Comp.getEnableSourceRangeDependencies();
+      const bool hadAbnormalExit = hadAnyAbnormalExit();
+      const auto resultCode = ResultCode;
+      auto &&graph = std::move(*this).takeFineGrainedDepGraph(forRanges);
+      return Compilation::Result{hadAbnormalExit, resultCode, std::move(graph)};
     }
 
     bool hadAnyAbnormalExit() {
@@ -1762,6 +1798,15 @@ namespace driver {
     const fine_grained_dependencies::ModuleDepGraph &
     getFineGrainedDepGraph(const bool forRanges) const {
       return forRanges ? FineGrainedDepGraphForRanges : FineGrainedDepGraph;
+    }
+
+    fine_grained_dependencies::ModuleDepGraph &&
+    takeFineGrainedDepGraph(const bool forRanges) && {
+      if (forRanges) {
+        return std::move(FineGrainedDepGraphForRanges);
+      } else {
+        return std::move(FineGrainedDepGraph);
+      }
     }
   };
 } // namespace driver
@@ -1858,6 +1903,76 @@ static void writeCompilationRecord(StringRef path, StringRef argsHash,
   }
 }
 
+using SourceFileDepGraph = swift::fine_grained_dependencies::SourceFileDepGraph;
+
+/// Render out the unified module dependency graph to the given \p path, which
+/// is expected to be a path relative to the build record.
+static void withPriorDependencyGraph(StringRef path,
+                                     const Compilation::Result &result,
+                                     llvm::function_ref<void(SourceFileDepGraph &&)> cont) {
+  // Building a source file dependency graph from the module dependency graph
+  // is a strange task on its face because a source file dependency graph is
+  // usually built for exactly one file. However, the driver is going to use
+  // some encoding tricks to get the dependencies for each incremental external
+  // dependency into one big file. Note that these tricks
+  // are undone in \c pruneChangeSetFromExternalDependency, so if you modify
+  // this you need to go fix that algorithm up as well. This is a diagrammatic
+  // view of the structure of the dependencies this function builds:
+  //
+  // SourceFile => interface <BUILD_RECORD>.external
+  // | - Incremetal External Dependency => interface <MODULE_1>.swiftmodule
+  // | | - <dependency> ...
+  // | | - <dependency> ...
+  // | | - <dependency> ...
+  // | - Incremetal External Dependency => interface <MODULE_2>.swiftmodule
+  // | | - <dependency> ...
+  // | | - <dependency> ...
+  // | - Incremetal External Dependency => interface <MODULE_3>.swiftmodule
+  // | - ...
+  //
+  // Where each <dependency> node has an arc back to its parent swiftmodule.
+  // That swiftmodule, in turn, takes the form of as an incremental external
+  // dependency. This formulation allows us to easily discern the original
+  // swiftmodule that a <dependency> came from just by examining that arc. This
+  // is used in integrate to "move" the <dependency> from the build record to
+  // the swiftmodule by swapping the key it uses.
+  using namespace swift::fine_grained_dependencies;
+  SourceFileDepGraph g;
+  const auto &resultModuleGraph = result.depGraph;
+  // Create the key for the entire external build record.
+  auto fileKey =
+      DependencyKey::createKeyForWholeSourceFile(DeclAspect::interface, path);
+  auto fileNodePair = g.findExistingNodePairOrCreateAndAddIfNew(fileKey, None);
+  for (StringRef incrExternalDep :
+       resultModuleGraph.getIncrementalExternalDependencies()) {
+    // Now make a node for each incremental external dependency.
+    auto interfaceKey =
+        DependencyKey(NodeKind::incrementalExternalDepend,
+                      DeclAspect::interface, "", incrExternalDep.str());
+    auto ifaceNode = g.findExistingNodeOrCreateIfNew(interfaceKey, None,
+                                                     false /* = !isProvides */);
+    resultModuleGraph.forEachNodeInJob(incrExternalDep, [&](const auto *node) {
+      // Reject
+      // 1) Implementation nodes: We don't care about the interface nodes
+      //    for cross-module dependencies because the client cannot observe it
+      //    by definition.
+      // 2) Source file nodes: we're about to define our own.
+      if (!node->getKey().isInterface() ||
+          node->getKey().getKind() == NodeKind::sourceFileProvide) {
+        return;
+      }
+      assert(node->getIsProvides() &&
+             "Found a node in module depdendencies that is not a provides!");
+      auto *newNode = new SourceFileDepGraphNode(
+          node->getKey(), node->getFingerprint(), /*isProvides*/ true);
+      g.addNode(newNode);
+      g.addArc(ifaceNode, newNode);
+    });
+    g.addArc(fileNodePair.getInterface(), ifaceNode);
+  }
+  return cont(std::move(g));
+}
+
 static void writeInputJobsToFilelist(llvm::raw_fd_ostream &out, const Job *job,
                                      const file_types::ID infoType) {
   // FIXME: Duplicated from ToolChains.cpp.
@@ -1943,8 +2058,8 @@ static bool writeFilelistIfNecessary(const Job *job, const ArgList &args,
   return ok;
 }
 
-int Compilation::performJobsImpl(bool &abnormalExit,
-                                 std::unique_ptr<TaskQueue> &&TQ) {
+Compilation::Result
+Compilation::performJobsImpl(std::unique_ptr<TaskQueue> &&TQ) {
   PerformJobsState State(*this, std::move(TQ));
 
   State.runJobs();
@@ -1953,20 +2068,32 @@ int Compilation::performJobsImpl(bool &abnormalExit,
     InputInfoMap InputInfo;
     State.populateInputInfoMap(InputInfo);
     checkForOutOfDateInputs(Diags, InputInfo);
+
+    auto result = std::move(State).takeResult();
     writeCompilationRecord(CompilationRecordPath, ArgsHash, BuildStartTime,
                            InputInfo);
+    if (EnableCrossModuleIncrementalBuild) {
+      // Write out our priors adjacent to the build record so we can pick
+      // the up in a subsequent build.
+      withPriorDependencyGraph(getExternalSwiftDepsFilePath(), result,
+                               [&](SourceFileDepGraph &&g) {
+        writeFineGrainedDependencyGraphToPath(
+            Diags, getExternalSwiftDepsFilePath(), g);
+      });
+    }
+    return result;
+  } else {
+    return std::move(State).takeResult();
   }
-  abnormalExit = State.hadAnyAbnormalExit();
-  return State.getResult();
 }
 
-int Compilation::performSingleCommand(const Job *Cmd) {
+Compilation::Result Compilation::performSingleCommand(const Job *Cmd) {
   assert(Cmd->getInputs().empty() &&
          "This can only be used to run a single command with no inputs");
 
   switch (Cmd->getCondition()) {
   case Job::Condition::CheckDependencies:
-    return 0;
+    return Compilation::Result::code(0);
   case Job::Condition::RunWithoutCascading:
   case Job::Condition::Always:
   case Job::Condition::NewlyAdded:
@@ -1974,7 +2101,7 @@ int Compilation::performSingleCommand(const Job *Cmd) {
   }
 
   if (!writeFilelistIfNecessary(Cmd, *TranslatedArgs.get(), Diags))
-    return 1;
+    return Compilation::Result::code(1);
 
   switch (Level) {
   case OutputLevel::Normal:
@@ -1982,7 +2109,7 @@ int Compilation::performSingleCommand(const Job *Cmd) {
     break;
   case OutputLevel::PrintJobs:
     Cmd->printCommandLineAndEnvironment(llvm::outs());
-    return 0;
+    return Compilation::Result::code(0);
   case OutputLevel::Verbose:
     Cmd->printCommandLine(llvm::errs());
     break;
@@ -2006,11 +2133,12 @@ int Compilation::performSingleCommand(const Job *Cmd) {
           "expected environment variable to be set successfully");
     // Bail out early in release builds.
     if (envResult != 0) {
-      return envResult;
+      return Compilation::Result::code(envResult);
     }
   }
 
-  return ExecuteInPlace(ExecPath, argv);
+  const auto returnCode = ExecuteInPlace(ExecPath, argv);
+  return Compilation::Result::code(returnCode);
 }
 
 static bool writeAllSourcesFile(DiagnosticEngine &diags, StringRef path,
@@ -2033,10 +2161,10 @@ static bool writeAllSourcesFile(DiagnosticEngine &diags, StringRef path,
   return true;
 }
 
-int Compilation::performJobs(std::unique_ptr<TaskQueue> &&TQ) {
+Compilation::Result Compilation::performJobs(std::unique_ptr<TaskQueue> &&TQ) {
   if (AllSourceFilesPath)
     if (!writeAllSourcesFile(Diags, AllSourceFilesPath, getInputFiles()))
-      return EXIT_FAILURE;
+      return Compilation::Result::code(EXIT_FAILURE);
 
   // If we don't have to do any cleanup work, just exec the subprocess.
   if (Level < OutputLevel::Parseable &&
@@ -2051,20 +2179,19 @@ int Compilation::performJobs(std::unique_ptr<TaskQueue> &&TQ) {
     Diags.diagnose(SourceLoc(), diag::warning_parallel_execution_not_supported);
   }
 
-  bool abnormalExit;
-  int result = performJobsImpl(abnormalExit, std::move(TQ));
+  auto result = performJobsImpl(std::move(TQ));
 
   if (IncrementalComparator)
     IncrementalComparator->outputComparison();
 
   if (!SaveTemps) {
     for (const auto &pathPair : TempFilePaths) {
-      if (!abnormalExit || pathPair.getValue() == PreserveOnSignal::No)
+      if (!result.hadAbnormalExit || pathPair.getValue() == PreserveOnSignal::No)
         (void)llvm::sys::fs::remove(pathPair.getKey());
     }
   }
   if (Stats)
-    Stats->noteCurrentProcessExitStatus(result);
+    Stats->noteCurrentProcessExitStatus(result.exitCode);
   return result;
 }
 

@@ -106,6 +106,10 @@ static llvm::cl::opt<bool>
 EnableExperimentalConcurrency("enable-experimental-concurrency",
                    llvm::cl::desc("Enable experimental concurrency model."));
 
+static llvm::cl::opt<bool> EnableExperimentalPrespecialization(
+    "enable-experimental-prespecialization",
+    llvm::cl::desc("Enable experimental prespecialziation."));
+
 static llvm::cl::opt<bool>
 VerifyExclusivity("enable-verify-exclusivity",
                   llvm::cl::desc("Verify the access markers used to enforce exclusivity."));
@@ -183,11 +187,24 @@ static llvm::cl::opt<int>
 SILInlineThreshold("sil-inline-threshold", llvm::cl::Hidden,
                    llvm::cl::init(-1));
 
+// Legacy option name still in use. The frontend uses -sil-verify-all.
 static llvm::cl::opt<bool>
 EnableSILVerifyAll("enable-sil-verify-all",
                    llvm::cl::Hidden,
                    llvm::cl::init(true),
                    llvm::cl::desc("Run sil verifications after every pass."));
+
+static llvm::cl::opt<bool>
+SILVerifyAll("sil-verify-all",
+             llvm::cl::Hidden,
+             llvm::cl::init(true),
+             llvm::cl::desc("Run sil verifications after every pass."));
+
+static llvm::cl::opt<bool>
+SILVerifyNone("sil-verify-none",
+              llvm::cl::Hidden,
+              llvm::cl::init(false),
+              llvm::cl::desc("Completely disable SIL verification"));
 
 static llvm::cl::opt<bool>
 RemoveRuntimeAsserts("remove-runtime-asserts",
@@ -352,6 +369,9 @@ int main(int argc, char **argv) {
   Invocation.getLangOptions().EnableExperimentalConcurrency =
     EnableExperimentalConcurrency;
 
+  Invocation.getLangOptions().EnableExperimentalPrespecialization =
+      EnableExperimentalPrespecialization;
+
   Invocation.getLangOptions().EnableObjCInterop =
     EnableObjCInterop ? true :
     DisableObjCInterop ? false : llvm::Triple(Target).isOSDarwin();
@@ -377,7 +397,8 @@ int main(int argc, char **argv) {
   // Setup the SIL Options.
   SILOptions &SILOpts = Invocation.getSILOptions();
   SILOpts.InlineThreshold = SILInlineThreshold;
-  SILOpts.VerifyAll = EnableSILVerifyAll;
+  SILOpts.VerifyAll = SILVerifyAll || EnableSILVerifyAll;
+  SILOpts.VerifyNone = SILVerifyNone;
   SILOpts.RemoveRuntimeAsserts = RemoveRuntimeAsserts;
   SILOpts.AssertConfig = AssertConfId;
   if (OptimizationGroup != OptGroup::Diagnostics)

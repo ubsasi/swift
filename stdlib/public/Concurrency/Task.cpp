@@ -17,8 +17,10 @@
 #include "swift/Runtime/Concurrency.h"
 #include "swift/ABI/Task.h"
 #include "swift/ABI/Metadata.h"
+#include "swift/Runtime/Mutex.h"
 #include "swift/Runtime/HeapObject.h"
 #include "TaskPrivate.h"
+#include "AsyncCall.h"
 
 using namespace swift;
 using FutureFragment = AsyncTask::FutureFragment;
@@ -219,14 +221,14 @@ static void completeTask(AsyncTask *task, ExecutorRef executor,
 
 AsyncTaskAndContext
 swift::swift_task_create(JobFlags flags, AsyncTask *parent,
-                         const AsyncFunctionPointer<void()> *function) {
+        const ThinNullaryAsyncSignature::FunctionPointer *function) {
   return swift_task_create_f(flags, parent, function->Function.get(),
                              function->ExpectedContextSize);
 }
 
 AsyncTaskAndContext
 swift::swift_task_create_f(JobFlags flags, AsyncTask *parent,
-                           AsyncFunctionType<void()> *function,
+                ThinNullaryAsyncSignature::FunctionType *function,
                            size_t initialContextSize) {
   return swift_task_create_future_f(
       flags, parent, nullptr, function, initialContextSize);
@@ -234,7 +236,7 @@ swift::swift_task_create_f(JobFlags flags, AsyncTask *parent,
 
 AsyncTaskAndContext swift::swift_task_create_future(
     JobFlags flags, AsyncTask *parent, const Metadata *futureResultType,
-    const AsyncFunctionPointer<void()> *function) {
+    const FutureAsyncSignature::FunctionPointer *function) {
   return swift_task_create_future_f(
       flags, parent, futureResultType, function->Function.get(),
       function->ExpectedContextSize);
@@ -242,7 +244,7 @@ AsyncTaskAndContext swift::swift_task_create_future(
 
 AsyncTaskAndContext swift::swift_task_create_future_f(
     JobFlags flags, AsyncTask *parent, const Metadata *futureResultType,
-    AsyncFunctionType<void()> *function, size_t initialContextSize) {
+    FutureAsyncSignature::FunctionType *function, size_t initialContextSize) {
   assert((futureResultType != nullptr) == flags.task_isFuture());
   assert(!flags.task_isFuture() ||
          initialContextSize >= sizeof(FutureAsyncContext));
@@ -303,11 +305,13 @@ AsyncTaskAndContext swift::swift_task_create_future_f(
   // be is the final hop.  Store a signed null instead.
   initialContext->Parent = nullptr;
   initialContext->ResumeParent = &completeTask;
-  initialContext->ResumeParentExecutor = ExecutorRef::noPreference();
+  initialContext->ResumeParentExecutor = ExecutorRef::generic();
   initialContext->Flags = AsyncContextKind::Ordinary;
   initialContext->Flags.setShouldNotDeallocateInCallee(true);
 
   // Initialize the task-local allocator.
+  // TODO: consider providing an initial pre-allocated first slab to the
+  //       allocator.
   _swift_task_alloc_initialize(task);
 
   return {task, initialContext};
@@ -347,11 +351,190 @@ void swift::swift_task_future_wait(
   }
 }
 
-// TODO: Remove this hack.
-void swift::swift_task_run(AsyncTask *taskToRun) {
-  taskToRun->run(ExecutorRef::noPreference());
+namespace {
+/// The header of a function context (closure captures) of
+/// a thick async function with a non-null context.
+struct ThickAsyncFunctionContext: HeapObject {
+  uint32_t ExpectedContextSize;
+};
+
+
+#if SWIFT_CONCURRENCY_COOPERATIVE_GLOBAL_EXECUTOR
+
+class RunAndBlockSemaphore {
+  bool Finished = false;
+public:
+  void wait() {
+    donateThreadToGlobalExecutorUntil([](void *context) {
+      return *reinterpret_cast<bool*>(context);
+    }, &Finished);
+
+    assert(Finished && "ran out of tasks before we were signalled");
+  }
+
+  void signal() {
+    Finished = true;
+  }
+};
+
+#else
+
+class RunAndBlockSemaphore {
+  ConditionVariable Queue;
+  ConditionVariable::Mutex Lock;
+  bool Finished = false;
+public:
+  /// Wait for a signal.
+  void wait() {
+    Lock.withLockOrWait(Queue, [&] {
+      return Finished;
+    });
+  }
+
+  void signal() {
+    Lock.withLockThenNotifyAll(Queue, [&]{
+      Finished = true;
+    });
+  }
+};
+
+#endif
+
+using RunAndBlockSignature =
+  AsyncSignature<void(HeapObject*), /*throws*/ false>;
+struct RunAndBlockContext: AsyncContext {
+  const void *Function;
+  HeapObject *FunctionContext;
+  RunAndBlockSemaphore *Semaphore;
+};
+using RunAndBlockCalleeContext =
+  AsyncCalleeContext<RunAndBlockContext, RunAndBlockSignature>;
+
+} // end anonymous namespace
+
+/// Second half of the runAndBlock async function.
+SWIFT_CC(swiftasync)
+static void runAndBlock_finish(AsyncTask *task, ExecutorRef executor,
+                               AsyncContext *_context) {
+  auto calleeContext = static_cast<RunAndBlockCalleeContext*>(_context);
+  auto context = popAsyncContext(task, calleeContext);
+
+  context->Semaphore->signal();
+
+  return context->ResumeParent(task, executor, context);
 }
 
-JobFlags swift::swift_task_getJobFlags(AsyncTask *task) {
-  return task->Flags;
+/// First half of the runAndBlock async function.
+SWIFT_CC(swiftasync)
+static void runAndBlock_start(AsyncTask *task, ExecutorRef executor,
+                              AsyncContext *_context) {
+  auto callerContext = static_cast<RunAndBlockContext*>(_context);
+
+  size_t calleeContextSize;
+  RunAndBlockSignature::FunctionType *function;
+
+  // If the function context is non-null, then the function pointer is
+  // an ordinary function pointer.
+  auto functionContext = callerContext->FunctionContext;
+  if (functionContext) {
+    function = reinterpret_cast<RunAndBlockSignature::FunctionType*>(
+                   const_cast<void*>(callerContext->Function));
+    calleeContextSize =
+      static_cast<ThickAsyncFunctionContext*>(functionContext)
+        ->ExpectedContextSize;
+
+  // Otherwise, the function pointer is an async function pointer.
+  } else {
+    auto fnPtr = reinterpret_cast<const RunAndBlockSignature::FunctionPointer*>(
+                   callerContext->Function);
+    function = fnPtr->Function;
+    calleeContextSize = fnPtr->ExpectedContextSize;
+  }
+
+  auto calleeContext =
+    pushAsyncContext<RunAndBlockSignature>(task, executor, callerContext,
+                                           calleeContextSize,
+                                           &runAndBlock_finish,
+                                           functionContext);
+  return function(task, executor, calleeContext);
+}
+
+// TODO: Remove this hack.
+void swift::swift_task_runAndBlockThread(const void *function,
+                                         HeapObject *functionContext) {
+  RunAndBlockSemaphore semaphore;
+
+  // Set up a task that runs the runAndBlock async function above.
+  auto pair = swift_task_create_f(JobFlags(JobKind::Task,
+                                           JobPriority::Default),
+                                  /*parent*/ nullptr,
+                                  &runAndBlock_start,
+                                  sizeof(RunAndBlockContext));
+  auto context = static_cast<RunAndBlockContext*>(pair.InitialContext);
+  context->Function = function;
+  context->FunctionContext = functionContext;
+  context->Semaphore = &semaphore;
+
+  // Enqueue the task.
+  swift_task_enqueueGlobal(pair.Task);
+
+  // Wait until the task completes.
+  semaphore.wait();
+}
+
+size_t swift::swift_task_getJobFlags(AsyncTask *task) {
+  return task->Flags.getOpaqueValue();
+}
+
+namespace {
+  
+/// Structure that gets filled in when a task is suspended by `withUnsafeContinuation`.
+struct AsyncContinuationContext {
+  // These fields are unnecessary for resuming a continuation.
+  void *Unused1;
+  void *Unused2;
+  // Storage slot for the error result, if any.
+  SwiftError *ErrorResult;
+  // Pointer to where to store a normal result.
+  OpaqueValue *NormalResult;
+  
+  // Executor on which to resume execution.
+  ExecutorRef ResumeExecutor;
+};
+
+static void resumeTaskAfterContinuation(AsyncTask *task,
+                                        AsyncContinuationContext *context) {
+  swift_task_enqueue(task, context->ResumeExecutor);
+}
+
+}
+
+SWIFT_CC(swift)
+void swift::swift_continuation_resume(/* +1 */ OpaqueValue *result,
+                                      void *continuation,
+                                      const Metadata *resumeType) {
+  auto task = reinterpret_cast<AsyncTask*>(continuation);
+  auto context = reinterpret_cast<AsyncContinuationContext*>(task->ResumeContext);
+  resumeType->vw_initializeWithTake(context->NormalResult, result);
+  
+  resumeTaskAfterContinuation(task, context);
+}
+
+SWIFT_CC(swift)
+void swift::swift_continuation_throwingResume(/* +1 */ OpaqueValue *result,
+                                              void *continuation,
+                                              const Metadata *resumeType) {
+  return swift_continuation_resume(result, continuation, resumeType);
+}
+
+
+SWIFT_CC(swift)
+void swift::swift_continuation_throwingResumeWithError(/* +1 */ SwiftError *error,
+                                                       void *continuation,
+                                                       const Metadata *resumeType) {
+  auto task = reinterpret_cast<AsyncTask*>(continuation);
+  auto context = reinterpret_cast<AsyncContinuationContext*>(task->ResumeContext);
+  context->ErrorResult = error;
+  
+  resumeTaskAfterContinuation(task, context);
 }
