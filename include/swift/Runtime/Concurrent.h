@@ -488,9 +488,13 @@ public:
     ~Snapshot() {
       Array->decrementReaders();
     }
-    
-    const ElemTy *begin() { return Start; }
-    const ElemTy *end() { return Start + Count; }
+
+    // These are marked as ref-qualified (the &) to make sure they can't be
+    // called on temporaries, since the temporary would be destroyed before the
+    // return value can be used, making it invalid.
+    const ElemTy *begin() & { return Start; }
+    const ElemTy *end() & { return Start + Count; }
+
     size_t count() { return Count; }
   };
 
@@ -974,7 +978,11 @@ public:
 
     /// Search for an element matching the given key. Returns a pointer to the
     /// found element, or nullptr if no matching element exists.
-    template <class KeyTy> const ElemTy *find(const KeyTy &key) {
+    //
+    // This is marked as ref-qualified (the &) to make sure it can't be called
+    // on temporaries, since the temporary would be destroyed before the return
+    // value can be used, making it invalid.
+    template <class KeyTy> const ElemTy *find(const KeyTy &key) & {
       if (!Indices.Value || !ElementCount || !Elements)
         return nullptr;
       return ConcurrentReadableHashMap::find(key, Indices, ElementCount,
@@ -1146,9 +1154,15 @@ struct StableAddressConcurrentReadableHashMap
         return {lastFound, false};
 
     // Optimize for the case where the value already exists.
-    if (auto wrapper = this->snapshot().find(key)) {
-      LastFound.store(wrapper->Ptr, std::memory_order_relaxed);
-      return {wrapper->Ptr, false};
+    {
+      // Tightly scope the snapshot so it's gone before we call getOrInsert
+      // below, otherwise that call will always see an outstanding snapshot and
+      // never be able to collect garbage.
+      auto snapshot = this->snapshot();
+      if (auto wrapper = snapshot.find(key)) {
+        LastFound.store(wrapper->Ptr, std::memory_order_relaxed);
+        return {wrapper->Ptr, false};
+      }
     }
 
     // No such element. Insert if needed. Note: another thread may have inserted
@@ -1175,7 +1189,8 @@ struct StableAddressConcurrentReadableHashMap
   }
 
   template <class KeyTy> ElemTy *find(const KeyTy &key) {
-    auto result = this->snapshot().find(key);
+    auto snapshot = this->snapshot();
+    auto result = snapshot.find(key);
     if (!result)
       return nullptr;
     return result->Ptr;

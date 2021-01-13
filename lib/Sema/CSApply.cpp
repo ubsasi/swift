@@ -32,6 +32,7 @@
 #include "swift/AST/ParameterList.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/AST/SubstitutionMap.h"
+#include "swift/Basic/Defer.h"
 #include "swift/Basic/StringExtras.h"
 #include "swift/Sema/ConstraintSystem.h"
 #include "swift/Sema/SolutionResult.h"
@@ -6827,26 +6828,22 @@ Expr *ExprRewriter::coerceToType(Expr *expr, Type toType,
   llvm_unreachable("Unhandled coercion");
 }
 
-/// Detect if the expression is an assignment to a `self` wrapped property that
-/// has a nonmutating setter, inside a constructor.
-///
-/// We use this to decide when to produce an inout_expr instead of a load_expr
-/// for the sake of emitting a reference required by the assign_by_wrapper
-/// instruction.
-static bool isNonMutatingSetterPWAssignInsideInit(Expr *baseExpr,
-                                                  ValueDecl *member,
-                                                  DeclContext *UseDC) {
-  // Setter is mutating
-  if (cast<AbstractStorageDecl>(member)->isSetterMutating())
-    return false;
+/// Detect whether an assignment to \c baseExpr.member in the given
+/// decl context can potentially be initialization of a property wrapper.
+static bool isPotentialPropertyWrapperInit(Expr *baseExpr,
+                                           ValueDecl *member,
+                                           DeclContext *UseDC) {
   // Member is not a wrapped property
   auto *VD = dyn_cast<VarDecl>(member);
   if (!(VD && VD->hasAttachedPropertyWrapper()))
     return false;
-  // This is not an expression inside a constructor
+
+  // Assignment to a wrapped property can only be re-written to
+  // initialization in an init.
   auto *CD = dyn_cast<ConstructorDecl>(UseDC);
   if (!CD)
     return false;
+
   // This is not an assignment on self
   if (!baseExpr->isSelfExprOf(CD))
     return false;
@@ -6886,15 +6883,14 @@ static Type adjustSelfTypeForMember(Expr *baseExpr,
   bool isSettableFromHere =
       SD->isSettable(UseDC) && SD->isSetterAccessibleFrom(UseDC);
 
-  // If neither the property's getter nor its setter are mutating, and
-  // this is not a nonmutating property wrapper setter,
-  // the base can be an rvalue.
-  // With the exception of assignments to a wrapped property inside a
-  // constructor, where we need to produce a reference to be used on
-  // the assign_by_wrapper instruction. 
-  if (!SD->isGetterMutating() && 
+  // If neither the property's getter nor its setter are mutating,
+  // the base can be an rvalue unless the assignment is potentially
+  // initializing a property wrapper. If the assignment can be re-
+  // written to property wrapper initialization, the base type should
+  // be an lvalue.
+  if (!SD->isGetterMutating() &&
       (!isSettableFromHere || !SD->isSetterMutating()) &&
-      !isNonMutatingSetterPWAssignInsideInit(baseExpr, member, UseDC))
+      !isPotentialPropertyWrapperInit(baseExpr, member, UseDC))
     return baseObjectTy;
 
   if (isa<SubscriptDecl>(member))
@@ -8045,13 +8041,13 @@ static Optional<SolutionApplicationTarget> applySolutionToForEachStmt(
   // Convert that Optional<Element> value to the type of the pattern.
   auto optPatternType = OptionalType::get(forEachStmtInfo.initType);
   if (!optPatternType->isEqual(nextResultType)) {
-    OpaqueValueExpr *elementExpr =
-        new (ctx) OpaqueValueExpr(stmt->getInLoc(), nextResultType,
-                                  /*isPlaceholder=*/true);
+    OpaqueValueExpr *elementExpr = new (ctx) OpaqueValueExpr(
+        stmt->getInLoc(), nextResultType->getOptionalObjectType(),
+        /*isPlaceholder=*/true);
     Expr *convertElementExpr = elementExpr;
     if (TypeChecker::typeCheckExpression(
             convertElementExpr, dc,
-            /*contextualInfo=*/{optPatternType, CTP_CoerceOperand})
+            /*contextualInfo=*/{forEachStmtInfo.initType, CTP_CoerceOperand})
             .isNull()) {
       return None;
     }
