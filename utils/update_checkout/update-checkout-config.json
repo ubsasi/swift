@@ -126,8 +126,8 @@
                 "icu": "release-65-1",
                 "yams": "3.0.1",
                 "cmake": "v3.16.5",
-                "indexstore-db": "main",
-                "sourcekit-lsp": "main",
+                "indexstore-db": "release/5.4",
+                "sourcekit-lsp": "release/5.4",
                 "swift-format": "main"
             }
         },
