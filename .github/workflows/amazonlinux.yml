@@ -1,0 +1,37 @@
+name: Build toolchain for Amazon Linux
+
+on:
+  push:
+    branches:
+      - swiftwasm
+  workflow_dispatch: {}
+
+jobs:
+  amazonlinux2_build:
+    timeout-minutes: 0
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Free disk space
+        run: |
+          df -h
+          sudo swapoff -a
+          sudo rm -f /swapfile
+          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/share/dotnet
+          sudo apt clean
+          docker rmi $(docker image ls -aq)
+          df -h
+      - uses: actions/checkout@v2
+      - run: |
+          SWIFT_IMAGE=swiftwasm:nightly-$GITHUB_SHA
+          docker build --build-arg SWIFT_GIT_SHA=$GITHUB_SHA \
+                       --tag $SWIFT_IMAGE ./utils/webassembly/amazonlinux
+          docker run -v $GITHUB_WORKSPACE:/home/host-dir $SWIFT_IMAGE \
+            cp -r /home/ec2-user/swift-wasm-DEVELOPMENT-SNAPSHOT-amazonlinux2_x86_64.tar.gz /home/host-dir
+
+      - name: Upload Ubuntu 20.04 installable archive
+        uses: actions/upload-artifact@v1
+        with:
+          name: amazonlinux2-installable
+          path: swift-wasm-DEVELOPMENT-SNAPSHOT-amazonlinux2_x86_64.tar.gz
+
