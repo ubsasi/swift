@@ -35,6 +35,7 @@ ENV PATH="/home/ec2-user/cmake-3.16.5-Linux-x86_64/bin/:${PATH}"
 ARG SWIFT_GIT_SHA
 RUN git clone https://github.com/swiftwasm/swift.git
 WORKDIR /home/ec2-user/swift
+RUN git fetch origin $SWIFT_GIT_SHA
 RUN git checkout $SWIFT_GIT_SHA
 RUN ./utils/update-checkout --clone --scheme wasm --skip-repository swift
 RUN ./utils/webassembly/install-wasi-sdk.sh linux ubuntu-18.04
