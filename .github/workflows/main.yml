@@ -9,14 +9,43 @@ on:
     branches:
       - swiftwasm
       - swiftwasm-release/5.3
-
 jobs:
-  ubuntu1804_build:
-    timeout-minutes: 0
-    runs-on: ubuntu-18.04
+  build_toolchain:
+    env:
+      TOOLCHAIN_CHANNEL: DEVELOPMENT
+    strategy:
+      matrix:
+        include:
+          - build_os: ubuntu-18.04
+            target: ubuntu18.04_x86_64
+            run_full_test: false
+            run_e2e_test: true
+            build_hello_wasm: true
 
+          - build_os: ubuntu-20.04
+            target: ubuntu20.04_x86_64
+            run_full_test: false
+            run_e2e_test: true
+            build_hello_wasm: true
+
+          - build_os: ubuntu-20.04
+            target: amazonlinux2_x86_64
+            run_full_test: false
+            run_e2e_test: false
+            build_hello_wasm: false
+
+          - build_os: macos-10.15
+            target: macos_x86_64
+            run_full_test: true
+            run_e2e_test: true
+            build_hello_wasm: true
+
+    name: Target ${{ matrix.target }}
+    timeout-minutes: 0
+    runs-on: ${{ matrix.build_os }}
     steps:
       - name: Free disk space
+        if: ${{ matrix.build_os == 'ubuntu-20.04' || matrix.build_os == 'ubuntu-18.04' }}
         run: |
           df -h
           sudo apt-get purge libgcc-9-dev gcc-9 libstdc++-9-dev clang-6.0 llvm-6.0
@@ -27,141 +56,80 @@ jobs:
           sudo apt clean
           docker rmi $(docker image ls -aq)
           df -h
+
       - uses: actions/checkout@v1
         with:
           path: swift
+
       - name: Prepare sccache timestamp
         id: cache_timestamp
         shell: cmake -P {0}
         run: |
           string(TIMESTAMP current_date "%Y-%m-%d-%H;%M;%S" UTC)
           message("::set-output name=timestamp::${current_date}")
+
       - uses: actions/cache@v1
         with:
           path: ../build-cache
-          key: ubuntu-18.04-sccache-v10-${{ steps.cache_timestamp.outputs.timestamp }}
+          key: ${{ matrix.target }}-sccache-v10-${{ steps.cache_timestamp.outputs.timestamp }}
           restore-keys: |
-            ubuntu-18.04-sccache-v10-
-      - name: Build Ubuntu 18.04 installable archive
-        run: |
-          ./utils/webassembly/ci.sh
-      - name: Upload Ubuntu 18.04 installable archive
-        uses: actions/upload-artifact@v1
-        with:
-          name: ubuntu18.04-installable
-          path: ../swift-wasm-DEVELOPMENT-SNAPSHOT-ubuntu18.04_x86_64.tar.gz
-#      - name: Pack test results
-#        run: tar cJf swift-test-results.tar.gz ../build/*/swift-linux-x86_64/swift-test-results
-#      - name: Upload test results
-#        uses: actions/upload-artifact@v1
-#        with:
-#          name: linux-test-results
-#          path: ./swift-test-results.tar.gz
+            ${{ matrix.target }}-sccache-v10-
 
-  ubuntu2004_build:
-    timeout-minutes: 0
-    runs-on: ubuntu-20.04
-
-    steps:
-      - name: Free disk space
-        run: |
-          df -h
-          sudo swapoff -a
-          sudo rm -f /swapfile
-          sudo rm -rf /opt/hostedtoolcache
-          sudo rm -rf /usr/share/dotnet
-          sudo apt clean
-          docker rmi $(docker image ls -aq)
-          df -h
-      - uses: actions/checkout@v1
-        with:
-          path: swift
-      - name: Prepare sccache timestamp
-        id: cache_timestamp
-        shell: cmake -P {0}
-        run: |
-          string(TIMESTAMP current_date "%Y-%m-%d-%H;%M;%S" UTC)
-          message("::set-output name=timestamp::${current_date}")
-      - uses: actions/cache@v1
-        with:
-          path: ../build-cache
-          key: ubuntu-20.04-sccache-v10-${{ steps.cache_timestamp.outputs.timestamp }}
-          restore-keys: |
-            ubuntu-20.04-sccache-v10-
-      - name: Build Ubuntu 20.04 installable archive
-        run: |
-          ./utils/webassembly/ci.sh
-      - name: Upload Ubuntu 20.04 installable archive
-        uses: actions/upload-artifact@v1
-        with:
-          name: ubuntu20.04-installable
-          path: ../swift-wasm-DEVELOPMENT-SNAPSHOT-ubuntu20.04_x86_64.tar.gz
-#      - name: Pack test results
-#        run: tar cJf swift-test-results.tar.gz ../build/*/swift-linux-x86_64/swift-test-results
-#      - name: Upload test results
-#        uses: actions/upload-artifact@v1
-#        with:
-#          name: linux-test-results
-#          path: ./swift-test-results.tar.gz
-
-  macos_build:
-    timeout-minutes: 0
-    runs-on: macos-10.15
-
-    steps:
-      - uses: actions/checkout@v1
-        with:
-          path: swift
-      - name: Prepare sccache timestamp
-        id: cache_timestamp
-        shell: cmake -P {0}
-        run: |
-          string(TIMESTAMP current_date "%Y-%m-%d-%H;%M;%S" UTC)
-          message("::set-output name=timestamp::${current_date}")
-      - uses: actions/cache@v1
-        with:
-          path: ../build-cache
-          key: ${{ runner.os }}-sccache-v10-${{ steps.cache_timestamp.outputs.timestamp }}
-          restore-keys: |
-            ${{ runner.os }}-sccache-v10-
-      - name: Build macOS installable archive
+      - name: Select Xcode version
+        if: ${{ matrix.build_os == 'macos-10.15' }}
         run: |
           sudo xcode-select --switch /Applications/Xcode_12.3.app/Contents/Developer/
           xcodebuild -version
-          ./utils/webassembly/ci.sh
+
+      - name: Build ${{ matrix.target }} installable archive
         env:
-          SKIP_XCODE_VERSION_CHECK: 1 # Skip upstream update the compatible Xcode version
-      - name: Upload macOS installable archive
+          SKIP_XCODE_VERSION_CHECK: 1
+        run: |
+
+          case "${{ matrix.target }}" in
+            "ubuntu20.04_x86_64" | "ubuntu18.04_x86_64" | "macos_x86_64")
+              ./utils/webassembly/ci.sh
+            ;;
+            "amazonlinux2_x86_64")
+              SWIFT_IMAGE=swiftwasm-amazonlinux2_x86_64:nightly-$GITHUB_SHA
+              docker build --build-arg SWIFT_GIT_SHA=$GITHUB_SHA \
+                           --tag $SWIFT_IMAGE ./utils/webassembly/amazonlinux
+              docker run -v $GITHUB_WORKSPACE/../:/home/host-dir $SWIFT_IMAGE \
+                cp -r /home/ec2-user/swift-wasm-$TOOLCHAIN_CHANNEL-SNAPSHOT-amazonlinux2_x86_64.tar.gz /home/host-dir
+            ;;
+            *)
+              echo "Unrecognised target: ${{ matrix.target }}"
+              exit 1
+            ;;
+          esac
+
+      - name: Upload ${{ matrix.target }} installable archive
         uses: actions/upload-artifact@v1
         with:
-          name: macos-installable
-          path: ../swift-wasm-DEVELOPMENT-SNAPSHOT-macos_x86_64.tar.gz
+          name: ${{ matrix.target }}-installable
+          path: ../swift-wasm-${{ env.TOOLCHAIN_CHANNEL }}-SNAPSHOT-${{ matrix.target }}.tar.gz
+
       - name: Pack test results
+        if: ${{ matrix.run_full_test }}
         working-directory: ${{ github.workspace }}/../
         run: |
           tar cJf ./swift/swift-test-results.tar.gz target-build/swift-stdlib-wasi-wasm32/swift-test-results
       - name: Upload test results
         uses: actions/upload-artifact@v1
+        if: ${{ matrix.run_full_test }}
         with:
-          name: macos-test-results
+          name: ${{ matrix.target }}-test-results
           path: ./swift-test-results.tar.gz
 
-  macos_smoke_test:
-    name: Run smoke tests on macOS
-    runs-on: macos-10.15
-    needs: macos_build
-    steps:
-      - name: Download installable macOS archive
-        uses: actions/download-artifact@v1
-        with:
-          name: macos-installable
-      - name: Unpack toolchain
+      # Run e2e test
+      - name: Run E2E test
+        working-directory: ${{ github.workspace }}/../
         run: |
-          set -x
-          tar xf $(find . -name "swift-wasm-*.tar.gz" -type f)
-          echo "TOOLCHAIN=$(find "$PWD" -name "swift-wasm-*" -type d)" >> $GITHUB_ENV
+          tar xf swift-wasm-$TOOLCHAIN_CHANNEL-SNAPSHOT-${{ matrix.target }}.tar.gz
+          echo "TOOLCHAIN=$(find "$PWD" -name "swift-wasm-$TOOLCHAIN_CHANNEL-*" -type d)" >> $GITHUB_ENV
       - name: Build hello.wasm
         shell: bash
+        if: ${{ matrix.build_hello_wasm }}
         run: |
           echo 'print("Hello, world!")' > hello.swift
           $TOOLCHAIN/usr/bin/swiftc \
@@ -169,116 +137,21 @@ jobs:
                 -sdk $TOOLCHAIN/usr/share/wasi-sysroot \
                 hello.swift -o hello.wasm && \
                 echo "Successfully linked hello.wasm"
-      - name: Test SwiftPM
-        shell: bash
-        run: |
-          set -x
-          mkdir test
-          cd test
-          $TOOLCHAIN/usr/bin/swift package init
-          $TOOLCHAIN/usr/bin/swift build --triple wasm32-unknown-wasi
-      - name: Upload hello.wasm compiled with macOS package
+      - name: Upload hello.wasm
+        if: ${{ matrix.build_hello_wasm }}
         uses: actions/upload-artifact@v1
         with:
-          name: macos-hello.wasm
+          name: ${{ matrix.target }}-hello.wasm
           path: hello.wasm
       - name: Checkout integration-tests
+        if: ${{ matrix.run_e2e_test }}
         uses: actions/checkout@v2
         with:
           repository: swiftwasm/integration-tests
           path: integration-tests
       - name: Run integration tests
+        if: ${{ matrix.run_e2e_test }}
         run: |
-          sudo xcode-select --switch /Applications/Xcode_12.2.app/Contents/Developer/
           swift run # Use TOOLCHAIN env value
         working-directory: ${{ github.workspace }}/integration-tests
 
-  ubuntu1804_smoke_test:
-    name: Run smoke tests on Ubuntu 18.04
-    runs-on: ubuntu-18.04
-    needs: ubuntu1804_build
-    steps:
-      - name: Download installable Ubuntu 18.04 archive
-        uses: actions/download-artifact@v1
-        with:
-          name: ubuntu18.04-installable
-      - name: Unpack toolchain
-        run: |
-          set -x
-          tar xf $(find . -name "swift-wasm-*.tar.gz" -type f)
-          echo "TOOLCHAIN=$(find "$PWD" -name "swift-wasm-*" -type d)" >> $GITHUB_ENV
-      - name: Build hello.wasm
-        shell: bash
-        run: |
-          echo 'print("Hello, world!")' > hello.swift
-          $TOOLCHAIN/usr/bin/swiftc \
-                -target wasm32-unknown-wasi \
-                -sdk $TOOLCHAIN/usr/share/wasi-sysroot \
-                hello.swift -o hello.wasm && \
-                echo "Successfully linked hello.wasm"
-      - name: Test SwiftPM
-        shell: bash
-        run: |
-          set -x
-          mkdir test
-          cd test
-          $TOOLCHAIN/usr/bin/swift package init
-          $TOOLCHAIN/usr/bin/swift build --triple wasm32-unknown-wasi
-      - name: Upload hello.wasm compiled with Ubuntu 18.04 package
-        uses: actions/upload-artifact@v1
-        with:
-          name: ubuntu18.04-hello.wasm
-          path: hello.wasm
-      - name: Checkout integration-tests
-        uses: actions/checkout@v2
-        with:
-          repository: swiftwasm/integration-tests
-          path: integration-tests
-      - name: Run integration tests
-        run: swift run # Use TOOLCHAIN env value
-        working-directory: ${{ github.workspace }}/integration-tests
-
-  ubuntu2004_smoke_test:
-    name: Run smoke tests on Ubuntu 20.04
-    runs-on: ubuntu-20.04
-    needs: ubuntu2004_build
-    steps:
-      - name: Download installable Ubuntu 20.04 archive
-        uses: actions/download-artifact@v1
-        with:
-          name: ubuntu20.04-installable
-      - name: Unpack toolchain
-        run: |
-          set -x
-          tar xf $(find . -name "swift-wasm-*.tar.gz" -type f)
-          echo "TOOLCHAIN=$(find "$PWD" -name "swift-wasm-*" -type d)" >> $GITHUB_ENV
-      - name: Build hello.wasm
-        shell: bash
-        run: |
-          echo 'print("Hello, world!")' > hello.swift
-          $TOOLCHAIN/usr/bin/swiftc \
-                -target wasm32-unknown-wasi \
-                -sdk $TOOLCHAIN/usr/share/wasi-sysroot \
-                hello.swift -o hello.wasm && \
-                echo "Successfully linked hello.wasm"
-      - name: Test SwiftPM
-        shell: bash
-        run: |
-          set -x
-          mkdir test
-          cd test
-          $TOOLCHAIN/usr/bin/swift package init
-          $TOOLCHAIN/usr/bin/swift build --triple wasm32-unknown-wasi
-      - name: Upload hello.wasm compiled with Ubuntu 20.04 package
-        uses: actions/upload-artifact@v1
-        with:
-          name: ubuntu20.04-hello.wasm
-          path: hello.wasm
-      - name: Checkout integration-tests
-        uses: actions/checkout@v2
-        with:
-          repository: swiftwasm/integration-tests
-          path: integration-tests
-      - name: Run integration tests
-        run: swift run # Use TOOLCHAIN env value
-        working-directory: ${{ github.workspace }}/integration-tests
