@@ -2,7 +2,7 @@
 
 set -xe
 repository='swiftwasm/swift'
-workflow_name='main.yml'
+workflow_name='build-toolchain.yml'
 branch=$1
 channel=$2
 swift_source_dir="$(cd "$(dirname $0)/../.." && pwd)"
