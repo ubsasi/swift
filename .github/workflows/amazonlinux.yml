@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - swiftwasm
+      - katei/support-amzlinux-test
   workflow_dispatch: {}
 
 jobs:
