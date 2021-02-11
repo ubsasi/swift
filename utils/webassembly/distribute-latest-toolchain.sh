@@ -206,13 +206,6 @@ if [[ "$toolchain_name" != "$original_toolchain_name" ]]; then
   done
 fi
 
-
-for target in ${targets[@]}; do
-  download_artifact $target-installable
-  unzip $target-installable.zip
-done
-
-
 release_packages=()
 
 for target in ${targets[@]}; do
