@@ -33,11 +33,13 @@ ENV PATH="/home/ec2-user/cmake-3.16.5-Linux-x86_64/bin/:${PATH}"
 
 # Bootstrap the swift source and do a full checkout
 ARG SWIFT_GIT_SHA
+ARG SWIFT_CHECKOUT_SCHEME=wasm
+
 RUN git clone https://github.com/swiftwasm/swift.git
 WORKDIR /home/ec2-user/swift
 RUN git fetch origin $SWIFT_GIT_SHA
 RUN git checkout $SWIFT_GIT_SHA
-RUN ./utils/update-checkout --clone --scheme wasm --skip-repository swift
+RUN ./utils/update-checkout --clone --scheme $SWIFT_CHECKOUT_SCHEME --skip-repository swift
 RUN ./utils/webassembly/install-wasi-sdk.sh linux ubuntu-18.04
 
 RUN ./utils/webassembly/build-toolchain.sh
