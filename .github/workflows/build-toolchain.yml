@@ -28,12 +28,6 @@ jobs:
             run_e2e_test: true
             build_hello_wasm: true
 
-          - build_os: ubuntu-20.04
-            target: amazonlinux2_x86_64
-            run_full_test: false
-            run_e2e_test: false
-            build_hello_wasm: false
-
           - build_os: macos-10.15
             target: macos_x86_64
             run_full_test: true
@@ -89,13 +83,6 @@ jobs:
           case "${{ matrix.target }}" in
             "ubuntu20.04_x86_64" | "ubuntu18.04_x86_64" | "macos_x86_64")
               ./utils/webassembly/ci.sh
-            ;;
-            "amazonlinux2_x86_64")
-              SWIFT_IMAGE=swiftwasm-amazonlinux2_x86_64:nightly-$GITHUB_SHA
-              docker build --build-arg SWIFT_GIT_SHA=$GITHUB_SHA \
-                           --tag $SWIFT_IMAGE ./utils/webassembly/amazonlinux
-              docker run -v $GITHUB_WORKSPACE/../:/home/host-dir $SWIFT_IMAGE \
-                cp -r /home/ec2-user/swift-wasm-$TOOLCHAIN_CHANNEL-SNAPSHOT-amazonlinux2_x86_64.tar.gz /home/host-dir
             ;;
             *)
               echo "Unrecognised target: ${{ matrix.target }}"

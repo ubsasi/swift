@@ -10,7 +10,6 @@ swift_source_dir="$(cd "$(dirname $0)/../.." && pwd)"
 targets=(
   "ubuntu18.04_x86_64"
   "ubuntu20.04_x86_64"
-  "amazonlinux2_x86_64"
   "macos_x86_64"
 )
 
