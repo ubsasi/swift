@@ -34,6 +34,25 @@ fi
 artifacts_url=$(echo $latest_run | jq .artifacts_url --raw-output)
 head_sha=$(echo $latest_run | jq .head_sha --raw-output)
 
+dispatch_release_event() {
+  local release_id=$1
+  local body=$(cat <<EOS
+    {
+      "event_type": "release_created",
+      "client_payload": {
+        "toolchain_channel": "$channel",
+        "ref": "$head_sha",
+        "release_id": "$release_id"
+      }
+    }
+EOS
+)
+
+  github --request POST --fail \
+    --url "${gh_api}/repos/swiftwasm/swiftwasm-buildbot/dispatches" \
+    --data "$body"
+}
+
 get_artifact_url() {
   local name=$1
   github $artifacts_url --fail | jq ".artifacts[] | select(.name == \"$name\") | .archive_download_url" | sed 's/\"//g'
@@ -224,5 +243,7 @@ release_id=$(create_release $toolchain_name $toolchain_name $head_sha)
 for package in ${release_packages[@]}; do
   upload_tarball $release_id "$package"
 done
+
+dispatch_release_event "$release_id"
 
 popd
