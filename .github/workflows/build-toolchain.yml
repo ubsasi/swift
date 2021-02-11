@@ -51,9 +51,10 @@ jobs:
           docker rmi $(docker image ls -aq)
           df -h
 
-      - uses: actions/checkout@v1
+      - uses: actions/checkout@v2
         with:
           path: swift
+          fetch-depth: 0
 
       - name: Prepare sccache timestamp
         id: cache_timestamp
@@ -64,7 +65,7 @@ jobs:
 
       - uses: actions/cache@v1
         with:
-          path: ../build-cache
+          path: build-cache
           key: ${{ matrix.target }}-sccache-v10-${{ steps.cache_timestamp.outputs.timestamp }}
           restore-keys: |
             ${{ matrix.target }}-sccache-v10-
@@ -82,7 +83,7 @@ jobs:
 
           case "${{ matrix.target }}" in
             "ubuntu20.04_x86_64" | "ubuntu18.04_x86_64" | "macos_x86_64")
-              ./utils/webassembly/ci.sh
+              ./swift/utils/webassembly/ci.sh
             ;;
             *)
               echo "Unrecognised target: ${{ matrix.target }}"
@@ -94,13 +95,12 @@ jobs:
         uses: actions/upload-artifact@v1
         with:
           name: ${{ matrix.target }}-installable
-          path: ../swift-wasm-${{ env.TOOLCHAIN_CHANNEL }}-SNAPSHOT-${{ matrix.target }}.tar.gz
+          path: swift-wasm-${{ env.TOOLCHAIN_CHANNEL }}-SNAPSHOT-${{ matrix.target }}.tar.gz
 
       - name: Pack test results
         if: ${{ matrix.run_full_test }}
-        working-directory: ${{ github.workspace }}/../
         run: |
-          tar cJf ./swift/swift-test-results.tar.gz target-build/swift-stdlib-wasi-wasm32/swift-test-results
+          tar cJf ./swift-test-results.tar.gz target-build/swift-stdlib-wasi-wasm32/swift-test-results
       - name: Upload test results
         uses: actions/upload-artifact@v1
         if: ${{ matrix.run_full_test }}
@@ -110,7 +110,6 @@ jobs:
 
       # Run e2e test
       - name: Prepare E2E test
-        working-directory: ${{ github.workspace }}/../
         run: |
           INSTALL_DIR=$(mktemp -d)
           tar xf swift-wasm-$TOOLCHAIN_CHANNEL-SNAPSHOT-${{ matrix.target }}.tar.gz -C "$INSTALL_DIR"
