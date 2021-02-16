@@ -1,12 +1,12 @@
 -static
 -lswiftSwiftOnoneSupport
--lswiftWasiPthread
 -licuuc
 -licudata
 -ldl
 -lstdc++
 -lm
 -lwasi-emulated-mman
+-lwasi-emulated-signal
 -Xlinker --error-limit=0
 -Xlinker --no-gc-sections
 -Xlinker --threads=1

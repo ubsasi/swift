@@ -661,7 +661,7 @@ importer::getNormalInvocationArguments(
     }
 
     if (triple.isOSWASI()) {
-      invocationArgStrs.insert(invocationArgStrs.end(), {"-D_WASI_EMULATED_MMAN"});
+      invocationArgStrs.insert(invocationArgStrs.end(), {"-D_WASI_EMULATED_MMAN", "-D_WASI_EMULATED_SIGNAL"});
       SmallString<128> buffer;
       if (auto path = getWasiLibcModuleMapPath(searchPathOpts, triple, buffer)) {
         invocationArgStrs.push_back((Twine("-fmodule-map-file=") + *path).str());

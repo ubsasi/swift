@@ -19,20 +19,11 @@ install_icu() {
   mv icu_out "$BUILD_SDK_PATH/icu"
 }
 
-install_wasi-sdk() {
-  # We only use wasi-sysroot and do not use binaries in wasi-sdk,
-  # so build machine's os and wasi-sdk's host os don't have to be matched
-  WASI_SDK_URL="https://github.com/swiftwasm/wasi-sdk/releases/download/0.2.2-swiftwasm/dist-ubuntu-18.04.zip"
-
-  curl -L -o dist-wasi-sdk.zip "$WASI_SDK_URL"
-  unzip -u dist-wasi-sdk.zip -d .
-
-  WASI_SDK_TAR_PATH=$(find . -type f -name "wasi-sdk-*")
-  WASI_SDK_FULL_NAME=$(basename "$WASI_SDK_TAR_PATH" -linux.tar.gz)
-  tar xfz "$WASI_SDK_TAR_PATH"
-
-  rm -rf "$BUILD_SDK_PATH/wasi-sdk"
-  mv "$WASI_SDK_FULL_NAME" "$BUILD_SDK_PATH/wasi-sdk"
+install_wasi-libc() {
+  WASI_LIBC_URL="https://github.com/swiftwasm/wasm-libc/releases/download/0.1.0/wasi-libc.tar.gz"
+  curl -L "$WASI_LIBC_URL" | tar xz
+  rm -rf "$BUILD_SDK_PATH/wasi-libc"
+  mv "wasi-libc" "$BUILD_SDK_PATH/wasi-libc"
 }
 
 workdir=$(mktemp -d)
@@ -42,4 +33,4 @@ mkdir -p "$BUILD_SDK_PATH"
 
 install_libxml2
 install_icu
-install_wasi-sdk
+install_wasi-libc

@@ -71,7 +71,7 @@ ToolChain::InvocationInfo toolchains::WebAssembly::constructInvocation(
 
 ToolChain::InvocationInfo
 toolchains::WebAssembly::constructInvocation(const DynamicLinkJobAction &job,
-                                         const JobContext &context) const {
+                                             const JobContext &context) const {
   assert(context.Output.getPrimaryOutputType() == file_types::TY_Image &&
          "Invalid linker output type.");
 
@@ -132,8 +132,10 @@ toolchains::WebAssembly::constructInvocation(const DynamicLinkJobAction &job,
   addInputsOfType(Arguments, context.InputActions, file_types::TY_LLVM_BC);
 
   if (!context.OI.SDKPath.empty()) {
+    llvm::SmallString<261> SysrootPath(context.OI.SDKPath);
+    llvm::sys::path::append(SysrootPath, "usr");
     Arguments.push_back("--sysroot");
-    Arguments.push_back(context.Args.MakeArgString(context.OI.SDKPath));
+    Arguments.push_back(context.Args.MakeArgString(SysrootPath));
   }
 
   // Add any autolinking scripts to the arguments
@@ -152,8 +154,7 @@ toolchains::WebAssembly::constructInvocation(const DynamicLinkJobAction &job,
   // Link the standard library. In two paths, we do this using a .lnk file;
   // if we're going that route, we'll set `linkFilePath` to the path to that
   // file.
-  SmallString<128> linkFilePath;
-  getResourceDirPath(linkFilePath, context.Args, /*Shared=*/false);
+  SmallString<128> linkFilePath = SharedResourceDirPath;
   llvm::sys::path::append(linkFilePath, "static-executable-args.lnk");
 
   auto linkFile = linkFilePath.str();

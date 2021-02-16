@@ -126,7 +126,7 @@ void CompilerInvocation::setDefaultPrebuiltCacheIfNecessary() {
 }
 
 static void updateRuntimeLibraryPaths(SearchPathOptions &SearchPathOpts,
-                                      llvm::Triple &Triple) {
+                                      llvm::Triple &Triple, bool shared) {
   llvm::SmallString<128> LibPath(SearchPathOpts.RuntimeResourcePath);
 
   StringRef LibSubDir = getPlatformNameForTriple(Triple);
@@ -164,9 +164,10 @@ static void updateRuntimeLibraryPaths(SearchPathOptions &SearchPathOpts,
     }
 
     LibPath = SearchPathOpts.SDKPath;
-    llvm::sys::path::append(LibPath, "usr", "lib", "swift");
+    llvm::sys::path::append(LibPath, "usr", "lib", shared ? "swift" : "swift_static");
     if (!Triple.isOSDarwin()) {
       llvm::sys::path::append(LibPath, getPlatformNameForTriple(Triple));
+      SearchPathOpts.RuntimeLibraryImportPaths.push_back(std::string(LibPath.str()));
       llvm::sys::path::append(LibPath, swift::getMajorArchitectureName(Triple));
     }
     SearchPathOpts.RuntimeLibraryImportPaths.push_back(std::string(LibPath.str()));
@@ -223,7 +224,7 @@ setBridgingHeaderFromFrontendOptions(ClangImporterOptions &ImporterOpts,
 
 void CompilerInvocation::setRuntimeResourcePath(StringRef Path) {
   SearchPathOpts.RuntimeResourcePath = Path.str();
-  updateRuntimeLibraryPaths(SearchPathOpts, LangOpts.Target);
+  updateRuntimeLibraryPaths(SearchPathOpts, LangOpts.Target, FrontendOpts.UseSharedResourceFolder);
 }
 
 void CompilerInvocation::setTargetTriple(StringRef Triple) {
@@ -232,12 +233,12 @@ void CompilerInvocation::setTargetTriple(StringRef Triple) {
 
 void CompilerInvocation::setTargetTriple(const llvm::Triple &Triple) {
   LangOpts.setTarget(Triple);
-  updateRuntimeLibraryPaths(SearchPathOpts, LangOpts.Target);
+  updateRuntimeLibraryPaths(SearchPathOpts, LangOpts.Target, FrontendOpts.UseSharedResourceFolder);
 }
 
 void CompilerInvocation::setSDKPath(const std::string &Path) {
   SearchPathOpts.SDKPath = Path;
-  updateRuntimeLibraryPaths(SearchPathOpts, LangOpts.Target);
+  updateRuntimeLibraryPaths(SearchPathOpts, LangOpts.Target, FrontendOpts.UseSharedResourceFolder);
 }
 
 static bool ParseFrontendArgs(
@@ -1880,7 +1881,7 @@ bool CompilerInvocation::parseArgs(
     return true;
   }
 
-  updateRuntimeLibraryPaths(SearchPathOpts, LangOpts.Target);
+  updateRuntimeLibraryPaths(SearchPathOpts, LangOpts.Target, FrontendOpts.UseSharedResourceFolder);
   setDefaultPrebuiltCacheIfNecessary();
 
   // Now that we've parsed everything, setup some inter-option-dependent state.

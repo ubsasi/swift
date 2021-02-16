@@ -381,7 +381,7 @@ internal var _ignore = _UnsupportedPlatformError()
 // semaphore.h
 //===----------------------------------------------------------------------===//
 
-#if !os(Windows) 
+#if !os(Windows) && !os(WASI)
 
 #if os(OpenBSD)
 public typealias Semaphore = UnsafeMutablePointer<sem_t?>
@@ -394,7 +394,7 @@ public var SEM_FAILED: Semaphore? {
 #if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
   // The value is ABI.  Value verified to be correct for OS X, iOS, watchOS, tvOS.
   return Semaphore(bitPattern: -1)
-#elseif os(Linux) || os(FreeBSD) || os(OpenBSD) || os(PS4) || os(Android) || os(Cygwin) || os(Haiku) || os(WASI)
+#elseif os(Linux) || os(FreeBSD) || os(OpenBSD) || os(PS4) || os(Android) || os(Cygwin) || os(Haiku)
   // The value is ABI.  Value verified to be correct on Glibc.
   return Semaphore(bitPattern: 0)
 #else
