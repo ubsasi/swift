@@ -4,27 +4,27 @@ set -ex
 SOURCE_PATH="$(cd "$(dirname "$0")/../../.." && pwd)"
 UTILS_PATH="$(cd "$(dirname "$0")" && pwd)"
 
-WASI_SDK_PATH=$SOURCE_PATH/wasi-sdk
+BUILD_SDK_PATH="$SOURCE_PATH/build-sdk"
+WASI_SDK_PATH="$BUILD_SDK_PATH/wasi-sdk"
+WASI_SYSROOT_PATH="$WASI_SDK_PATH/share/wasi-sysroot"
 
 case $(uname -s) in
   Darwin)
-    OS_SUFFIX=macos_x86_64
+    OS_SUFFIX=macos_$(uname -m)
     HOST_PRESET=webassembly-host-install
-    TARGET_PRESET=webassembly-macos-target-install
-    HOST_SUFFIX=macosx-x86_64
+    HOST_SUFFIX=macosx-$(uname -m)
   ;;
   Linux)
     if [ "$(grep RELEASE /etc/lsb-release)" == "DISTRIB_RELEASE=18.04" ]; then
-      OS_SUFFIX=ubuntu18.04_x86_64
+      OS_SUFFIX=ubuntu18.04_$(uname -m)
     elif [ "$(grep RELEASE /etc/lsb-release)" == "DISTRIB_RELEASE=20.04" ]; then
-      OS_SUFFIX=ubuntu20.04_x86_64
+      OS_SUFFIX=ubuntu20.04_$(uname -m)
     else
       echo "Unknown Ubuntu version"
       exit 1
     fi
     HOST_PRESET=webassembly-linux-host-install
-    TARGET_PRESET=webassembly-linux-target-install
-    HOST_SUFFIX=linux-x86_64
+    HOST_SUFFIX=linux-$(uname -m)
   ;;
   *)
     echo "Unrecognised platform $(uname -s)"
@@ -32,31 +32,36 @@ case $(uname -s) in
   ;;
 esac
 
+BUILD_HOST_TOOLCHAIN=1
+
+while [ $# -ne 0 ]; do
+  case "$1" in
+    --skip-build-host-toolchain)
+    BUILD_HOST_TOOLCHAIN=0
+  ;;
+  *)
+    echo "Unrecognised argument \"$1\""
+    exit 1
+  ;;
+  esac
+  shift
+done
+
 YEAR=$(date +"%Y")
 MONTH=$(date +"%m")
 DAY=$(date +"%d")
-TOOLCHAIN_VERSION="${YEAR}${MONTH}${DAY}"
 TOOLCHAIN_NAME="swift-wasm-5.4-SNAPSHOT-${YEAR}-${MONTH}-${DAY}-a"
 
 PACKAGE_ARTIFACT="$SOURCE_PATH/swift-wasm-5.4-SNAPSHOT-${OS_SUFFIX}.tar.gz"
 
-BUNDLE_IDENTIFIER="swiftwasm.5.4-${YEAR}${MONTH}${DAY}"
-DISPLAY_NAME_SHORT="Swift for WebAssembly 5.4 Snapshot"
-DISPLAY_NAME="${DISPLAY_NAME_SHORT} ${YEAR}-${MONTH}-${DAY}"
-
-DIST_TOOLCHAIN_DESTDIR=$SOURCE_PATH/dist-toolchain-sdk
 HOST_TOOLCHAIN_DESTDIR=$SOURCE_PATH/host-toolchain-sdk
-TARGET_TOOLCHAIN_DESTDIR=$SOURCE_PATH/target-toolchain-sdk
-
+DIST_TOOLCHAIN_DESTDIR=$SOURCE_PATH/dist-toolchain-sdk
 DIST_TOOLCHAIN_SDK=$DIST_TOOLCHAIN_DESTDIR/$TOOLCHAIN_NAME
-HOST_TOOLCHAIN_SDK=$HOST_TOOLCHAIN_DESTDIR/$TOOLCHAIN_NAME
-TARGET_TOOLCHAIN_SDK=$TARGET_TOOLCHAIN_DESTDIR/$TOOLCHAIN_NAME
 
 
 HOST_BUILD_ROOT=$SOURCE_PATH/host-build
 TARGET_BUILD_ROOT=$SOURCE_PATH/target-build
 HOST_BUILD_DIR=$HOST_BUILD_ROOT/Ninja-Release
-TARGET_BUILD_DIR=$TARGET_BUILD_ROOT/Ninja-Release
 
 build_host_toolchain() {
   # Build the host toolchain and SDK first.
@@ -65,54 +70,73 @@ build_host_toolchain() {
     --preset-file="$UTILS_PATH/build-presets.ini" \
     --preset=$HOST_PRESET \
     --build-dir="$HOST_BUILD_DIR" \
+    HOST_ARCHITECTURE="$(uname -m)" \
     INSTALL_DESTDIR="$HOST_TOOLCHAIN_DESTDIR" \
-    TOOLCHAIN_NAME="$TOOLCHAIN_NAME" \
-    C_CXX_LAUNCHER="$(which sccache)"
+    TOOLCHAIN_NAME="$TOOLCHAIN_NAME"
 }
 
 build_target_toolchain() {
-  mkdir -p "$HOST_BUILD_DIR/"
-  # Copy the host build dir to reuse it.
-  if [[ ! -e "$HOST_BUILD_DIR/llvm-$HOST_SUFFIX" ]]; then
-    cp -r "$HOST_BUILD_DIR/llvm-$HOST_SUFFIX" "$TARGET_BUILD_DIR/llvm-$HOST_SUFFIX"
-    # Clean up compiler-rt dir to cross compile it for host and wasm32
-    (cd "$TARGET_BUILD_DIR/llvm-$HOST_SUFFIX" && ninja compiler-rt-clear)
-  fi
 
-  # build the cross-compilled toolchain
-  env SWIFT_BUILD_ROOT="$TARGET_BUILD_ROOT" \
-    "$SOURCE_PATH/swift/utils/build-script" \
-    --preset-file="$UTILS_PATH/build-presets.ini" \
-    --preset=$TARGET_PRESET \
-    --build-dir="$TARGET_BUILD_DIR" \
-    INSTALL_DESTDIR="$TARGET_TOOLCHAIN_DESTDIR" \
-    SOURCE_PATH="$SOURCE_PATH" \
-    BUNDLE_IDENTIFIER="${BUNDLE_IDENTIFIER}" \
-    DISPLAY_NAME="${DISPLAY_NAME}" \
-    DISPLAY_NAME_SHORT="${DISPLAY_NAME_SHORT}" \
-    TOOLCHAIN_NAME="${TOOLCHAIN_NAME}" \
-    TOOLCHAIN_VERSION="${TOOLCHAIN_VERSION}" \
-    LLVM_BIN_DIR="${HOST_TOOLCHAIN_SDK}/usr/bin" \
-    C_CXX_LAUNCHER="$(which sccache)"
+  COMPILER_RT_BUILD_DIR="$TARGET_BUILD_ROOT/compiler-rt-wasi-wasm32"
+  cmake -B "$COMPILER_RT_BUILD_DIR" \
+    -D CMAKE_TOOLCHAIN_FILE="$SOURCE_PATH/swift/utils/webassembly/compiler-rt-cache.cmake" \
+    -D CMAKE_BUILD_TYPE=Release \
+    -D CMAKE_C_COMPILER="$HOST_BUILD_DIR/llvm-$HOST_SUFFIX/bin/clang" \
+    -D CMAKE_CXX_COMPILER="$HOST_BUILD_DIR/llvm-$HOST_SUFFIX/bin/clang++" \
+    -D CMAKE_RANLIB="$HOST_BUILD_DIR/llvm-$HOST_SUFFIX/bin/llvm-ranlib" \
+    -D CMAKE_AR="$HOST_BUILD_DIR/llvm-$HOST_SUFFIX/bin/llvm-ar" \
+    -D CMAKE_C_COMPILER_LAUNCHER="$(which sccache)" \
+    -D CMAKE_CXX_COMPILER_LAUNCHER="$(which sccache)" \
+    -D CMAKE_INSTALL_PREFIX="$DIST_TOOLCHAIN_SDK/usr/lib/clang/10.0.0/" \
+    -D CMAKE_SYSROOT="${WASI_SYSROOT_PATH}" \
+    -G Ninja \
+    -S "$SOURCE_PATH/llvm-project/compiler-rt"
 
-  "$UTILS_PATH/build-foundation.sh" "$TARGET_TOOLCHAIN_SDK"
-  "$UTILS_PATH/build-xctest.sh" "$TARGET_TOOLCHAIN_SDK"
+  ninja install -C "$COMPILER_RT_BUILD_DIR"
+
+  SWIFT_STDLIB_BUILD_DIR="$TARGET_BUILD_ROOT/swift-stdlib-wasi-wasm32"
+  cmake -B "$TARGET_BUILD_ROOT/swift-stdlib-wasi-wasm32" \
+    -C "$SOURCE_PATH/swift/cmake/caches/Runtime-WASI-wasm32.cmake" \
+    -D CMAKE_BUILD_TYPE=Release \
+    -D CMAKE_C_COMPILER="$HOST_BUILD_DIR/llvm-$HOST_SUFFIX/bin/clang" \
+    -D CMAKE_CXX_COMPILER="$HOST_BUILD_DIR/llvm-$HOST_SUFFIX/bin/clang++" \
+    -D CMAKE_RANLIB="$HOST_BUILD_DIR/llvm-$HOST_SUFFIX/bin/llvm-ranlib" \
+    -D CMAKE_AR="$HOST_BUILD_DIR/llvm-$HOST_SUFFIX/bin/llvm-ar" \
+    -D CMAKE_C_COMPILER_LAUNCHER="$(which sccache)" \
+    -D CMAKE_CXX_COMPILER_LAUNCHER="$(which sccache)" \
+    -D CMAKE_INSTALL_PREFIX="$DIST_TOOLCHAIN_SDK/usr" \
+    -D LLVM_DIR="$HOST_BUILD_DIR/llvm-$HOST_SUFFIX/lib/cmake/llvm/" \
+    -D SWIFT_NATIVE_SWIFT_TOOLS_PATH="$HOST_BUILD_DIR/swift-$HOST_SUFFIX/bin" \
+    -D SWIFT_WASI_SYSROOT_PATH="$WASI_SYSROOT_PATH" \
+    -D SWIFT_WASI_wasm32_ICU_UC_INCLUDE="$BUILD_SDK_PATH/icu/include" \
+    -D SWIFT_WASI_wasm32_ICU_UC="$BUILD_SDK_PATH/icu/lib/libicuuc.a" \
+    -D SWIFT_WASI_wasm32_ICU_I18N_INCLUDE="$BUILD_SDK_PATH/icu/include" \
+    -D SWIFT_WASI_wasm32_ICU_I18N="$BUILD_SDK_PATH/icu/lib/libicui18n.a" \
+    -D SWIFT_WASI_wasm32_ICU_DATA="$BUILD_SDK_PATH/icu/lib/libicudata.a" \
+    -G Ninja \
+    -S "$SOURCE_PATH/swift"
+
+  ninja install -C "$SWIFT_STDLIB_BUILD_DIR"
+
+  # Copy tool binaries in target build dir to test stdlib
+  rsync -a "$HOST_BUILD_DIR/llvm-$HOST_SUFFIX/bin/" "$SWIFT_STDLIB_BUILD_DIR/bin/"
+  rsync -a "$HOST_BUILD_DIR/swift-$HOST_SUFFIX/bin/" "$SWIFT_STDLIB_BUILD_DIR/bin/"
+
+  # Link compiler-rt libs to stdlib build dir
+  mkdir -p "$SWIFT_STDLIB_BUILD_DIR/lib/clang/10.0.0/"
+  ln -fs "$COMPILER_RT_BUILD_DIR/lib" "$SWIFT_STDLIB_BUILD_DIR/lib/clang/10.0.0/lib"
+
+  # Remove host CoreFoundation module directory to avoid module conflict
+  # while building Foundation
+  rm -rf "$DIST_TOOLCHAIN_SDK/usr/lib/swift_static/CoreFoundation"
+  "$UTILS_PATH/build-foundation.sh" "$DIST_TOOLCHAIN_SDK" "$WASI_SYSROOT_PATH"
+  "$UTILS_PATH/build-xctest.sh" "$DIST_TOOLCHAIN_SDK" "$WASI_SYSROOT_PATH"
 
 }
 
-merge_toolchains() {
-  rm -rf "$DIST_TOOLCHAIN_DESTDIR"
-  # Copy the base host toolchain
-  cp -r "$HOST_TOOLCHAIN_DESTDIR" "$DIST_TOOLCHAIN_DESTDIR"
-
+embed_wasi_sysroot() {
   # Merge wasi-sdk and the toolchain
   cp -r "$WASI_SDK_PATH/share/wasi-sysroot" "$DIST_TOOLCHAIN_SDK/usr/share"
-
-  # Copy the target environment stdlib into the toolchain
-  # Avoid copying usr/lib/swift/clang because our toolchain's one is a directory
-  # but nightly's one is symbolic link. A simple copy fails to merge them.
-  rsync -v -a "$TARGET_TOOLCHAIN_SDK/usr/lib/" "$DIST_TOOLCHAIN_SDK/usr/lib/" --exclude 'swift/clang'
-  rsync -v -a "$TARGET_TOOLCHAIN_SDK/usr/bin/" "$DIST_TOOLCHAIN_SDK/usr/bin/"
 
   # Replace absolute sysroot path with relative path
   sed -i.bak -e "s@\".*/include@\"../../../../share/wasi-sysroot/include@g" "$DIST_TOOLCHAIN_SDK/usr/lib/swift/wasi/wasm32/wasi.modulemap"
@@ -161,10 +185,15 @@ create_darwin_info_plist() {
   chmod a+r "${DARWIN_TOOLCHAIN_INFO_PLIST}"
 }
 
-build_host_toolchain
+if [ ${BUILD_HOST_TOOLCHAIN} -eq 1 ]; then
+  build_host_toolchain
+  rm -rf "$DIST_TOOLCHAIN_DESTDIR"
+  rsync -a "$HOST_TOOLCHAIN_DESTDIR/" "$DIST_TOOLCHAIN_DESTDIR"
+fi
+
 build_target_toolchain
 
-merge_toolchains
+embed_wasi_sysroot
 
 if [[ "$(uname)" == "Darwin" ]]; then
   create_darwin_info_plist
