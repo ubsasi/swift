@@ -5,10 +5,12 @@ on:
     branches:
       - swiftwasm
       - swiftwasm-release/5.3
+      - swiftwasm-release/5.4
   pull_request:
     branches:
       - swiftwasm
       - swiftwasm-release/5.3
+      - swiftwasm-release/5.4
 jobs:
   build_toolchain:
     env:
