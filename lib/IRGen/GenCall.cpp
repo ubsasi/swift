@@ -211,6 +211,7 @@ void IRGenFunction::setupAsync(unsigned asyncContextIndex) {
 llvm::Value *IRGenFunction::getAsyncTask() {
   auto call = Builder.CreateCall(IGM.getGetCurrentTaskFn(), {});
   call->setDoesNotThrow();
+  call->setCallingConv(IGM.SwiftCC);
   return call;
 }
 
