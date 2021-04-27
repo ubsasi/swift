@@ -4253,17 +4253,17 @@ WARNING(no_throw_in_do_with_catch,none,
 //------------------------------------------------------------------------------
 // MARK: Concurrency
 //------------------------------------------------------------------------------
-ERROR(async_call_without_await,none,
-      "call is 'async' but is not marked with 'await'", ())
-ERROR(async_call_without_await_in_autoclosure,none,
-      "call is 'async' in an autoclosure argument that is not marked with 'await'", ())
-ERROR(async_call_without_await_in_async_let,none,
-      "call is 'async' in an 'async let' initializer that is not marked "
-      "with 'await'", ())
-ERROR(async_prop_access_without_await,none,
-      "property access is 'async' but is not marked with 'await'", ())
-ERROR(async_subscript_access_without_await,none,
-      "subscript access is 'async' but is not marked with 'await'", ())
+ERROR(async_expr_without_await,none,
+      "expression is 'async' but is not marked with 'await'", ())
+
+NOTE(async_access_without_await,none,
+    "%select{call|property access|subscript access|}0 is 'async'", (unsigned))
+
+NOTE(async_call_without_await_in_autoclosure,none,
+      "call is 'async' in an autoclosure argument", ())
+NOTE(async_call_without_await_in_async_let,none,
+      "call is 'async' in an 'async let' initializer", ())
+
 WARNING(no_async_in_await,none,
         "no 'async' operations occur within 'await' expression", ())
 ERROR(async_call_in_illegal_context,none,
@@ -4310,8 +4310,8 @@ ERROR(async_let_not_initialized,none,
       "'async let' binding requires an initializer expression", ())
 ERROR(async_let_no_variables,none,
       "'async let' requires at least one named variable", ())
-ERROR(async_let_without_await,none,
-      "reference to async let %0 is not marked with 'await'", (DeclName))
+NOTE(async_let_without_await,none,
+      "reference to async let %0 is 'async'", (DeclName))
 ERROR(async_let_in_illegal_context,none,
       "async let %0 cannot be referenced in "
       "%select{<<ERROR>>|a default argument|a property wrapper initializer|a property initializer|a global variable initializer|an enum case raw value|a catch pattern|a catch guard expression|a defer body}1",
@@ -4426,6 +4426,9 @@ NOTE(actor_isolated_sync_func,none,
 NOTE(actor_mutable_state,none,
      "mutation of this %0 is only permitted within the actor",
      (DescriptiveDeclKind))
+NOTE(actor_isolated_let,none,
+     "use `nonisolated` to allow synchronous access to 'let' from outside "
+     "the actor", ())
 WARNING(shared_mutable_state_access,none,
         "reference to %0 %1 is not concurrency-safe because it involves "
         "shared mutable state", (DescriptiveDeclKind, DeclName))
@@ -4458,13 +4461,12 @@ WARNING(non_concurrent_property_type,none,
 WARNING(non_concurrent_keypath_capture,none,
         "cannot form key path that captures non-sendable type %0",
         (Type))
-WARNING(non_concurrent_keypath_access,none,
-        "cannot form key path that accesses non-sendable type %0",
-        (Type))
 ERROR(non_concurrent_type_member,none,
       "%select{stored property %1|associated value %1}0 of "
       "'Sendable'-conforming %2 %3 has non-sendable type %4",
       (bool, DeclName, DescriptiveDeclKind, DeclName, Type))
+ERROR(non_sendable_nonisolated_let,none,
+      "non-isolated let property %0 has non-Sendable type %1", (DeclName, Type))
 ERROR(concurrent_value_class_mutable_property,none,
       "stored property %0 of 'Sendable'-conforming %1 %2 is mutable",
       (DeclName, DescriptiveDeclKind, DeclName))
@@ -4480,10 +4482,6 @@ ERROR(concurrent_value_inherit,none,
       "%select{| other than 'NSObject'}0",
       (bool, DeclName))
 
-ERROR(actorindependent_let,none,
-      "'@actorIndependent' is meaningless on 'let' declarations because "
-      "they are immutable",
-      ())
 ERROR(actorindependent_mutable_storage,none,
       "'@actorIndependent' can not be applied to stored properties",
       ())
@@ -4491,10 +4489,6 @@ ERROR(actorindependent_local_var,none,
       "'@actorIndependent' can not be applied to local variables",
       ())
 
-ERROR(nonisolated_let,none,
-      "'nonisolated' is meaningless on 'let' declarations because "
-      "they are immutable",
-      ())
 ERROR(nonisolated_mutable_storage,none,
       "nonisolated' can not be applied to stored properties",
       ())

@@ -689,7 +689,8 @@ Type TypeBase::wrapInPointer(PointerTypeKind kind) {
     switch (kind) {
     case PTK_UnsafeMutableRawPointer:
     case PTK_UnsafeRawPointer:
-      llvm_unreachable("these pointer types don't take arguments");
+      // these pointer types don't take arguments.
+      return (NominalTypeDecl*)nullptr;
     case PTK_UnsafePointer:
       return ctx.getUnsafePointerDecl();
     case PTK_UnsafeMutablePointer:
@@ -701,6 +702,10 @@ Type TypeBase::wrapInPointer(PointerTypeKind kind) {
   }());
 
   assert(pointerDecl);
+  // Don't fail hard on null pointerDecl.
+  if (!pointerDecl) {
+    return Type();
+  }
   return BoundGenericType::get(pointerDecl, /*parent*/nullptr, Type(this));
 }
 
@@ -965,6 +970,8 @@ ParameterListInfo::ParameterListInfo(
   propertyWrappers.resize(params.size());
   unsafeSendable.resize(params.size());
   unsafeMainActor.resize(params.size());
+  implicitSelfCapture.resize(params.size());
+  inheritActorContext.resize(params.size());
 
   // No parameter owner means no parameter list means no default arguments
   // - hand back the zeroed bitvector.
@@ -1024,6 +1031,14 @@ ParameterListInfo::ParameterListInfo(
     if (param->getAttrs().hasAttribute<UnsafeMainActorAttr>()) {
       unsafeMainActor.set(i);
     }
+
+    if (param->getAttrs().hasAttribute<ImplicitSelfCaptureAttr>()) {
+      implicitSelfCapture.set(i);
+    }
+
+    if (param->getAttrs().hasAttribute<InheritActorContextAttr>()) {
+      inheritActorContext.set(i);
+    }
   }
 }
 
@@ -1052,6 +1067,23 @@ bool ParameterListInfo::isUnsafeMainActor(unsigned paramIdx) const {
   return paramIdx < unsafeMainActor.size()
       ? unsafeMainActor[paramIdx]
       : false;
+}
+
+bool ParameterListInfo::isImplicitSelfCapture(unsigned paramIdx) const {
+  return paramIdx < implicitSelfCapture.size()
+      ? implicitSelfCapture[paramIdx]
+      : false;
+}
+
+bool ParameterListInfo::inheritsActorContext(unsigned paramIdx) const {
+  return paramIdx < inheritActorContext.size()
+      ? inheritActorContext[paramIdx]
+      : false;
+}
+
+bool ParameterListInfo::anyContextualInfo() const {
+  return unsafeSendable.any() || unsafeMainActor.any() ||
+      implicitSelfCapture.any() || inheritActorContext.any();
 }
 
 /// Turn a param list into a symbolic and printable representation that does not

@@ -1310,9 +1310,9 @@ ConstraintSystem::TypeMatchResult constraints::matchCallArguments(
     }
 
     selectedTrailingMatching = callArgumentMatch->trailingClosureMatching;
-    // Record the direction of matching used for this call.
-    cs.recordTrailingClosureMatch(cs.getConstraintLocator(locator),
-                                  selectedTrailingMatching);
+    // Record the matching direction and parameter bindings used for this call.
+    cs.recordMatchCallArgumentResult(cs.getConstraintLocator(locator),
+                                     *callArgumentMatch);
 
     // If there was a disjunction because both forward and backward were
     // possible, increase the score for forward matches to bias toward the
@@ -4778,14 +4778,14 @@ bool ConstraintSystem::repairFailures(
     // truth and produce a contextual mismatch instead of  per-branch failure,
     // because it's a better pointer than potential then-to-else type mismatch.
     if (auto contextualType = getContextualType(anchor)) {
+      auto purpose = getContextualTypePurpose(anchor);
       if (contextualType->isEqual(rhs)) {
-        auto *loc =
-            getConstraintLocator(anchor, LocatorPathElt::ContextualType());
+        auto *loc = getConstraintLocator(
+            anchor, LocatorPathElt::ContextualType(purpose));
         if (hasFixFor(loc, FixKind::ContextualMismatch))
           return true;
 
-        if (contextualType->isVoid() &&
-            getContextualTypePurpose(anchor) == CTP_ReturnStmt) {
+        if (contextualType->isVoid() && purpose == CTP_ReturnStmt) {
           conversionsOrFixes.push_back(RemoveReturn::create(*this, lhs, loc));
           break;
         }
@@ -5749,12 +5749,8 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
       }
 
       // Single expression function with implicit `return`.
-      if (elt->is<LocatorPathElt::ContextualType>()) {
-        auto anchor = locator.getAnchor();
-        auto contextualInfo = getContextualTypeInfo(anchor);
-        assert(contextualInfo &&
-               "Found contextual type locator without additional information");
-        if (contextualInfo->purpose == CTP_ReturnSingleExpr) {
+      if (auto contextualType = elt->getAs<LocatorPathElt::ContextualType>()) {
+        if (contextualType->isFor(CTP_ReturnSingleExpr)) {
           increaseScore(SK_FunctionConversion);
           return getTypeMatchSuccess();
         }
@@ -6130,7 +6126,8 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyConformsToConstraint(
     if (auto *Nil = getAsExpr<NilLiteralExpr>(anchor)) {
       auto *fixLocator = getConstraintLocator(
           getContextualType(Nil)
-              ? locator.withPathElement(LocatorPathElt::ContextualType())
+              ? locator.withPathElement(LocatorPathElt::ContextualType(
+                    getContextualTypePurpose(Nil)))
               : locator);
 
       // Here the roles are reversed - `nil` is something we are trying to
@@ -9939,10 +9936,10 @@ ConstraintSystem::simplifyApplicableFnConstraint(
   // have an explicit inout argument.
   if (type1.getPointer() == desugar2) {
     if (!isOperator || !hasInOut()) {
-      recordTrailingClosureMatch(
+      recordMatchCallArgumentResult(
           getConstraintLocator(
               outerLocator.withPathElement(ConstraintLocator::ApplyArgument)),
-          TrailingClosureMatching::Forward);
+          MatchCallArgumentResult::forArity(func1->getNumParams()));
       return SolutionKind::Solved;
     }
   }
@@ -11087,6 +11084,12 @@ void ConstraintSystem::recordPotentialHole(Type type) {
   });
 }
 
+void ConstraintSystem::recordMatchCallArgumentResult(
+    ConstraintLocator *locator, MatchCallArgumentResult result) {
+  assert(locator->isLastElement<LocatorPathElt::ApplyArgument>());
+  argumentMatchingChoices.push_back({locator, result});
+}
+
 ConstraintSystem::SolutionKind ConstraintSystem::simplifyFixConstraint(
     ConstraintFix *fix, Type type1, Type type2, ConstraintKind matchKind,
     TypeMatchOptions flags, ConstraintLocatorBuilder locator) {
@@ -11780,7 +11783,7 @@ void ConstraintSystem::addContextualConversionConstraint(
 
   // Add the constraint.
   auto *convertTypeLocator =
-      getConstraintLocator(expr, LocatorPathElt::ContextualType());
+      getConstraintLocator(expr, LocatorPathElt::ContextualType(purpose));
   addConstraint(constraintKind, getType(expr), conversionType,
                 convertTypeLocator, /*isFavored*/ true);
 }
