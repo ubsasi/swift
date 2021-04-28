@@ -14,7 +14,7 @@ on:
 jobs:
   build_toolchain:
     env:
-      TOOLCHAIN_CHANNEL: DEVELOPMENT
+      TOOLCHAIN_CHANNEL: 5.5
     strategy:
       matrix:
         include:
