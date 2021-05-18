@@ -577,8 +577,10 @@ ConstraintSystem::determineBestBindings() {
 
     return bindings || !bindings.Defaults.empty() ||
            llvm::any_of(bindings.Protocols, [&](Constraint *constraint) {
-             return bool(
-                 TypeChecker::getDefaultType(constraint->getProtocol(), DC));
+             return constraint->getKind() ==
+                        ConstraintKind::LiteralConformsTo &&
+                    bool(TypeChecker::getDefaultType(constraint->getProtocol(),
+                                                     DC));
            });
   };
 
@@ -1303,6 +1305,13 @@ bool TypeVarBindingProducer::computeNext() {
         addNewBinding(binding.withSameSource(altType, BindingKind::Subtypes));
       }
     }
+
+    // There is a tailored fix for optional key path root references,
+    // let's not create ambiguity by attempting unwrap when it's
+    // not allowed.
+    if (binding.Kind != BindingKind::Subtypes &&
+        getLocator()->isKeyPathRoot() && type->getOptionalObjectType())
+      continue;
 
     // Allow solving for T even for a binding kind where that's invalid
     // if fixes are allowed, because that gives us the opportunity to
