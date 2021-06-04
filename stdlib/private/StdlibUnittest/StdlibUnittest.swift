@@ -1577,7 +1577,7 @@ class _ParentProcess {
             continue
           }
 
-          switch runOneTest(
+          switch await runOneTestAsync(
             fullTestName: fullTestName,
             testSuite: testSuite,
             test: t,
