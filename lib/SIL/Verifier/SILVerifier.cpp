@@ -1213,21 +1213,6 @@ public:
           DebugVars[ArgNo] = VarInfo->Name;
       }
     }
-
-    // Regular locations are allowed on all instructions.
-    if (LocKind == SILLocation::RegularKind)
-      return;
-
-    if (LocKind == SILLocation::ReturnKind ||
-        LocKind == SILLocation::ImplicitReturnKind)
-      require(InstKind == SILInstructionKind::BranchInst ||
-              InstKind == SILInstructionKind::ReturnInst ||
-              InstKind == SILInstructionKind::UnreachableInst,
-        "return locations are only allowed on branch and return instructions");
-
-    if (LocKind == SILLocation::ArtificialUnreachableKind)
-      require(InstKind == SILInstructionKind::UnreachableInst,
-        "artificial locations are only allowed on Unreachable instructions");
   }
 
   /// Check that the types of this value producer are all legal in the function
