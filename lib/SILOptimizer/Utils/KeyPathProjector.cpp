@@ -239,7 +239,7 @@ public:
       auto ref = builder.createFunctionRef(loc, getter);
 
       std::vector<SILValue> args{addr, parentValue};
-      // FIXME(wasm): For wasm, KeyPath getter always take indices parameter
+      // FIXME(wasm): For wasm, KeyPath getter always takes indices parameter
       // to match callee and caller signature. So need to pass stub pointer.
       // See also: getOrCreateKeyPathSetter and getOrCreateKeyPathGetter
       if (builder.getASTContext().LangOpts.Target.isOSBinFormatWasm()) {
