@@ -39,6 +39,12 @@ struct SymbolGraphOptions {
   /// Whether to print informational messages when rendering
   /// a symbol graph.
   bool PrintMessages;
+  
+  /// Whether to skip docs for symbols with compound, "SYNTHESIZED" USRs.
+  bool SkipInheritedDocs;
+
+  /// Whether to emit symbols with SPI information.
+  bool IncludeSPISymbols;
 };
 
 } // end namespace symbolgraphgen

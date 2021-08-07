@@ -251,6 +251,9 @@ bool ArgsToFrontendOptionsConverter::convert(
   if (const Arg *A = Args.getLastArg(OPT_emit_symbol_graph_dir)) {
     Opts.SymbolGraphOutputDir = A->getValue();
   }
+  
+  Opts.SkipInheritedDocs = Args.hasArg(OPT_skip_inherited_docs);
+  Opts.IncludeSPISymbolsInSymbolGraph = Args.hasArg(OPT_include_spi_symbols);
 
   return false;
 }

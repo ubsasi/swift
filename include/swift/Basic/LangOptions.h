@@ -90,6 +90,16 @@ namespace swift {
     /// performed.
     llvm::Optional<llvm::Triple> TargetVariant;
 
+    /// The target triple to instantiate the internal clang instance.
+    /// When not specified, the compiler will use the value of -target to
+    /// instantiate the clang instance.
+    /// This is mainly used to avoid lowering the target triple to use for clang when
+    /// importing a .swiftinterface whose -target value may be different from
+    /// the loading module.
+    /// The lowering triple may result in multiple versions of the same Clang
+    /// modules being built.
+    llvm::Optional<llvm::Triple> ClangTarget;
+
     /// The SDK version, if known.
     Optional<llvm::VersionTuple> SDKVersion;
 
@@ -114,6 +124,9 @@ namespace swift {
 
     /// Should conformance availability violations be diagnosed as errors?
     bool EnableConformanceAvailabilityErrors = false;
+
+    /// Should potential unavailability on enum cases be downgraded to a warning?
+    bool WarnOnPotentiallyUnavailableEnumCase = false;
 
     /// Maximum number of typo corrections we are allowed to perform.
     /// This is disabled by default until we can get typo-correction working within acceptable performance bounds.
@@ -275,7 +288,7 @@ namespace swift {
 
     /// Disable the implicit import of the _Concurrency module.
     bool DisableImplicitConcurrencyModuleImport =
-        !SWIFT_ENABLE_EXPERIMENTAL_CONCURRENCY;
+        !SWIFT_IMPLICIT_CONCURRENCY_IMPORT;
 
     /// Should we check the target OSs of serialized modules to see that they're
     /// new enough?

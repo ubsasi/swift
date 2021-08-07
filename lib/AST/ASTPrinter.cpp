@@ -121,6 +121,8 @@ PrintOptions PrintOptions::printSwiftInterfaceFile(ModuleDecl *ModuleToPrint,
   result.PrintIfConfig = false;
   result.CurrentModule = ModuleToPrint;
   result.FullyQualifiedTypes = true;
+  result.FullyQualifiedTypesIfAmbiguous = true;
+  result.FullyQualifiedExtendedTypesIfAmbiguous = true;
   result.UseExportedModuleNames = true;
   result.AllowNullTypes = false;
   result.SkipImports = true;
@@ -755,7 +757,7 @@ class PrintAST : public ASTVisitor<PrintAST> {
   void printType(Type T) { printTypeWithOptions(T, Options); }
 
   void printTransformedTypeWithOptions(Type T, PrintOptions options) {
-    if (CurrentType && Current) {
+    if (CurrentType && Current && CurrentType->mayHaveMembers()) {
       if (T->hasArchetype()) {
         // Get the interface type, since TypeLocs still have
         // contextual types in them.
@@ -917,6 +919,7 @@ private:
   void printSynthesizedExtension(Type ExtendedType, ExtensionDecl *ExtDecl);
 
   void printExtension(ExtensionDecl* ExtDecl);
+  void printExtendedTypeName(TypeLoc ExtendedTypeLoc);
 
 public:
   PrintAST(ASTPrinter &Printer, const PrintOptions &Options)
@@ -1001,18 +1004,6 @@ public:
     ASTVisitor::visit(D);
 
     if (haveFeatureChecks) {
-      // If we guarded a marker protocol, print an alternative typealias
-      // for Any.
-      if (auto proto = dyn_cast<ProtocolDecl>(D)) {
-        if (proto->isMarkerProtocol()) {
-          Printer.printNewline();
-          Printer << "#else";
-          Printer.printNewline();
-          printAccess(proto);
-          Printer << "typealias " << proto->getName() << " = Any";
-        }
-      }
-
       printCompatibilityFeatureChecksPost(Printer);
     }
 
@@ -1821,7 +1812,7 @@ bool ShouldPrintChecker::shouldPrint(const Decl *D,
     auto Ext = cast<ExtensionDecl>(D);
     // If the extension doesn't add protocols or has no members that we should
     // print then skip printing it.
-    SmallVector<TypeLoc, 8> ProtocolsToPrint;
+    SmallVector<InheritedEntry, 8> ProtocolsToPrint;
     getInheritedForPrinting(Ext, Options, ProtocolsToPrint);
     if (ProtocolsToPrint.empty()) {
       bool HasMemberToPrint = false;
@@ -2239,15 +2230,18 @@ void PrintAST::printInherited(const Decl *decl) {
   if (!Options.PrintInherited) {
     return;
   }
-  SmallVector<TypeLoc, 6> TypesToPrint;
+  SmallVector<InheritedEntry, 6> TypesToPrint;
   getInheritedForPrinting(decl, Options, TypesToPrint);
   if (TypesToPrint.empty())
     return;
 
   Printer << " : ";
 
-  interleave(TypesToPrint, [&](TypeLoc TL) {
-    printTypeLoc(TL);
+  interleave(TypesToPrint, [&](InheritedEntry inherited) {
+    if (inherited.isUnchecked)
+      Printer << "@unchecked ";
+
+    printTypeLoc(inherited);
   }, [&]() {
     Printer << ", ";
   });
@@ -2335,15 +2329,18 @@ void PrintAST::visitImportDecl(ImportDecl *decl) {
                    [&] { Printer << "."; });
 }
 
-static void printExtendedTypeName(Type ExtendedType, ASTPrinter &Printer,
-                                  PrintOptions Options) {
-  Options.FullyQualifiedTypes = false;
-  Options.FullyQualifiedTypesIfAmbiguous = false;
+void PrintAST::printExtendedTypeName(TypeLoc ExtendedTypeLoc) {
+  bool OldFullyQualifiedTypesIfAmbiguous =
+    Options.FullyQualifiedTypesIfAmbiguous;
+  Options.FullyQualifiedTypesIfAmbiguous =
+    Options.FullyQualifiedExtendedTypesIfAmbiguous;
+  SWIFT_DEFER {
+    Options.FullyQualifiedTypesIfAmbiguous = OldFullyQualifiedTypesIfAmbiguous;
+  };
 
   // Strip off generic arguments, if any.
-  auto Ty = ExtendedType->getAnyNominal()->getDeclaredType();
-
-  Ty->print(Printer, Options);
+  auto Ty = ExtendedTypeLoc.getType()->getAnyNominal()->getDeclaredType();
+  printTypeLoc(TypeLoc(ExtendedTypeLoc.getTypeRepr(), Ty));
 }
 
 
@@ -2401,7 +2398,7 @@ void PrintAST::printSynthesizedExtension(Type ExtendedType,
     printAttributes(ExtDecl);
     Printer << tok::kw_extension << " ";
 
-    printExtendedTypeName(ExtendedType, Printer, Options);
+    printExtendedTypeName(TypeLoc::withoutLoc(ExtendedType));
     printInherited(ExtDecl);
 
     // We may need to combine requirements from ExtDecl (which has the members
@@ -2452,7 +2449,7 @@ void PrintAST::printExtension(ExtensionDecl *decl) {
         printTypeLoc(TypeLoc::withoutLoc(extendedType));
         return;
       }
-      printExtendedTypeName(extendedType, Printer, Options);
+      printExtendedTypeName(TypeLoc(decl->getExtendedTypeRepr(), extendedType));
     });
     printInherited(decl);
 
@@ -2478,6 +2475,12 @@ void PrintAST::printExtension(ExtensionDecl *decl) {
 /// usesFeatureNNN functions correspond to the features in Features.def.
 
 static bool usesFeatureStaticAssert(Decl *decl) {
+  return false;
+}
+
+static bool usesFeatureEffectfulProp(Decl *decl) {
+  if (auto asd = dyn_cast<AbstractStorageDecl>(decl))
+    return asd->getEffectfulGetAccessor() != nullptr;
   return false;
 }
 
@@ -2508,60 +2511,6 @@ static bool usesFeatureAsyncAwait(Decl *decl) {
 }
 
 static bool usesFeatureMarkerProtocol(Decl *decl) {
-  // Check an inheritance clause for a marker protocol.
-  auto checkInherited = [&](ArrayRef<TypeLoc> inherited) -> bool {
-    for (const auto &inheritedEntry : inherited) {
-      if (auto inheritedType = inheritedEntry.getType()) {
-        if (inheritedType->isExistentialType()) {
-          auto layout = inheritedType->getExistentialLayout();
-          for (ProtocolType *protoTy : layout.getProtocols()) {
-            if (protoTy->getDecl()->isMarkerProtocol())
-              return true;
-          }
-        }
-      }
-    }
-
-    return false;
-  };
-
-  // Check generic requirements for a marker protocol.
-  auto checkRequirements = [&](ArrayRef<Requirement> requirements) -> bool {
-    for (const auto &req: requirements) {
-      if (req.getKind() == RequirementKind::Conformance &&
-          req.getSecondType()->castTo<ProtocolType>()->getDecl()
-              ->isMarkerProtocol())
-        return true;
-    }
-
-    return false;
-  };
-
-  if (auto proto = dyn_cast<ProtocolDecl>(decl)) {
-    if (proto->isMarkerProtocol())
-      return true;
-
-    // Swift.Error and Swift.CodingKey "don't" use the marker protocol.
-    if (proto->isSpecificProtocol(KnownProtocolKind::Error) ||
-        proto->isSpecificProtocol(KnownProtocolKind::CodingKey)) {
-      return false;
-    }
-
-    if (checkInherited(proto->getInherited()))
-      return true;
-
-    if (checkRequirements(proto->getRequirementSignature()))
-      return true;
-  }
-
-  if (auto ext = dyn_cast<ExtensionDecl>(decl)) {
-    if (checkRequirements(ext->getGenericRequirements()))
-      return true;
-
-    if (checkInherited(ext->getInherited()))
-      return true;
-  }
-
   return false;
 }
 
@@ -2601,6 +2550,10 @@ static bool usesFeatureConcurrentFunctions(Decl *decl) {
   return false;
 }
 
+static bool usesFeatureActors2(Decl *decl) {
+  return false;
+}
+
 static bool usesFeatureSendable(Decl *decl) {
   if (auto func = dyn_cast<AbstractFunctionDecl>(decl)) {
     if (func->isSendable())
@@ -2634,7 +2587,7 @@ static bool usesFeatureRethrowsProtocol(
     return false;
 
   // Check an inheritance clause for a marker protocol.
-  auto checkInherited = [&](ArrayRef<TypeLoc> inherited) -> bool {
+  auto checkInherited = [&](ArrayRef<InheritedEntry> inherited) -> bool {
     for (const auto &inheritedEntry : inherited) {
       if (auto inheritedType = inheritedEntry.getType()) {
         if (inheritedType->isExistentialType()) {
@@ -2717,11 +2670,11 @@ static bool usesFeatureGlobalActors(Decl *decl) {
   return false;
 }
 
-static bool usesFeatureBuiltinJob(Decl *decl) {
-  auto typeHasBuiltinJob = [](Type type) {
+static bool usesBuiltinType(Decl *decl, BuiltinTypeKind kind) {
+  auto typeMatches = [kind](Type type) {
     return type.findIf([&](Type type) {
       if (auto builtinTy = type->getAs<BuiltinType>())
-        return builtinTy->getBuiltinTypeKind() == BuiltinTypeKind::BuiltinJob;
+        return builtinTy->getBuiltinTypeKind() == kind;
 
       return false;
     });
@@ -2729,7 +2682,7 @@ static bool usesFeatureBuiltinJob(Decl *decl) {
 
   if (auto value = dyn_cast<ValueDecl>(decl)) {
     if (Type type = value->getInterfaceType()) {
-      if (typeHasBuiltinJob(type))
+      if (typeMatches(type))
         return true;
     }
   }
@@ -2737,7 +2690,7 @@ static bool usesFeatureBuiltinJob(Decl *decl) {
   if (auto patternBinding = dyn_cast<PatternBindingDecl>(decl)) {
     for (unsigned idx : range(patternBinding->getNumPatternEntries())) {
       if (Type type = patternBinding->getPattern(idx)->getType())
-        if (typeHasBuiltinJob(type))
+        if (typeMatches(type))
           return true;
     }
   }
@@ -2745,32 +2698,19 @@ static bool usesFeatureBuiltinJob(Decl *decl) {
   return false;
 }
 
+static bool usesFeatureBuiltinJob(Decl *decl) {
+  return usesBuiltinType(decl, BuiltinTypeKind::BuiltinJob);
+}
+
 static bool usesFeatureBuiltinExecutor(Decl *decl) {
-  auto typeHasBuiltinExecutor = [](Type type) {
-    return type.findIf([&](Type type) {
-      if (auto builtinTy = type->getAs<BuiltinType>())
-        return builtinTy->getBuiltinTypeKind()
-            == BuiltinTypeKind::BuiltinExecutor;
+  return usesBuiltinType(decl, BuiltinTypeKind::BuiltinExecutor);
+}
 
-      return false;
-    });
-  };
+static bool usesFeatureBuiltinBuildExecutor(Decl *decl) {
+  return false;
+}
 
-  if (auto value = dyn_cast<ValueDecl>(decl)) {
-    if (Type type = value->getInterfaceType()) {
-      if (typeHasBuiltinExecutor(type))
-        return true;
-    }
-  }
-
-  if (auto patternBinding = dyn_cast<PatternBindingDecl>(decl)) {
-    for (unsigned idx : range(patternBinding->getNumPatternEntries())) {
-      if (Type type = patternBinding->getPattern(idx)->getType())
-        if (typeHasBuiltinExecutor(type))
-          return true;
-    }
-  }
-
+static bool usesFeatureBuiltinBuildMainExecutor(Decl *decl) {
   return false;
 }
 
@@ -2778,7 +2718,11 @@ static bool usesFeatureBuiltinContinuation(Decl *decl) {
   return false;
 }
 
-static bool usesFeatureBuiltinTaskGroup(Decl *decl) {
+static bool usesFeatureBuiltinTaskGroupWithArgument(Decl *decl) {
+  return false;
+}
+
+static bool usesFeatureBuiltinCreateAsyncTaskInGroup(Decl *decl) {
   return false;
 }
 
@@ -2786,6 +2730,17 @@ static bool usesFeatureInheritActorContext(Decl *decl) {
   if (auto func = dyn_cast<AbstractFunctionDecl>(decl)) {
     for (auto param : *func->getParameters()) {
       if (param->getAttrs().hasAttribute<InheritActorContextAttr>())
+        return true;
+    }
+  }
+
+  return false;
+}
+
+static bool usesFeatureImplicitSelfCapture(Decl *decl) {
+  if (auto func = dyn_cast<AbstractFunctionDecl>(decl)) {
+    for (auto param : *func->getParameters()) {
+      if (param->getAttrs().hasAttribute<ImplicitSelfCaptureAttr>())
         return true;
     }
   }
@@ -2857,6 +2812,12 @@ static std::vector<Feature> getUniqueFeaturesUsed(Decl *decl) {
 
 bool swift::printCompatibilityFeatureChecksPre(
     ASTPrinter &printer, Decl *decl) {
+
+  // A single accessor does not get a feature check,
+  // it should go around the whole decl.
+  if (isa<AccessorDecl>(decl))
+    return false;
+
   auto features = getUniqueFeaturesUsed(decl);
   if (features.empty())
     return false;
@@ -3230,6 +3191,9 @@ static void printParameterFlags(ASTPrinter &printer,
     break;
   }
 
+  if (flags.isIsolated())
+    printer.printKeyword("isolated", options, " ");
+
   if (!options.excludeAttrKind(TAK_escaping) && escaping)
     printer.printKeyword("@escaping", options, " ");
 }
@@ -3341,6 +3305,10 @@ void PrintAST::printOneParameter(const ParamDecl *param,
   };
 
   printAttributes(param);
+
+  if (param->isIsolated())
+    Printer << "isolated ";
+
   printArgName();
 
   TypeLoc TheTypeLoc;
@@ -3465,7 +3433,9 @@ void PrintAST::visitAccessorDecl(AccessorDecl *decl) {
   printAttributes(decl);
   // Explicitly print 'mutating' and 'nonmutating' if needed.
   printMutabilityModifiersIfNeeded(decl);
-
+  if (decl->isConsuming()) {
+    Printer.printKeyword("__consuming", Options, " ");
+  }
   switch (auto kind = decl->getAccessorKind()) {
   case AccessorKind::Get:
   case AccessorKind::Address:
@@ -3495,6 +3465,10 @@ void PrintAST::visitAccessorDecl(AccessorDecl *decl) {
         }
       });
   }
+
+  // handle effects specifiers before the body
+  if (decl->hasAsync()) Printer << " async";
+  if (decl->hasThrows()) Printer << " throws";
 
   printBodyIfNecessary(decl);
 }
@@ -4878,11 +4852,13 @@ public:
                           PrintNameContext::FunctionParameterExternal);
         Printer << ": ";
       } else if (Options.AlwaysTryPrintParameterLabels &&
-                 Param.hasInternalLabel()) {
+                 Param.hasInternalLabel() &&
+                 !Param.getInternalLabel().hasDollarPrefix()) {
         // We didn't have an external parameter label but were requested to
-        // always try and print parameter labels. Print The internal label.
-        // If we have neither an external nor an internal label, only print the
-        // type.
+        // always try and print parameter labels.
+        // If the internal label is a valid internal parameter label (does not
+        // start with '$'), print the internal label. If we have neither an
+        // external nor a printable internal label, only print the type.
         Printer << "_ ";
         Printer.printName(Param.getInternalLabel(),
                           PrintNameContext::FunctionParameterLocal);
@@ -5772,9 +5748,10 @@ void swift::printEnumElementsAsCases(
 }
 
 void
-swift::getInheritedForPrinting(const Decl *decl, const PrintOptions &options,
-                               llvm::SmallVectorImpl<TypeLoc> &Results) {
-  ArrayRef<TypeLoc> inherited;
+swift::getInheritedForPrinting(
+    const Decl *decl, const PrintOptions &options,
+    llvm::SmallVectorImpl<InheritedEntry> &Results) {
+  ArrayRef<InheritedEntry> inherited;
   if (auto td = dyn_cast<TypeDecl>(decl)) {
     inherited = td->getInherited();
   } else if (auto ed = dyn_cast<ExtensionDecl>(decl)) {
@@ -5782,29 +5759,22 @@ swift::getInheritedForPrinting(const Decl *decl, const PrintOptions &options,
   }
 
   // Collect explicit inherited types.
-  for (auto TL: inherited) {
-    if (auto ty = TL.getType()) {
+  for (auto entry: inherited) {
+    if (auto ty = entry.getType()) {
       bool foundUnprintable = ty.findIf([&](Type subTy) {
         if (auto aliasTy = dyn_cast<TypeAliasType>(subTy.getPointer()))
           return !options.shouldPrint(aliasTy->getDecl());
         if (auto NTD = subTy->getAnyNominal()) {
           if (!options.shouldPrint(NTD))
             return true;
-
-          if (auto PD = dyn_cast<ProtocolDecl>(NTD)) {
-            // Marker protocols are unprintable on concrete types, but they're
-            // okay on extension declarations and protocols.
-            if (PD->isMarkerProtocol() && !isa<ExtensionDecl>(decl) &&
-                !isa<ProtocolDecl>(decl))
-              return true;
-          }
         }
         return false;
       });
       if (foundUnprintable)
         continue;
     }
-    Results.push_back(TL);
+
+    Results.push_back(entry);
   }
 
   // Collect synthesized conformances.
@@ -5813,11 +5783,17 @@ swift::getInheritedForPrinting(const Decl *decl, const PrintOptions &options,
     if (auto *proto = ctx.getProtocol(attr->getProtocolKind())) {
       if (!options.shouldPrint(proto))
         continue;
+      // The SerialExecutor conformance is only synthesized on the root
+      // actor class, so we can just test resilience immediately.
+      if (proto->isSpecificProtocol(KnownProtocolKind::SerialExecutor) &&
+          cast<ClassDecl>(decl)->isResilient())
+        continue;
       if (attr->getProtocolKind() == KnownProtocolKind::RawRepresentable &&
           isa<EnumDecl>(decl) &&
           cast<EnumDecl>(decl)->hasRawType())
         continue;
-      Results.push_back(TypeLoc::withoutLoc(proto->getDeclaredInterfaceType()));
+      Results.push_back({TypeLoc::withoutLoc(proto->getDeclaredInterfaceType()),
+                      /*isUnchecked=*/false});
     }
   }
 }

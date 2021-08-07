@@ -23,6 +23,7 @@
 #include "swift/Basic/SourceManager.h"
 #include "swift/Basic/Version.h"
 
+#include "llvm/Option/ArgList.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Debug.h"
@@ -30,6 +31,7 @@
 #include "llvm/Support/Host.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/CommandLine.h"
 #include <system_error>
 
 using namespace swift;
@@ -686,10 +688,16 @@ LoadedFile *SerializedModuleLoaderBase::loadAST(
     std::unique_ptr<llvm::MemoryBuffer> moduleSourceInfoInputBuffer,
     bool isFramework) {
   assert(moduleInputBuffer);
+
+  // The buffers are moved into the shared core, so grab their IDs now in case
+  // they're needed for diagnostics later.
   StringRef moduleBufferID = moduleInputBuffer->getBufferIdentifier();
   StringRef moduleDocBufferID;
   if (moduleDocInputBuffer)
     moduleDocBufferID = moduleDocInputBuffer->getBufferIdentifier();
+  StringRef moduleSourceInfoID;
+  if (moduleSourceInfoInputBuffer)
+    moduleSourceInfoID = moduleSourceInfoInputBuffer->getBufferIdentifier();
 
   if (moduleInputBuffer->getBufferSize() % 4 != 0) {
     if (diagLoc)
@@ -742,6 +750,12 @@ LoadedFile *SerializedModuleLoaderBase::loadAST(
         (Ctx.LangOpts.AllowModuleWithCompilerErrors &&
          (loadInfo.status == serialization::Status::TargetTooNew ||
           loadInfo.status == serialization::Status::TargetIncompatible))) {
+      if (loadedModuleFile->hasSourceInfoFile() &&
+          !loadedModuleFile->hasSourceInfo())
+        Ctx.Diags.diagnose(diagLocOrInvalid,
+                           diag::serialization_malformed_sourceinfo,
+                           moduleSourceInfoID);
+
       Ctx.bumpGeneration();
       LoadedModuleFiles.emplace_back(std::move(loadedModuleFile),
                                      Ctx.getCurrentGeneration());
@@ -945,6 +959,42 @@ void swift::serialization::diagnoseSerializedASTLoadFailure(
     break;
   }
   }
+}
+
+bool swift::extractCompilerFlagsFromInterface(StringRef interfacePath,
+                                              StringRef buffer,
+                                              llvm::StringSaver &ArgSaver,
+                                              SmallVectorImpl<const char *> &SubArgs) {
+  SmallVector<StringRef, 1> FlagMatches;
+  auto FlagRe = llvm::Regex("^// swift-module-flags:(.*)$", llvm::Regex::Newline);
+  if (!FlagRe.match(buffer, &FlagMatches))
+    return true;
+  assert(FlagMatches.size() == 2);
+  llvm::cl::TokenizeGNUCommandLine(FlagMatches[1], ArgSaver, SubArgs);
+
+  auto intFileName = llvm::sys::path::filename(interfacePath);
+
+  // Sanitize arch if the file name and the encoded flags disagree.
+  // It's a known issue that we are using arm64e interfaces contents for the arm64 target,
+  // meaning the encoded module flags are using -target arm64e-x-x. Fortunately,
+  // we can tell the target arch from the interface file name, so we could sanitize
+  // the target to use by inferring target from the file name.
+  StringRef arm64 = "arm64";
+  StringRef arm64e = "arm64e";
+  if (intFileName.contains(arm64) && !intFileName.contains(arm64e)) {
+    for (unsigned I = 1; I < SubArgs.size(); ++I) {
+      if (strcmp(SubArgs[I - 1], "-target") != 0) {
+        continue;
+      }
+      StringRef triple(SubArgs[I]);
+      if (triple.startswith(arm64e)) {
+        SubArgs[I] = ArgSaver.save((llvm::Twine(arm64) +
+          triple.substr(arm64e.size())).str()).data();
+      }
+    }
+  }
+
+  return false;
 }
 
 bool SerializedModuleLoaderBase::canImportModule(
@@ -1267,9 +1317,9 @@ SerializedASTFile::getCommentForDecl(const Decl *D) const {
   return File.getCommentForDecl(D);
 }
 
-Optional<BasicDeclLocs>
-SerializedASTFile::getBasicLocsForDecl(const Decl *D) const {
-  return File.getBasicDeclLocsForDecl(D);
+Optional<ExternalSourceLocs::RawLocs>
+SerializedASTFile::getExternalRawLocsForDecl(const Decl *D) const {
+  return File.getExternalRawLocsForDecl(D);
 }
 
 Optional<StringRef>

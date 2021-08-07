@@ -1253,6 +1253,11 @@ void NominalTypeDecl::prepareConformanceTable() const {
     if (classDecl->isActor())
       addSynthesized(KnownProtocolKind::Actor);
   }
+
+  // Global actors conform to the GlobalActor protocol.
+  if (mutableThis->getAttrs().hasAttribute<GlobalActorAttr>()) {
+    addSynthesized(KnownProtocolKind::GlobalActor);
+  }
 }
 
 bool NominalTypeDecl::lookupConformance(
@@ -1343,6 +1348,9 @@ static ProtocolConformance *findSynthesizedSendableConformance(
 
   auto concrete = conformance.getConcrete();
   if (concrete->getDeclContext() != dc)
+    return nullptr;
+
+  if (isa<InheritedProtocolConformance>(concrete))
     return nullptr;
 
   auto normal = concrete->getRootNormalConformance();

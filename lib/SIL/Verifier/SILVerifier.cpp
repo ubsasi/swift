@@ -839,6 +839,15 @@ public:
             valueDescription + " cannot apply to a function type");
   }
 
+  /// Require the operand to be `$Optional<Builtin.Executor>`.
+  void requireOptionalExecutorType(SILValue value, const Twine &what) {
+    auto type = value->getType();
+    require(type.isObject(), what + " must be an object type");
+    auto objectType = type.getASTType().getOptionalObjectType();
+    require(objectType && objectType == M->getASTContext().TheExecutorType,
+            what + " must be Optional<Builtin.Executor>");
+  }
+
   /// Assert that two types are equal.
   void requireSameType(Type type1, Type type2, const Twine &complaint) {
     _require(type1->isEqual(type2), complaint,
@@ -1329,7 +1338,7 @@ public:
               "Operand is of an ArchetypeType that does not exist in the "
               "Caller's generic param list.");
       if (auto OpenedA = getOpenedArchetypeOf(A)) {
-        auto *openingInst = F->getModule().getOpenedArchetypeInst(OpenedA);
+        auto *openingInst = F->getModule().getOpenedArchetypeInst(OpenedA, F);
         require(I == nullptr || openingInst == I ||
                 properlyDominates(openingInst, I),
                 "Use of an opened archetype should be dominated by a "
@@ -1463,7 +1472,8 @@ public:
         FoundOpenedArchetypes.insert(A);
         // Also check that they are properly tracked inside the current
         // function.
-        auto *openingInst = F.getModule().getOpenedArchetypeInst(A);
+        auto *openingInst = F.getModule().getOpenedArchetypeInst(A,
+                              AI->getFunction());
         require(openingInst == AI ||
                 properlyDominates(openingInst, AI),
                 "Use of an opened archetype should be dominated by a "
@@ -1828,6 +1838,7 @@ public:
     }
 
     auto builtinKind = BI->getBuiltinKind();
+    auto arguments = BI->getArguments();
 
     // Check that 'getCurrentAsyncTask' only occurs within an async function.
     if (builtinKind == BuiltinValueKind::GetCurrentAsyncTask) {
@@ -1838,25 +1849,43 @@ public:
 
     if (builtinKind == BuiltinValueKind::InitializeDefaultActor ||
         builtinKind == BuiltinValueKind::DestroyDefaultActor) {
-      auto arguments = BI->getArguments();
       require(arguments.size() == 1,
               "default-actor builtin can only operate on a single object");
       auto argType = arguments[0]->getType().getASTType();
       auto argClass = argType.getClassOrBoundGenericClass();
-      require((argClass && argClass->isRootDefaultActor()) ||
+      require((argClass && argClass->isRootDefaultActor(M,
+                                        F.getResilienceExpansion())) ||
               isa<BuiltinNativeObjectType>(argType),
               "default-actor builtin can only operate on default actors");
       return;
     }
 
-    if (builtinKind == BuiltinValueKind::BuildSerialExecutorRef) {
-      requireObjectType(BuiltinExecutorType, BI,
-                        "result of buildSerialExecutorRef");
-      auto arguments = BI->getArguments();
+    // Check that 'getCurrentAsyncTask' only occurs within an async function.
+    if (builtinKind == BuiltinValueKind::GetCurrentExecutor) {
+      require(F.isAsync(),
+              "getCurrentExecutor can only be used in an async function");
+      require(arguments.empty(), "getCurrentExecutor takes no arguments");
+      requireOptionalExecutorType(BI, "result of getCurrentExecutor");
+      return;
+    }
+
+    if (builtinKind == BuiltinValueKind::BuildOrdinarySerialExecutorRef ||
+        builtinKind == BuiltinValueKind::BuildDefaultActorExecutorRef) {
       require(arguments.size() == 1,
-              "buildSerialExecutorRef expects one argument");
+              "builtin expects one argument");
       require(arguments[0]->getType().isObject(),
-              "operand of buildSerialExecutorRef should have object type");
+              "operand of builtin should have object type");
+      requireObjectType(BuiltinExecutorType, BI,
+                        "result of build*ExecutorRef");
+      return;
+    }
+
+    if (builtinKind == BuiltinValueKind::BuildMainActorExecutorRef) {
+      require(arguments.size() == 0,
+              "buildMainActorExecutorRef expects no arguments");
+      requireObjectType(BuiltinExecutorType, BI,
+                        "result of build*ExecutorRef");
+      return;
     }
   }
   
@@ -3153,7 +3182,7 @@ public:
             "requirement Self parameter must conform to called protocol");
 
     auto lookupType = AMI->getLookupType();
-    if (getOpenedArchetypeOf(lookupType) || isa<DynamicSelfType>(lookupType)) {
+    if (getOpenedArchetypeOf(lookupType) || lookupType->hasDynamicSelfType()) {
       require(AMI->getTypeDependentOperands().size() == 1,
               "Must have a type dependent operand for the opened archetype");
       verifyOpenedArchetype(AMI, lookupType);
@@ -3411,7 +3440,8 @@ public:
     auto archetype = getOpenedArchetypeOf(OEI->getType().getASTType());
     require(archetype,
         "open_existential_addr result must be an opened existential archetype");
-    require(OEI->getModule().getOpenedArchetypeInst(archetype) == OEI,
+    require(OEI->getModule().getOpenedArchetypeInst(archetype,
+                 OEI->getFunction()) == OEI,
             "Archetype opened by open_existential_addr should be registered in "
             "SILFunction");
 
@@ -3444,7 +3474,8 @@ public:
     auto archetype = getOpenedArchetypeOf(resultInstanceTy);
     require(archetype,
         "open_existential_ref result must be an opened existential archetype");
-    require(OEI->getModule().getOpenedArchetypeInst(archetype) == OEI,
+    require(OEI->getModule().getOpenedArchetypeInst(archetype,
+                 OEI->getFunction()) == OEI,
             "Archetype opened by open_existential_ref should be registered in "
             "SILFunction");
   }
@@ -3466,7 +3497,8 @@ public:
     auto archetype = getOpenedArchetypeOf(resultInstanceTy);
     require(archetype,
         "open_existential_box result must be an opened existential archetype");
-    require(OEI->getModule().getOpenedArchetypeInst(archetype) == OEI,
+    require(OEI->getModule().getOpenedArchetypeInst(archetype,
+                 OEI->getFunction()) == OEI,
             "Archetype opened by open_existential_box should be registered in "
             "SILFunction");
   }
@@ -3488,7 +3520,8 @@ public:
     auto archetype = getOpenedArchetypeOf(resultInstanceTy);
     require(archetype,
         "open_existential_box_value result not an opened existential archetype");
-    require(OEI->getModule().getOpenedArchetypeInst(archetype) == OEI,
+    require(OEI->getModule().getOpenedArchetypeInst(archetype,
+                 OEI->getFunction()) == OEI,
             "Archetype opened by open_existential_box_value should be "
             "registered in SILFunction");
   }
@@ -3534,7 +3567,7 @@ public:
     require(archetype, "open_existential_metatype result must be an opened "
                        "existential metatype");
     require(
-        I->getModule().getOpenedArchetypeInst(archetype) == I,
+        I->getModule().getOpenedArchetypeInst(archetype, I->getFunction()) == I,
         "Archetype opened by open_existential_metatype should be registered in "
         "SILFunction");
   }
@@ -3553,7 +3586,8 @@ public:
     auto archetype = getOpenedArchetypeOf(OEI->getType().getASTType());
     require(archetype, "open_existential_value result must be an opened "
                        "existential archetype");
-    require(OEI->getModule().getOpenedArchetypeInst(archetype) == OEI,
+    require(OEI->getModule().getOpenedArchetypeInst(archetype,
+                 OEI->getFunction()) == OEI,
             "Archetype opened by open_existential should be registered in "
             "SILFunction");
   }
@@ -3841,7 +3875,7 @@ public:
       SILValue Def;
       if (t->isOpenedExistential()) {
         auto archetypeTy = cast<ArchetypeType>(t);
-        Def = I->getModule().getOpenedArchetypeInst(archetypeTy);
+        Def = I->getModule().getOpenedArchetypeInst(archetypeTy, I->getFunction());
         require(Def, "Opened archetype should be registered in SILModule");
       } else if (t->hasDynamicSelfType()) {
         require(I->getFunction()->hasSelfParam() ||
@@ -4783,9 +4817,8 @@ public:
   void checkHopToExecutorInst(HopToExecutorInst *HI) {
     auto executor = HI->getTargetExecutor();
     if (HI->getModule().getStage() == SILStage::Lowered) {
-      requireObjectType(BuiltinExecutorType, executor->getType(),
-                        "hop_to_executor instruction must take a "
-                        "Builtin.Executor in lowered SIL");
+      requireOptionalExecutorType(executor,
+                                  "hop_to_executor operand in lowered SIL");
     }
   }
 
@@ -5845,6 +5878,7 @@ void SILVTable::verify(const SILModule &M) const {
         assert(!superEntry->isNonOverridden()
                && "vtable entry overrides an entry that claims to have no overrides");
         // TODO: Check the root vtable entry for the method too.
+
         break;
       }
     }

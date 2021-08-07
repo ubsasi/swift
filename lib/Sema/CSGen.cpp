@@ -2518,10 +2518,8 @@ namespace {
         std::pair<bool, Expr *> walkToExprPre(Expr *expr) override {
           // If there are any error expressions in this closure
           // it wouldn't be possible to infer its type.
-          if (isa<ErrorExpr>(expr)) {
+          if (isa<ErrorExpr>(expr))
             hasErrorExprs = true;
-            return {false, nullptr};
-          }
 
           // Retrieve type variables from references to var decls.
           if (auto *declRef = dyn_cast<DeclRefExpr>(expr)) {
@@ -3257,10 +3255,11 @@ namespace {
       // The result is a KeyPath from the root to the end component.
       // The type of key path depends on the overloads chosen for the key
       // path components.
-      auto typeLoc =
-          CS.getConstraintLocator(locator, ConstraintLocator::KeyPathType);
+      auto typeLoc = CS.getConstraintLocator(
+          locator, LocatorPathElt::KeyPathType(rvalueBase));
+
       Type kpTy = CS.createTypeVariable(typeLoc, TVO_CanBindToNoEscape |
-                                        TVO_CanBindToHole);
+                                                     TVO_CanBindToHole);
       CS.addKeyPathConstraint(kpTy, root, rvalueBase, componentTypeVars,
                               locator);
       return kpTy;

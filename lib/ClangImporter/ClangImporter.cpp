@@ -63,6 +63,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/CrashRecoveryContext.h"
 #include "llvm/Support/FileCollector.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Memory.h"
 #include "llvm/Support/Path.h"
 #include <algorithm>
@@ -771,7 +772,11 @@ importer::addCommonInvocationArguments(
     std::vector<std::string> &invocationArgStrs,
     ASTContext &ctx) {
   using ImporterImpl = ClangImporter::Implementation;
-  const llvm::Triple &triple = ctx.LangOpts.Target;
+  llvm::Triple triple = ctx.LangOpts.Target;
+  // Use clang specific target triple if given.
+  if (ctx.LangOpts.ClangTarget.hasValue()) {
+    triple = ctx.LangOpts.ClangTarget.getValue();
+  }
   SearchPathOptions &searchPathOpts = ctx.SearchPathOpts;
   const ClangImporterOptions &importerOpts = ctx.ClangImporterOpts;
 
@@ -1008,11 +1013,11 @@ ClangImporter::getClangArguments(ASTContext &ctx) {
   return invocationArgStrs;
 }
 
-std::unique_ptr<clang::CompilerInvocation>
-ClangImporter::createClangInvocation(ClangImporter *importer,
-                                     const ClangImporterOptions &importerOpts,
-                                     ArrayRef<std::string> invocationArgStrs,
-                                     std::vector<std::string> *CC1Args) {
+std::unique_ptr<clang::CompilerInvocation> ClangImporter::createClangInvocation(
+    ClangImporter *importer, const ClangImporterOptions &importerOpts,
+    llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS,
+    ArrayRef<std::string> invocationArgStrs,
+    std::vector<std::string> *CC1Args) {
   std::vector<const char *> invocationArgs;
   invocationArgs.reserve(invocationArgStrs.size());
   for (auto &argStr : invocationArgStrs)
@@ -1036,8 +1041,38 @@ ClangImporter::createClangInvocation(ClangImporter *importer,
                                                  &tempDiagClient,
                                                  /*owned*/false);
 
-  return clang::createInvocationFromCommandLine(invocationArgs, tempClangDiags,
-                                                nullptr, false, CC1Args);
+  auto CI = clang::createInvocationFromCommandLine(
+      invocationArgs, tempClangDiags, VFS, false, CC1Args);
+
+  if (!CI) {
+    return CI;
+  }
+
+  // FIXME: clang fails to generate a module if there is a `-fmodule-map-file`
+  // argument pointing to a missing file.
+  // Such missing module files occur frequently in SourceKit. If the files are
+  // missing, SourceKit fails to build SwiftShims (which wouldn't have required
+  // the missing module file), thus fails to load the stdlib and hence looses
+  // all semantic functionality.
+  // To work around this issue, drop all `-fmodule-map-file` arguments pointing
+  // to missing files and report the error that clang would throw manually.
+  // rdar://77516546 is tracking that the clang importer should be more
+  // resilient and provide a module even if there were building it.
+  auto TempVFS = clang::createVFSFromCompilerInvocation(
+      *CI, *tempClangDiags,
+      VFS ? VFS : importer->Impl.SwiftContext.SourceMgr.getFileSystem());
+  std::vector<std::string> FilteredModuleMapFiles;
+  for (auto ModuleMapFile : CI->getFrontendOpts().ModuleMapFiles) {
+    if (TempVFS->exists(ModuleMapFile)) {
+      FilteredModuleMapFiles.push_back(ModuleMapFile);
+    } else {
+      importer->Impl.diagnose(SourceLoc(), diag::module_map_not_found,
+                              ModuleMapFile);
+    }
+  }
+  CI->getFrontendOpts().ModuleMapFiles = FilteredModuleMapFiles;
+
+  return CI;
 }
 
 std::unique_ptr<ClangImporter>
@@ -1073,11 +1108,15 @@ ClangImporter::create(ASTContext &ctx,
     }
   }
 
+  // Wrap Swift's FS to allow Clang to override the working directory
+  llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS =
+      llvm::vfs::RedirectingFileSystem::create({}, true,
+                                               *ctx.SourceMgr.getFileSystem());
+
   // Create a new Clang compiler invocation.
   {
-    importer->Impl.Invocation = createClangInvocation(importer.get(),
-                                                      importerOpts,
-                                                      invocationArgStrs);
+    importer->Impl.Invocation = createClangInvocation(
+        importer.get(), importerOpts, VFS, invocationArgStrs);
     if (!importer->Impl.Invocation)
       return nullptr;
   }
@@ -1129,11 +1168,9 @@ ClangImporter::create(ASTContext &ctx,
 
   // Set up the file manager.
   {
-    llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS =
-        clang::createVFSFromCompilerInvocation(instance.getInvocation(),
-                                               instance.getDiagnostics(),
-                                               ctx.SourceMgr.getFileSystem());
-    instance.createFileManager(std::move(VFS));
+    VFS = clang::createVFSFromCompilerInvocation(
+        instance.getInvocation(), instance.getDiagnostics(), std::move(VFS));
+    instance.createFileManager(VFS);
   }
 
   // Don't stop emitting messages if we ever can't load a module.

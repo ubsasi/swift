@@ -219,6 +219,14 @@ PatternBindingEntryRequest::evaluate(Evaluator &eval,
     }
   }
 
+  // Reject "class" methods on actors.
+  if (StaticSpelling == StaticSpellingKind::KeywordClass &&
+      binding->getDeclContext()->getSelfClassDecl() &&
+      binding->getDeclContext()->getSelfClassDecl()->isActor()) {
+    binding->diagnose(diag::class_var_not_in_class, false)
+        .fixItReplace(binding->getStaticLoc(), "static");
+  }
+
   // Check the pattern.
   auto contextualPattern =
       ContextualPattern::forPatternBindingDecl(binding, entryNumber);
@@ -2583,6 +2591,11 @@ static void typeCheckSynthesizedWrapperInitializer(VarDecl *wrappedVar,
           dyn_cast_or_null<Initializer>(parentPBD->getInitContext(i))) {
     TypeChecker::contextualizeInitializer(initializerContext, initializer);
   }
+
+  auto *backingVar = wrappedVar->getPropertyWrapperBackingProperty();
+  auto *backingPBD = backingVar->getParentPatternBinding();
+  checkPropertyWrapperActorIsolation(backingPBD, initializer);
+  TypeChecker::checkPropertyWrapperEffects(backingPBD, initializer);
 }
 
 static PropertyWrapperMutability::Value
@@ -2776,8 +2789,9 @@ PropertyWrapperAuxiliaryVariablesRequest::evaluate(Evaluator &evaluator,
     backingVar = ParamDecl::cloneWithoutType(ctx, param);
     backingVar->setName(name);
   } else {
+    auto introducer = isa<ParamDecl>(var) ? VarDecl::Introducer::Let : VarDecl::Introducer::Var;
     backingVar = new (ctx) VarDecl(/*IsStatic=*/var->isStatic(),
-                                   VarDecl::Introducer::Var,
+                                   introducer,
                                    var->getLoc(),
                                    name, dc);
     backingVar->setImplicit();
@@ -2869,10 +2883,16 @@ PropertyWrapperInitializerInfoRequest::evaluate(Evaluator &evaluator,
       if (!parentPBD->isInitialized(patternNumber) && wrapperInfo.defaultInit) {
         // FIXME: Record this expression somewhere so that DI can perform the
         // initialization itself.
-        Expr *initializer = nullptr;
-        typeCheckSynthesizedWrapperInitializer(var, initializer);
-        pbd->setInit(0, initializer);
+        Expr *defaultInit = nullptr;
+        typeCheckSynthesizedWrapperInitializer(var, defaultInit);
+        pbd->setInit(0, defaultInit);
         pbd->setInitializerChecked(0);
+
+        // If a static, global, or local wrapped property has a default
+        // initializer, this is the only initializer that will be used.
+        if (var->isStatic() || !dc->isTypeContext()) {
+          initializer = defaultInit;
+        }
       } else if (var->hasObservers() && !dc->isTypeContext()) {
         var->diagnose(diag::observingprop_requires_initializer);
       }

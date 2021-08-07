@@ -19,11 +19,14 @@
 
 #include "BitPatternBuilder.h"
 #include "ExtraInhabitants.h"
+#include "GenProto.h"
 #include "GenType.h"
+#include "IRGenDebugInfo.h"
 #include "IRGenFunction.h"
 #include "IRGenModule.h"
 #include "LoadableTypeInfo.h"
 #include "ScalarPairTypeInfo.h"
+#include "swift/AST/ProtocolConformanceRef.h"
 #include "swift/ABI/MetadataValues.h"
 
 using namespace swift;
@@ -63,14 +66,12 @@ public:
     return ".impl";
   }
 
-  // The identity pointer is a heap object reference, but it's
-  // nullable because of the generic executor.
+  // The identity pointer is a heap object reference.
   bool mayHaveExtraInhabitants(IRGenModule &IGM) const override {
     return true;
   }
-
   PointerInfo getPointerInfo(IRGenModule &IGM) const {
-    return PointerInfo::forHeapObject(IGM).withNullable(IsNullable);
+    return PointerInfo::forHeapObject(IGM);
   }
   unsigned getFixedExtraInhabitantCount(IRGenModule &IGM) const override {
     return getPointerInfo(IGM).getExtraInhabitantCount(IGM);
@@ -87,18 +88,17 @@ public:
     src = projectFirstElement(IGF, src);
     return getPointerInfo(IGF.IGM).getExtraInhabitantIndex(IGF, src);
   }
-  APInt getFixedExtraInhabitantMask(IRGenModule &IGM) const override {
-    auto pointerSize = IGM.getPointerSize();
-    auto mask = BitPatternBuilder(IGM.Triple.isLittleEndian());
-    mask.appendSetBits(pointerSize.getValueInBits());
-    mask.appendClearBits(pointerSize.getValueInBits());
-    return mask.build().getValue();
-  }
   void storeExtraInhabitant(IRGenFunction &IGF, llvm::Value *index,
                             Address dest, SILType T,
                             bool isOutlined) const override {
-    dest = projectFirstElement(IGF, dest);
-    getPointerInfo(IGF.IGM).storeExtraInhabitant(IGF, index, dest);
+    // Store the extra-inhabitant value in the first (identity) word.
+    auto first = projectFirstElement(IGF, dest);
+    getPointerInfo(IGF.IGM).storeExtraInhabitant(IGF, index, first);
+
+    // Zero the second word.
+    auto second = projectSecondElement(IGF, dest);
+    IGF.Builder.CreateStore(llvm::ConstantInt::get(IGF.IGM.ExecutorSecondTy, 0),
+                            second);
   }
 };
 
@@ -126,38 +126,41 @@ const LoadableTypeInfo &TypeConverter::getExecutorTypeInfo() {
   return *ExecutorTI;
 }
 
-void irgen::emitBuildSerialExecutorRef(IRGenFunction &IGF,
-                                       llvm::Value *actor,
-                                       SILType actorType,
-                                       Explosion &out) {
-  auto cls = actorType.getClassOrBoundGenericClass();
+void irgen::emitBuildMainActorExecutorRef(IRGenFunction &IGF,
+                                          Explosion &out) {
+  auto call = IGF.Builder.CreateCall(IGF.IGM.getTaskGetMainExecutorFn(),
+                                     {});
+  call->setDoesNotThrow();
+  call->setCallingConv(IGF.IGM.SwiftCC);
 
-  // HACK: if the actor type is Swift.MainActor, treat it specially.
-  if (cls && cls->getNameStr() == "MainActor" &&
-      cls->getDeclContext()->isModuleScopeContext() &&
-      cls->getModuleContext()->getName().str() == SWIFT_CONCURRENCY_NAME) {
-    llvm::Value *identity = llvm::ConstantInt::get(IGF.IGM.SizeTy,
-                              unsigned(ExecutorRefFlags::MainActorIdentity));
-    identity = IGF.Builder.CreateIntToPtr(identity, IGF.IGM.ExecutorFirstTy);
-    out.add(identity);
+  IGF.emitAllExtractValues(call, IGF.IGM.SwiftExecutorTy, out);
+}
 
-    llvm::Value *impl = IGF.IGM.getSize(Size(0));
-    out.add(impl);
-    return;
-  }
-
+void irgen::emitBuildDefaultActorExecutorRef(IRGenFunction &IGF,
+                                             llvm::Value *actor,
+                                             Explosion &out) {
+  // The implementation word of a default actor is just a null pointer.
   llvm::Value *identity =
-    IGF.Builder.CreateBitCast(actor, IGF.IGM.ExecutorFirstTy);
-  llvm::Value *impl = IGF.IGM.getSize(Size(0));
+    IGF.Builder.CreatePtrToInt(actor, IGF.IGM.ExecutorFirstTy);
+  llvm::Value *impl = llvm::ConstantInt::get(IGF.IGM.ExecutorSecondTy, 0);
 
-  unsigned flags = 0;
+  out.add(identity);
+  out.add(impl);
+}
 
-  // FIXME: this isn't how we should be doing any of this
-  flags |= unsigned(ExecutorRefFlags::DefaultActor);
+void irgen::emitBuildOrdinarySerialExecutorRef(IRGenFunction &IGF,
+                                               llvm::Value *executor,
+                                               CanType executorType,
+                                       ProtocolConformanceRef executorConf,
+                                               Explosion &out) {
+  // The implementation word of an "ordinary" serial executor is
+  // just the witness table pointer with no flags set.
+  llvm::Value *identity =
+    IGF.Builder.CreatePtrToInt(executor, IGF.IGM.ExecutorFirstTy);
+  llvm::Value *impl =
+    emitWitnessTableRef(IGF, executorType, executorConf);
+  impl = IGF.Builder.CreatePtrToInt(impl, IGF.IGM.ExecutorSecondTy);
 
-  if (flags) {
-    impl = IGF.Builder.CreateOr(impl, IGF.IGM.getSize(Size(flags)));
-  }
   out.add(identity);
   out.add(impl);
 }
@@ -171,15 +174,74 @@ void irgen::emitGetCurrentExecutor(IRGenFunction &IGF, Explosion &out) {
   IGF.emitAllExtractValues(call, IGF.IGM.SwiftExecutorTy, out);
 }
 
-llvm::Value *irgen::emitCreateTaskGroup(IRGenFunction &IGF) {
+llvm::Value *irgen::emitBuiltinStartAsyncLet(IRGenFunction &IGF,
+                                             llvm::Value *taskOptions,
+                                             llvm::Value *taskFunction,
+                                             llvm::Value *localContextInfo,
+                                             llvm::Value *localResultBuffer,
+                                             SubstitutionMap subs) {
+  // stack allocate AsyncLet, and begin lifetime for it (until EndAsyncLet)
+  auto ty = llvm::ArrayType::get(IGF.IGM.Int8PtrTy, NumWords_AsyncLet);
+  auto address = IGF.createAlloca(ty, Alignment(Alignment_AsyncLet));
+  auto alet = IGF.Builder.CreateBitCast(address.getAddress(),
+                                        IGF.IGM.Int8PtrTy);
+  IGF.Builder.CreateLifetimeStart(alet);
+
+  assert(subs.getReplacementTypes().size() == 1 &&
+         "startAsyncLet should have a type substitution");
+  auto futureResultType = subs.getReplacementTypes()[0]->getCanonicalType();
+  auto futureResultTypeMetadata = IGF.emitAbstractTypeMetadataRef(futureResultType);
+
+  llvm::CallInst *call;
+  if (localResultBuffer) {
+    // This is @_silgen_name("swift_asyncLet_begin")
+    call = IGF.Builder.CreateCall(IGF.IGM.getAsyncLetBeginFn(),
+                                      {alet,
+                                       taskOptions,
+                                       futureResultTypeMetadata,
+                                       taskFunction,
+                                       localContextInfo,
+                                       localResultBuffer
+                                      });
+  } else {
+    // This is @_silgen_name("swift_asyncLet_start")
+    call = IGF.Builder.CreateCall(IGF.IGM.getAsyncLetStartFn(),
+                                      {alet,
+                                       taskOptions,
+                                       futureResultTypeMetadata,
+                                       taskFunction,
+                                       localContextInfo
+                                      });
+  }
+  call->setDoesNotThrow();
+  call->setCallingConv(IGF.IGM.SwiftCC);
+
+  return alet;
+}
+
+void irgen::emitEndAsyncLet(IRGenFunction &IGF, llvm::Value *alet) {
+  auto *call = IGF.Builder.CreateCall(IGF.IGM.getEndAsyncLetFn(),
+                                      {alet});
+  call->setDoesNotThrow();
+  call->setCallingConv(IGF.IGM.SwiftCC);
+
+  IGF.Builder.CreateLifetimeEnd(alet);
+}
+
+llvm::Value *irgen::emitCreateTaskGroup(IRGenFunction &IGF,
+                                        SubstitutionMap subs) {
   auto ty = llvm::ArrayType::get(IGF.IGM.Int8PtrTy, NumWords_TaskGroup);
   auto address = IGF.createAlloca(ty, Alignment(Alignment_TaskGroup));
   auto group = IGF.Builder.CreateBitCast(address.getAddress(),
                                          IGF.IGM.Int8PtrTy);
   IGF.Builder.CreateLifetimeStart(group);
+  assert(subs.getReplacementTypes().size() == 1 &&
+         "createTaskGroup should have a type substitution");
+  auto resultType = subs.getReplacementTypes()[0]->getCanonicalType();
+  auto resultTypeMetadata = IGF.emitAbstractTypeMetadataRef(resultType);
 
   auto *call = IGF.Builder.CreateCall(IGF.IGM.getTaskGroupInitializeFn(),
-                                      {group});
+                                      {group, resultTypeMetadata});
   call->setDoesNotThrow();
   call->setCallingConv(IGF.IGM.SwiftCC);
 
@@ -193,4 +255,35 @@ void irgen::emitDestroyTaskGroup(IRGenFunction &IGF, llvm::Value *group) {
   call->setCallingConv(IGF.IGM.SwiftCC);
 
   IGF.Builder.CreateLifetimeEnd(group);
+}
+
+llvm::Function *IRGenModule::getAwaitAsyncContinuationFn() {
+  StringRef name = "__swift_continuation_await_point";
+  if (llvm::GlobalValue *F = Module.getNamedValue(name))
+    return cast<llvm::Function>(F);
+
+  // The parameters here match the extra arguments passed to
+  // @llvm.coro.suspend.async by emitAwaitAsyncContinuation.
+  llvm::Type *argTys[] = { ContinuationAsyncContextPtrTy };
+  auto *suspendFnTy =
+    llvm::FunctionType::get(VoidTy, argTys, false /*vaargs*/);
+
+  llvm::Function *suspendFn =
+      llvm::Function::Create(suspendFnTy, llvm::Function::InternalLinkage,
+                             name, &Module);
+  suspendFn->setCallingConv(SwiftAsyncCC);
+  suspendFn->setDoesNotThrow();
+  IRGenFunction suspendIGF(*this, suspendFn);
+  if (DebugInfo)
+    DebugInfo->emitArtificialFunction(suspendIGF, suspendFn);
+  auto &Builder = suspendIGF.Builder;
+
+  llvm::Value *context = suspendFn->getArg(0);
+  auto *call = Builder.CreateCall(getContinuationAwaitFn(), { context });
+  call->setDoesNotThrow();
+  call->setCallingConv(SwiftAsyncCC);
+  call->setTailCallKind(AsyncTailCallKind);
+
+  Builder.CreateRetVoid();
+  return suspendFn;
 }

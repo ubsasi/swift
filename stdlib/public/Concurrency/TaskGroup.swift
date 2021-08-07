@@ -15,80 +15,67 @@ import Swift
 
 // ==== TaskGroup --------------------------------------------------------------
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-extension Task {
-  @available(*, deprecated, message: "`Task.Group` was replaced by `ThrowingTaskGroup` and `TaskGroup` and will be removed shortly.")
-  public typealias Group<TaskResult: Sendable> = ThrowingTaskGroup<TaskResult, Error>
-
-  @available(*, deprecated, message: "`Task.withGroup` was replaced by `withThrowingTaskGroup` and `withTaskGroup` and will be removed shortly.")
-  public static func withGroup<TaskResult, BodyResult>(
-      resultType: TaskResult.Type,
-      returning returnType: BodyResult.Type = BodyResult.self,
-      body: (inout Task.Group<TaskResult>) async throws -> BodyResult
-  ) async rethrows -> BodyResult {
-    try await withThrowingTaskGroup(of: resultType) { group in
-      try await body(&group)
-    }
-  }
-}
-
-
 /// Starts a new task group which provides a scope in which a dynamic number of
-/// tasks may be spawned.
+/// tasks may be created.
 ///
-/// Tasks added to the group by `group.spawn()` will automatically be awaited on
-/// when the scope exits. If the group exits by throwing, all added tasks will
-/// be cancelled and their results discarded.
+/// When the group returns,
+/// it implicitly waits for all child tasks to complete.
+/// The tasks are canceled only if `cancelAll()` was invoked before returning,
+/// if the group's task was canceled.
 ///
-/// ### Implicit awaiting
-/// When the group returns it will implicitly await for all spawned tasks to
-/// complete. The tasks are only cancelled if `cancelAll()` was invoked before
-/// returning, the groups' task was cancelled, or the group body has thrown.
+/// After this method returns, the task group is guaranteed to be empty.
 ///
-/// When results of tasks added to the group need to be collected, one can
-/// gather their results using the following pattern:
+/// To collect the results of tasks that were added to the group,
+/// you can use the following pattern:
 ///
-///     while let result = await group.next() {
-///       // some accumulation logic (e.g. sum += result)
+///     var sum = 0
+///     for await result in group {
+///         sum += result
 ///     }
 ///
-/// It is also possible to collect results from the group by using its
-/// `AsyncSequence` conformance, which enables its use in an asynchronous for-loop,
-/// like this:
+/// If you need more control or only a few results,
+/// you can use a pattern like the following:
 ///
-///     for await result in group {
-///       // some accumulation logic (e.g. sum += result)
-///      }
+///     guard let first = await group.next() {
+///         group.cancelAll()
+///         return 0
+///     }
+///     let second = await group.next() ?? 0
+///     group.cancelAll()
+///     return first + second
 ///
-/// ### Cancellation
-/// If the task that the group is running in is cancelled, the group becomes 
-/// cancelled and all child tasks spawned in the group are cancelled as well.
-/// 
-/// Since the `withTaskGroup` provided group is specifically non-throwing,
-/// child tasks (or the group) cannot react to cancellation by throwing a 
-/// `CancellationError`, however they may interrupt their work and e.g. return 
-/// some best-effort approximation of their work. 
+/// Task Group Cancellation
+/// =======================
 ///
-/// If throwing is a good option for the kinds of tasks spawned by the group,
-/// consider using the `withThrowingTaskGroup` function instead.
+/// Canceling the task in which the group is running
+/// also cancels the group and all of its child tasks.
 ///
-/// Postcondition:
-/// Once `withTaskGroup` returns it is guaranteed that the `group` is *empty*.
+/// If you call `async(priority:operation:)` to create a new task in a canceled group,
+/// that task is immediately canceled after creation.
+/// Alternatively, you can call `asyncUnlessCancelled(priority:operation:)`,
+/// which doesn't create the task if the group has already been canceled
+/// Choosing between these two functions
+/// lets you control how to react to cancellation within a group:
+/// some child tasks need to run regardless of cancellation
+/// and others are better not even being created
+/// knowing they can't produce useful results.
 ///
-/// This is achieved in the following way:
-/// - if the body returns normally:
-///   - the group will await any not yet complete tasks,
-///   - once the `withTaskGroup` returns the group is guaranteed to be empty.
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+/// Because the tasks you add to a group with this method are nonthrowing,
+/// those tasks can't respond to cancellation by throwing `CancellationError`.
+/// The tasks must handle cancellation in some other way,
+/// such as returning the work completed so far, returning an empty result, or returning `nil`.
+/// For tasks that need to handle cancellation by throwing an error,
+/// use the `withThrowingTaskGroup(of:returning:body:)` method instead.
+@available(SwiftStdlib 5.5, *)
 @inlinable
-public func withTaskGroup<ChildTaskResult: Sendable, GroupResult>(
+public func withTaskGroup<ChildTaskResult, GroupResult>(
   of childTaskResultType: ChildTaskResult.Type,
   returning returnType: GroupResult.Type = GroupResult.self,
   body: (inout TaskGroup<ChildTaskResult>) async -> GroupResult
 ) async -> GroupResult {
-  #if compiler(>=5.5) && $BuiltinTaskGroup
+  #if compiler(>=5.5) && $BuiltinTaskGroupWithArgument
 
-  let _group = Builtin.createTaskGroup()
+  let _group = Builtin.createTaskGroup(ChildTaskResult.self)
   var group = TaskGroup<ChildTaskResult>(group: _group)
 
   // Run the withTaskGroup body.
@@ -104,70 +91,85 @@ public func withTaskGroup<ChildTaskResult: Sendable, GroupResult>(
   #endif
 }
 
-/// Starts a new throwing task group which provides a scope in which a dynamic 
-/// number of tasks may be spawned.
+/// Starts a new scope in which a dynamic number of throwing tasks can be created.
 ///
-/// Tasks added to the group by `group.spawn()` will automatically be awaited on
-/// when the scope exits. If the group exits by throwing, all added tasks will
-/// be cancelled and their results discarded.
+/// When the group returns,
+/// it implicitly waits for all child tasks to complete.
+/// The tasks are canceled only if `cancelAll()` was invoked before returning,
+/// if the group's task was canceled,
+/// or if the group's body throws an error.
 ///
-/// ### Implicit awaiting
-/// When the group returns it will implicitly await for all spawned tasks to
-/// complete. The tasks are only cancelled if `cancelAll()` was invoked before
-/// returning, the groups' task was cancelled, or the group body has thrown.
+/// After this method returns, the task group is guaranteed to be empty.
 ///
-/// When results of tasks added to the group need to be collected, one can
-/// gather their results using the following pattern:
+/// To collect the results of tasks that were added to the group,
+/// you can use the following pattern:
 ///
-///     while let result = await try group.next() {
-///       // some accumulation logic (e.g. sum += result)
+///     var sum = 0
+///     for await result in group {
+///         sum += result
 ///     }
 ///
-/// It is also possible to collect results from the group by using its
-/// `AsyncSequence` conformance, which enables its use in an asynchronous for-loop,
-/// like this:
+/// If you need more control or only a few results,
+/// you can use a pattern like the following:
 ///
-///     for try await result in group {
-///       // some accumulation logic (e.g. sum += result)
-///      }
+///     guard let first = await group.next() {
+///         group.cancelAll()
+///         return 0
+///     }
+///     let second = await group.next() ?? 0
+///     group.cancelAll()
+///     return first + second
 ///
-/// ### Thrown errors
-/// When tasks are added to the group using the `group.spawn` function, they may
-/// immediately begin executing. Even if their results are not collected explicitly
-/// and such task throws, and was not yet cancelled, it may result in the `withTaskGroup`
-/// throwing.
+/// Task Group Cancellation
+/// =======================
 ///
-/// ### Cancellation
-/// If the task that the group is running in is cancelled, the group becomes 
-/// cancelled and all child tasks spawned in the group are cancelled as well.
-/// 
-/// If an error is thrown out of the task group, all of its remaining tasks
-/// will be cancelled and the `withTaskGroup` call will rethrow that error.
+/// Canceling the task in which the group is running
+/// also cancels the group and all of its child tasks.
 ///
-/// Individual tasks throwing results in their corresponding `try group.next()`
-/// call throwing, giving a chance to handle individual errors or letting the
-/// error be rethrown by the group.
+/// If you call `async(priority:operation:)` to create a new task in a canceled group,
+/// that task is is immediately canceled after being created.
+/// Alternatively, you can call `asyncUnlessCancelled(priority:operation:)`,
+/// which doesn't create the task if the group has already been canceled
+/// Choosing between these two functions
+/// lets you control how to react to cancellation within a group:
+/// some child tasks need to run regardless of cancellation
+/// and others are better not even being created
+/// knowing they can't produce useful results.
 ///
-/// Postcondition:
-/// Once `withThrowingTaskGroup` returns it is guaranteed that the `group` is *empty*.
+/// Throwing an error in one of the tasks of a task group
+/// doesn't immediately cancel the other tasks in that group.
+/// However,
+/// if you call `next()` in the task group and propogate its error,
+/// all other tasks are canceled.
+/// For example, in the code below,
+/// nothing is canceled and the group doesn't throw an error:
 ///
-/// This is achieved in the following way:
-/// - if the body returns normally:
-///   - the group will await any not yet complete tasks,
-///     - if any of those tasks throws, the remaining tasks will be cancelled,
-///   - once the `withTaskGroup` returns the group is guaranteed to be empty.
-/// - if the body throws:
-///   - all tasks remaining in the group will be automatically cancelled.
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+///     withThrowingTaskGroup { group in
+///         group.async { throw SomeError() }
+///     }
+///
+/// In contrast, this example throws `SomeError`
+/// and cancels all of the tasks in the group:
+///
+///     withThrowingTaskGroup { group in
+///         group.async { throw SomeError() }
+///         try group.next()
+///     }
+///
+/// An individual task throws its error
+/// in the corresponding call to `Group.next()`,
+/// which gives you a chance to handle individual error
+/// or to let the error be rethrown by the group.
+@available(SwiftStdlib 5.5, *)
 @inlinable
-public func withThrowingTaskGroup<ChildTaskResult: Sendable, GroupResult>(
+public func withThrowingTaskGroup<ChildTaskResult, GroupResult>(
   of childTaskResultType: ChildTaskResult.Type,
   returning returnType: GroupResult.Type = GroupResult.self,
   body: (inout ThrowingTaskGroup<ChildTaskResult, Error>) async throws -> GroupResult
 ) async rethrows -> GroupResult {
-  #if compiler(>=5.5) && $BuiltinTaskGroup
+  #if compiler(>=5.5) && $BuiltinTaskGroupWithArgument
 
-  let _group = Builtin.createTaskGroup()
+  let _group = Builtin.createTaskGroup(ChildTaskResult.self)
   var group = ThrowingTaskGroup<ChildTaskResult, Error>(group: _group)
 
   do {
@@ -192,34 +194,32 @@ public func withThrowingTaskGroup<ChildTaskResult: Sendable, GroupResult>(
   #endif
 }
 
-/// A task group serves as storage for dynamically spawned tasks.
+/// A task group serves as storage for dynamically created child tasks.
 ///
-/// It is created by the `withTaskGroup` function.
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+/// To create a task group,
+/// call the `withTaskGroup(of:returning:body:)` method.
+///
+/// A task group must be used only within the task where it was created.
+/// In most cases,
+/// the Swift type system prevents a task group from escaping like that
+/// because adding a child task is a mutating operation,
+/// and mutation operations can't be performed
+/// from concurrent execution contexts likes child tasks.
+@available(SwiftStdlib 5.5, *)
 @frozen
-public struct TaskGroup<ChildTaskResult: Sendable> {
+public struct TaskGroup<ChildTaskResult> {
 
   /// Group task into which child tasks offer their results,
   /// and the `next()` function polls those results from.
   @usableFromInline
   internal let _group: Builtin.RawPointer
 
-  /// No public initializers
+  // No public initializers
   @inlinable
   init(group: Builtin.RawPointer) {
     self._group = group
   }
 
-  @available(*, deprecated, message: "`Task.Group.add` has been replaced by `TaskGroup.spawn` or `TaskGroup.spawnUnlessCancelled` and will be removed shortly.")
-  public mutating func add(
-      priority: Task.Priority = .unspecified,
-      operation: __owned @Sendable @escaping () async -> ChildTaskResult
-  ) async -> Bool {
-    return try self.spawnUnlessCancelled(priority: priority) {
-      await operation()
-    }
-  }
-
   /// Add a child task to the group.
   ///
   /// ### Error handling
@@ -235,29 +235,23 @@ public struct TaskGroup<ChildTaskResult: Sendable> {
   /// - Returns:
   ///   - `true` if the operation was added to the group successfully,
   ///     `false` otherwise (e.g. because the group `isCancelled`)
-  public mutating func spawn(
-    priority: Task.Priority = .unspecified,
+  @_alwaysEmitIntoClient
+  public mutating func addTask(
+    priority: TaskPriority? = nil,
     operation: __owned @Sendable @escaping () async -> ChildTaskResult
   ) {
-    _ = _taskGroupAddPendingTask(group: _group, unconditionally: true)
+#if compiler(>=5.5) && $BuiltinCreateAsyncTaskInGroup
+    let flags = taskCreateFlags(
+      priority: priority, isChildTask: true, copyTaskLocals: false,
+      inheritContext: false, enqueueJob: true,
+      addPendingGroupTaskUnconditionally: true
+    )
 
-    // Set up the job flags for a new task.
-    var flags = Task.JobFlags()
-    flags.kind = .task
-    flags.priority = priority
-    flags.isFuture = true
-    flags.isChildTask = true
-    flags.isGroupChildTask = true
-    
-    // Create the asynchronous task future.
-    let (childTask, _) = Builtin.createAsyncTaskGroupFuture(
-      flags.bits, _group, operation)
-    
-    // Attach it to the group's task record in the current task.
-    _taskGroupAttachChild(group: _group, child: childTask)
-    
-    // Enqueue the resulting job.
-    _enqueueJobGlobal(Builtin.convertTaskToJob(childTask))
+    // Create the task in this group.
+    _ = Builtin.createAsyncTaskInGroup(flags, _group, operation)
+#else
+    fatalError("Unsupported Swift compiler")
+#endif
   }
 
   /// Add a child task to the group.
@@ -275,10 +269,12 @@ public struct TaskGroup<ChildTaskResult: Sendable> {
   /// - Returns:
   ///   - `true` if the operation was added to the group successfully,
   ///     `false` otherwise (e.g. because the group `isCancelled`)
-  public mutating func spawnUnlessCancelled(
-    priority: Task.Priority = .unspecified,
+  @_alwaysEmitIntoClient
+  public mutating func addTaskUnlessCancelled(
+    priority: TaskPriority? = nil,
     operation: __owned @Sendable @escaping () async -> ChildTaskResult
   ) -> Bool {
+#if compiler(>=5.5) && $BuiltinCreateAsyncTaskInGroup
     let canAdd = _taskGroupAddPendingTask(group: _group, unconditionally: false)
 
     guard canAdd else {
@@ -286,34 +282,39 @@ public struct TaskGroup<ChildTaskResult: Sendable> {
       return false
     }
 
-    // Set up the job flags for a new task.
-    var flags = Task.JobFlags()
-    flags.kind = .task
-    flags.priority = priority
-    flags.isFuture = true
-    flags.isChildTask = true
-    flags.isGroupChildTask = true
+    let flags = taskCreateFlags(
+      priority: priority, isChildTask: true, copyTaskLocals: false,
+      inheritContext: false, enqueueJob: true,
+      addPendingGroupTaskUnconditionally: false
+    )
 
-    // Create the asynchronous task future.
-    let (childTask, _) = Builtin.createAsyncTaskGroupFuture(
-      flags.bits, _group, operation)
-
-    // Attach it to the group's task record in the current task.
-    _taskGroupAttachChild(group: _group, child: childTask)
-
-    // Enqueue the resulting job.
-    _enqueueJobGlobal(Builtin.convertTaskToJob(childTask))
+    // Create the task in this group.
+    _ = Builtin.createAsyncTaskInGroup(flags, _group, operation)
 
     return true
+#else
+    fatalError("Unsupported Swift compiler")
+#endif
   }
 
-  /// Wait for the a child task that was added to the group to complete,
-  /// and return (or rethrow) the value it completed with. If no tasks are
-  /// pending in the task group this function returns `nil`, allowing the
-  /// following convenient expressions to be written for awaiting for one
-  /// or all tasks to complete:
+  /// Wait for the next child task to complete,
+  /// and return the value it returned.
   ///
-  /// Await on a single completion:
+  /// The values returned by successive calls to this method
+  /// appear in the order that the tasks *completed*,
+  /// not in the order that those tasks were added to the task group.
+  /// For example:
+  ///
+  ///     group.async { 1 }
+  ///     group.async { 2 }
+  ///
+  ///     print(await group.next())
+  ///     // Prints either "2" or "1".
+  ///
+  /// If there aren't any pending tasks in the task group,
+  /// this method returns `nil`,
+  /// which lets you write the following
+  /// to wait for a single task to complete:
   ///
   ///     if let first = try await group.next() {
   ///        return first
@@ -326,72 +327,62 @@ public struct TaskGroup<ChildTaskResult: Sendable> {
   ///     }
   ///     return collected
   ///
-  /// Awaiting on an empty group results in the immediate return of a `nil`
-  /// value, without the group task having to suspend.
+  /// Awaiting on an empty group
+  /// immediate returns `nil` without suspending.
   ///
-  /// It is also possible to use `for await` to collect results of a task groups:
+  /// It's also possible to use `for await` to collect results of a task groups:
   ///
   ///     for await try value in group {
   ///         collected += value
   ///     }
   ///
-  /// ### Thread-safety
-  /// Please note that the `group` object MUST NOT escape into another task.
-  /// The `group.next()` MUST be awaited from the task that had originally
-  /// created the group. It is not allowed to escape the group reference.
+  /// Don't call this method from outside the task
+  /// where this task group was created.
+  /// In most cases, the Swift type system prevents this mistake;
+  /// for example, because the `add(priority:operation:)` method is mutating,
+  /// that method can't be called from a concurrent execution context like a child task.
   ///
-  /// Note also that this is generally prevented by Swift's type-system,
-  /// as the `add` operation is `mutating`, and those may not be performed
-  /// from concurrent execution contexts, such as child tasks.
-  ///
-  /// ### Ordering
-  /// Order of values returned by next() is *completion order*, and not
-  /// submission order. I.e. if tasks are added to the group one after another:
-  ///
-  ///     group.spawn { 1 }
-  ///     group.spawn { 2 }
-  ///
-  ///     print(await group.next())
-  ///     /// Prints "1" OR "2"
-  ///
-  /// ### Errors
-  /// If an operation added to the group throws, that error will be rethrown
-  /// by the next() call corresponding to that operation's completion.
-  ///
-  /// It is possible to directly rethrow such error out of a `withTaskGroup` body
-  /// function's body, causing all remaining tasks to be implicitly cancelled.
+  /// - Returns: The value returned by the next child task that completes.
   public mutating func next() async -> ChildTaskResult? {
     // try!-safe because this function only exists for Failure == Never,
     // and as such, it is impossible to spawn a throwing child task.
     return try! await _taskGroupWaitNext(group: _group)
   }
 
-  /// Await all the remaining tasks on this group.
+  /// Await all of the remaining tasks on this group.
   @usableFromInline
   internal mutating func awaitAllRemainingTasks() async {
     while let _ = await next() {}
   }
-  
-  /// Query whether the group has any remaining tasks.
+
+  /// Wait for all remaining tasks in the task group to complete before
+  /// returning.
+  @_alwaysEmitIntoClient
+  public mutating func waitForAll() async {
+    await awaitAllRemainingTasks()
+  }
+
+  /// A Boolean value that indicates whether the group has any remaining tasks.
   ///
-  /// Task groups are always empty upon entry to the `withTaskGroup` body, and
-  /// become empty again when `withTaskGroup` returns (either by awaiting on all
-  /// pending tasks or cancelling them).
+  /// At the start of the body of a `withTaskGroup(of:returning:body:)` call,
+  /// the task group is always empty.
+  /// It is guaranteed to be empty when returning from that body
+  /// because a task group waits for all child tasks to complete before returning.
   ///
-  /// - Returns: `true` if the group has no pending tasks, `false` otherwise.
+  /// - Returns: `true` if the group has no pending tasks; otherwise `false`.
   public var isEmpty: Bool {
     _taskGroupIsEmpty(_group)
   }
 
-  /// Cancel all the remaining tasks in the group.
+  /// Cancel all of the remaining tasks in the group.
   ///
-  /// A cancelled group will not will NOT accept new tasks being added into it.
+  /// After canceling a group, adding a new task to it always fails.
   ///
   /// Any results, including errors thrown by tasks affected by this
   /// cancellation, are silently discarded.
   ///
   /// This function may be called even from within child (or any other) tasks,
-  /// and will reliably cause the group to become cancelled.
+  /// and causes the group to be canceled.
   ///
   /// - SeeAlso: `Task.isCancelled`
   /// - SeeAlso: `TaskGroup.isCancelled`
@@ -399,14 +390,13 @@ public struct TaskGroup<ChildTaskResult: Sendable> {
     _taskGroupCancelAll(group: _group)
   }
 
-  /// Returns `true` if the group was cancelled, e.g. by `cancelAll`.
+  /// A Boolean value that indicates whether the group was canceled.
   ///
-  /// If the task currently running this group was cancelled, the group will
-  /// also be implicitly cancelled, which will be reflected in the return
-  /// value of this function as well.
+  /// To cancel a group, call the `TaskGroup.cancelAll()` method.
   ///
-  /// - Returns: `true` if the group (or its parent task) was cancelled,
-  ///            `false` otherwise.
+  /// If the task that's currently running this group is canceled,
+  /// the group is also implicitly canceled,
+  /// which is also reflected in this property's value.
   public var isCancelled: Bool {
     return _taskGroupIsCancelled(group: _group)
   }
@@ -431,20 +421,19 @@ public struct TaskGroup<ChildTaskResult: Sendable> {
 // proofing, in case we'd ever have typed errors, however unlikely this may be.
 // Today the throwing task group failure is simply automatically bound to `Error`.
 
-/// A task group serves as storage for dynamically spawned, potentially throwing,
-/// child tasks.
+/// A task group serves as storage for dynamically created,
+/// potentially throwing, child tasks.
 ///
-/// It is created by the `withTaskGroup` function.
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @frozen
-public struct ThrowingTaskGroup<ChildTaskResult: Sendable, Failure: Error> {
+public struct ThrowingTaskGroup<ChildTaskResult, Failure: Error> {
 
   /// Group task into which child tasks offer their results,
   /// and the `next()` function polls those results from.
   @usableFromInline
   internal let _group: Builtin.RawPointer
 
-  /// No public initializers
+  // No public initializers
   @inlinable
   init(group: Builtin.RawPointer) {
     self._group = group
@@ -462,24 +451,26 @@ public struct ThrowingTaskGroup<ChildTaskResult: Sendable, Failure: Error> {
     }
   }
 
-  @available(*, deprecated, message: "`Task.Group.add` has been replaced by `(Throwing)TaskGroup.spawn` or `(Throwing)TaskGroup.spawnUnlessCancelled` and will be removed shortly.")
-  public mutating func add(
-    priority: Task.Priority = .unspecified,
-    operation: __owned @Sendable @escaping () async throws -> ChildTaskResult
-  ) async -> Bool {
-    return try self.spawnUnlessCancelled(priority: priority) {
-      try await operation()
-    }
+  @usableFromInline
+  internal mutating func _waitForAll() async throws {
+    while let _ = try await next() { }
   }
 
-  /// Spawn, unconditionally, a child task in the group.
+  /// Wait for all remaining tasks in the task group to complete before
+  /// returning.
+  @_alwaysEmitIntoClient
+  public mutating func waitForAll() async throws {
+    while let _ = try await next() { }
+  }
+
+  /// Unconditionally create a child task in the group.
   ///
   /// ### Error handling
   /// Operations are allowed to `throw`, in which case the `try await next()`
   /// invocation corresponding to the failed task will re-throw the given task.
   ///
-  /// The `add` function will never (re-)throw errors from the `operation`.
-  /// Instead, the corresponding `next()` call will throw the error when necessary.
+  /// This method doesn't throw an error, even if the child task does.
+  /// Instead, corresponding next call to `TaskGroup.next()` rethrows that error.
   ///
   /// - Parameters:
   ///   - overridingPriority: override priority of the operation task
@@ -487,30 +478,23 @@ public struct ThrowingTaskGroup<ChildTaskResult: Sendable, Failure: Error> {
   /// - Returns:
   ///   - `true` if the operation was added to the group successfully,
   ///     `false` otherwise (e.g. because the group `isCancelled`)
-  public mutating func spawn(
-    priority: Task.Priority = .unspecified,
+  @_alwaysEmitIntoClient
+  public mutating func addTask(
+    priority: TaskPriority? = nil,
     operation: __owned @Sendable @escaping () async throws -> ChildTaskResult
   ) {
-    // we always add, so no need to check if group was cancelled
-    _ = _taskGroupAddPendingTask(group: _group, unconditionally: true)
+#if compiler(>=5.5) && $BuiltinCreateAsyncTaskInGroup
+    let flags = taskCreateFlags(
+      priority: priority, isChildTask: true, copyTaskLocals: false,
+      inheritContext: false, enqueueJob: true,
+      addPendingGroupTaskUnconditionally: true
+    )
 
-    // Set up the job flags for a new task.
-    var flags = Task.JobFlags()
-    flags.kind = .task
-    flags.priority = priority
-    flags.isFuture = true
-    flags.isChildTask = true
-    flags.isGroupChildTask = true
-
-    // Create the asynchronous task future.
-    let (childTask, _) = Builtin.createAsyncTaskGroupFuture(
-      flags.bits, _group, operation)
-
-    // Attach it to the group's task record in the current task.
-    _taskGroupAttachChild(group: _group, child: childTask)
-
-    // Enqueue the resulting job.
-    _enqueueJobGlobal(Builtin.convertTaskToJob(childTask))
+    // Create the task in this group.
+    _ = Builtin.createAsyncTaskInGroup(flags, _group, operation)
+#else
+    fatalError("Unsupported Swift compiler")
+#endif
   }
 
   /// Add a child task to the group.
@@ -519,8 +503,8 @@ public struct ThrowingTaskGroup<ChildTaskResult: Sendable, Failure: Error> {
   /// Operations are allowed to `throw`, in which case the `try await next()`
   /// invocation corresponding to the failed task will re-throw the given task.
   ///
-  /// The `add` function will never (re-)throw errors from the `operation`.
-  /// Instead, the corresponding `next()` call will throw the error when necessary.
+  /// This method doesn't throw an error, even if the child task does.
+  /// Instead, the corresponding call to `TaskGroup.next()` rethrows that error.
   ///
   /// - Parameters:
   ///   - overridingPriority: override priority of the operation task
@@ -528,10 +512,12 @@ public struct ThrowingTaskGroup<ChildTaskResult: Sendable, Failure: Error> {
   /// - Returns:
   ///   - `true` if the operation was added to the group successfully,
   ///     `false` otherwise (e.g. because the group `isCancelled`)
-  public mutating func spawnUnlessCancelled(
-    priority: Task.Priority = .unspecified,
+  @_alwaysEmitIntoClient
+  public mutating func addTaskUnlessCancelled(
+    priority: TaskPriority? = nil,
     operation: __owned @Sendable @escaping () async throws -> ChildTaskResult
   ) -> Bool {
+#if compiler(>=5.5) && $BuiltinCreateAsyncTaskInGroup
     let canAdd = _taskGroupAddPendingTask(group: _group, unconditionally: false)
 
     guard canAdd else {
@@ -539,34 +525,39 @@ public struct ThrowingTaskGroup<ChildTaskResult: Sendable, Failure: Error> {
       return false
     }
 
-    // Set up the job flags for a new task.
-    var flags = Task.JobFlags()
-    flags.kind = .task
-    flags.priority = priority
-    flags.isFuture = true
-    flags.isChildTask = true
-    flags.isGroupChildTask = true
+    let flags = taskCreateFlags(
+      priority: priority, isChildTask: true, copyTaskLocals: false,
+      inheritContext: false, enqueueJob: true,
+      addPendingGroupTaskUnconditionally: false
+    )
 
-    // Create the asynchronous task future.
-    let (childTask, _) = Builtin.createAsyncTaskGroupFuture(
-      flags.bits, _group, operation)
-
-    // Attach it to the group's task record in the current task.
-    _taskGroupAttachChild(group: _group, child: childTask)
-
-    // Enqueue the resulting job.
-    _enqueueJobGlobal(Builtin.convertTaskToJob(childTask))
+    // Create the task in this group.
+    _ = Builtin.createAsyncTaskInGroup(flags, _group, operation)
 
     return true
+#else
+    fatalError("Unsupported Swift compiler")
+#endif
   }
 
-  /// Wait for the a child task that was added to the group to complete,
-  /// and return (or rethrow) the value it completed with. If no tasks are
-  /// pending in the task group this function returns `nil`, allowing the
-  /// following convenient expressions to be written for awaiting for one
-  /// or all tasks to complete:
+  /// Wait for the next child task to complete,
+  /// and return the value it returned or rethrow the error it threw.
   ///
-  /// Await on a single completion:
+  /// The values returned by successive calls to this method
+  /// appear in the order that the tasks *completed*,
+  /// not in the order that those tasks were added to the task group.
+  /// For example:
+  ///
+  ///     group.async { 1 }
+  ///     group.async { 2 }
+  ///
+  ///     await print(group.next())
+  ///     // Prints either "2" or "1".
+  ///
+  /// If there aren't any pending tasks in the task group,
+  /// this method returns `nil`,
+  /// which lets you write like the following
+  /// to wait for a single task to complete:
   ///
   ///     if let first = try await group.next() {
   ///        return first
@@ -579,44 +570,67 @@ public struct ThrowingTaskGroup<ChildTaskResult: Sendable, Failure: Error> {
   ///     }
   ///     return collected
   ///
-  /// Awaiting on an empty group results in the immediate return of a `nil`
-  /// value, without the group task having to suspend.
+  /// Awaiting on an empty group
+  /// immediate returns `nil` without suspending.
   ///
-  /// It is also possible to use `for await` to collect results of a task groups:
+  /// It's also possible to use `for await` to collect results of a task groups:
   ///
   ///     for await try value in group {
   ///         collected += value
   ///     }
   ///
-  /// ### Thread-safety
-  /// Please note that the `group` object MUST NOT escape into another task.
-  /// The `group.next()` MUST be awaited from the task that had originally
-  /// created the group. It is not allowed to escape the group reference.
+  /// If the next child task throws an error
+  /// and you propagate that error from this method
+  /// out of the body of a `TaskGroup.withThrowingTaskGroup(of:returning:body:)` call,
+  /// then all remaining child tasks in that group are implicitly canceled.
   ///
-  /// Note also that this is generally prevented by Swift's type-system,
-  /// as the `add` operation is `mutating`, and those may not be performed
-  /// from concurrent execution contexts, such as child tasks.
+  /// Don't call this method from outside the task
+  /// where this task group was created.
+  /// In most cases, the Swift type system prevents this mistake;
+  /// for example, because the `add(priority:operation:)` method is mutating,
+  /// that method can't be called from a concurrent execution context like a child task.
   ///
-  /// ### Ordering
-  /// Order of values returned by next() is *completion order*, and not
-  /// submission order. I.e. if tasks are added to the group one after another:
+  /// - Returns: The value returned by the next child task that completes.
   ///
-  ///     group.spawn { 1 }
-  ///     group.spawn { 2 }
+  /// - Throws: The error thrown by the next child task that completes.
   ///
-  ///     print(await group.next())
-  ///     /// Prints "1" OR "2"
-  ///
-  /// ### Errors
-  /// If an operation added to the group throws, that error will be rethrown
-  /// by the next() call corresponding to that operation's completion.
-  ///
-  /// It is possible to directly rethrow such error out of a `withTaskGroup` body
-  /// function's body, causing all remaining tasks to be implicitly cancelled.
+  /// - SeeAlso: `nextResult()`
   public mutating func next() async throws -> ChildTaskResult? {
     return try await _taskGroupWaitNext(group: _group)
   }
 
+  /// Wait for the next child task to complete,
+  /// and return a result containing either
+  /// the value that the child task returned or the error that it threw.
+  ///
+  /// The values returned by successive calls to this method
+  /// appear in the order that the tasks *completed*,
+  /// not in the order that those tasks were added to the task group.
+  /// For example:
+  ///
+  ///     group.async { 1 }
+  ///     group.async { 2 }
+  ///
+  ///     guard let result = await group.nextResult() else {
+  ///         return  // No task to wait on, which won't happen in this example.
+  ///     }
+  ///     
+  ///     switch result { 
+  ///     case .success(let value): print(value)
+  ///     case .failure(let error): print("Failure: \(error)")
+  ///     }
+  ///     // Prints either "2" or "1".
+  ///
+  /// If the next child task throws an error
+  /// and you propagate that error from this method
+  /// out of the body of a `ThrowingTaskGroup.withThrowingTaskGroup(of:returning:body:)` call,
+  /// then all remaining child tasks in that group are implicitly canceled.
+  ///
+  /// - Returns: A `Result.success` value
+  ///   containing the value that the child task returned,
+  ///   or a `Result.failure` value
+  ///   containing the error that the child task threw.
+  ///
   /// - SeeAlso: `next()`
   public mutating func nextResult() async throws -> Result<ChildTaskResult, Failure>? {
     do {
@@ -630,26 +644,27 @@ public struct ThrowingTaskGroup<ChildTaskResult: Sendable, Failure: Error> {
     }
   }
 
-  /// Query whether the group has any remaining tasks.
+  /// A Boolean value that indicates whether the group has any remaining tasks.
   ///
-  /// Task groups are always empty upon entry to the `withTaskGroup` body, and
-  /// become empty again when `withTaskGroup` returns (either by awaiting on all
-  /// pending tasks or cancelling them).
+  /// At the start of the body of a `withThrowingTaskGroup(of:returning:body:)` call,
+  /// the task group is always empty.
+  /// It's guaranteed to be empty when returning from that body
+  /// because a task group waits for all child tasks to complete before returning.
   ///
-  /// - Returns: `true` if the group has no pending tasks, `false` otherwise.
+  /// - Returns: `true` if the group has no pending tasks; otherwise `false`.
   public var isEmpty: Bool {
     _taskGroupIsEmpty(_group)
   }
 
-  /// Cancel all the remaining tasks in the group.
+  /// Cancel all the remaining, and future, tasks in the group.
   ///
-  /// A cancelled group will not will NOT accept new tasks being added into it.
-  ///
-  /// Any results, including errors thrown by tasks affected by this
-  /// cancellation, are silently discarded.
+  /// A cancelled group will not will create new tasks when the `asyncUnlessCancelled`,
+  /// function is used. It will, however, continue to create tasks when the plain `async`
+  /// function is used. Such tasks will be created yet immediately cancelled, allowing
+  /// the tasks to perform some short-cut implementation, if they are responsive to cancellation.
   ///
   /// This function may be called even from within child (or any other) tasks,
-  /// and will reliably cause the group to become cancelled.
+  /// and causes the group to be canceled.
   ///
   /// - SeeAlso: `Task.isCancelled`
   /// - SeeAlso: `TaskGroup.isCancelled`
@@ -657,14 +672,13 @@ public struct ThrowingTaskGroup<ChildTaskResult: Sendable, Failure: Error> {
     _taskGroupCancelAll(group: _group)
   }
 
-  /// Returns `true` if the group was cancelled, e.g. by `cancelAll`.
+  /// A Boolean value that indicates whether the group was canceled.
   ///
-  /// If the task currently running this group was cancelled, the group will
-  /// also be implicitly cancelled, which will be reflected in the return
-  /// value of this function as well.
+  /// To cancel a group, call the `ThrowingTaskGroup.cancelAll()` method.
   ///
-  /// - Returns: `true` if the group (or its parent task) was cancelled,
-  ///            `false` otherwise.
+  /// If the task that's currently running this group is canceled,
+  /// the group is also implicitly canceled,
+  /// which is also reflected in this property's value.
   public var isCancelled: Bool {
     return _taskGroupIsCancelled(group: _group)
   }
@@ -672,7 +686,7 @@ public struct ThrowingTaskGroup<ChildTaskResult: Sendable, Failure: Error> {
 
 /// ==== TaskGroup: AsyncSequence ----------------------------------------------
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 extension TaskGroup: AsyncSequence {
   public typealias AsyncIterator = Iterator
   public typealias Element = ChildTaskResult
@@ -681,17 +695,36 @@ extension TaskGroup: AsyncSequence {
     return Iterator(group: self)
   }
 
-  /// Allows iterating over results of tasks added to the group.
+  /// A type that provides an iteration interface
+  /// over the results of tasks added to the group.
   ///
-  /// The order of elements returned by this iterator is the same as manually
-  /// invoking the `group.next()` function in a loop, meaning that results
-  /// are returned in *completion order*.
+  /// The elements returned by this iterator
+  /// appear in the order that the tasks *completed*,
+  /// not in the order that those tasks were added to the task group.
   ///
-  /// This iterator terminates after all tasks have completed successfully, or
-  /// after any task completes by throwing an error.
+  /// This iterator terminates after all tasks have completed successfully,
+  /// or after any task completes by throwing an error.
+  /// However, it's valid to make a new iterator for the task group,
+  /// which you can use to continue iterating over the group's results.
+  /// For example:
+  ///
+  ///     group.async { 1 }
+  ///     group.async { throw SomeError }
+  ///     group.async { 2 }
+  ///     
+  ///     do { 
+  ///         // Assuming the child tasks complete in order, this prints "1"
+  ///         // and then throws an error.
+  ///         for try await r in group { print(r) }
+  ///     } catch {
+  ///         // Resolve the error.
+  ///     }
+  ///     
+  ///     // Iterate again.
+  ///     for try await r in group { print(r) }
   ///
   /// - SeeAlso: `TaskGroup.next()`
-  @available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+  @available(SwiftStdlib 5.5, *)
   public struct Iterator: AsyncIteratorProtocol {
     public typealias Element = ChildTaskResult
 
@@ -706,9 +739,18 @@ extension TaskGroup: AsyncSequence {
       self.group = group
     }
 
-    /// Once this function returns `nil` this specific iterator is guaranteed to
-    /// never produce more values.
-    /// - SeeAlso: `TaskGroup.next()` for a detailed discussion its semantics.
+    /// Advances to the result of the next child task,
+    /// or `nil` if there are no remaining child tasks,
+    /// rethrowing an error if the child task threw.
+    ///
+    /// The elements returned from this method
+    /// appear in the order that the tasks *completed*,
+    /// not in the order that those tasks were added to the task group.
+    /// After this method returns `nil`,
+    /// this iterater is guaranteed to never produce more values.
+    ///
+    /// For more information about the iteration order and semantics,
+    /// see `TaskGroup.next()`.
     public mutating func next() async -> Element? {
       guard !finished else { return nil }
       guard let element = await group.next() else {
@@ -725,7 +767,7 @@ extension TaskGroup: AsyncSequence {
   }
 }
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 extension ThrowingTaskGroup: AsyncSequence {
   public typealias AsyncIterator = Iterator
   public typealias Element = ChildTaskResult
@@ -734,18 +776,20 @@ extension ThrowingTaskGroup: AsyncSequence {
     return Iterator(group: self)
   }
 
-  /// Allows iterating over results of tasks added to the group.
+  /// A type that provides an iteration interface
+  /// over the results of tasks added to the group.
   ///
-  /// The order of elements returned by this iterator is the same as manually
-  /// invoking the `group.next()` function in a loop, meaning that results
-  /// are returned in *completion order*.
+  /// The elements returned by this iterator
+  /// appear in the order that the tasks *completed*,
+  /// not in the order that those tasks were added to the task group.
   ///
-  /// This iterator terminates after all tasks have completed successfully, or
-  /// after any task completes by throwing an error. If a task completes by
-  /// throwing an error, no further task results are returned.
+  /// This iterator terminates after all tasks have completed successfully,
+  /// or after any task completes by throwing an error.
+  /// If a task completes by throwing an error,
+  /// no further task results are returned.
   ///
   /// - SeeAlso: `ThrowingTaskGroup.next()`
-  @available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+  @available(SwiftStdlib 5.5, *)
   public struct Iterator: AsyncIteratorProtocol {
     public typealias Element = ChildTaskResult
 
@@ -760,7 +804,18 @@ extension ThrowingTaskGroup: AsyncSequence {
       self.group = group
     }
 
-    /// - SeeAlso: `ThrowingTaskGroup.next()` for a detailed discussion its semantics.
+    /// Advances to the result of the next child task,
+    /// or `nil` if there are no remaining child tasks,
+    /// rethrowing an error if the child task threw.
+    ///
+    /// The elements returned from this method
+    /// appear in the order that the tasks *completed*,
+    /// not in the order that those tasks were added to the task group.
+    /// After this method returns `nil`,
+    /// this iterater is guaranteed to never produce more values.
+    ///
+    /// For more information about the iteration order and semantics,
+    /// see `ThrowingTaskGroup.next()` 
     public mutating func next() async throws -> Element? {
       guard !finished else { return nil }
       do {
@@ -784,40 +839,37 @@ extension ThrowingTaskGroup: AsyncSequence {
 
 /// ==== -----------------------------------------------------------------------
 
-/// Attach task group child to the group group to the task.
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-@_silgen_name("swift_taskGroup_attachChild")
-func _taskGroupAttachChild(
-  group: Builtin.RawPointer,
-  child: Builtin.NativeObject
-)
-
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @_silgen_name("swift_taskGroup_destroy")
 func _taskGroupDestroy(group: __owned Builtin.RawPointer)
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @_silgen_name("swift_taskGroup_addPending")
+@usableFromInline
 func _taskGroupAddPendingTask(
   group: Builtin.RawPointer,
   unconditionally: Bool
 ) -> Bool
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @_silgen_name("swift_taskGroup_cancelAll")
 func _taskGroupCancelAll(group: Builtin.RawPointer)
 
-/// Checks ONLY if the group was specifically cancelled.
-/// The task itself being cancelled must be checked separately.
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+/// Checks ONLY if the group was specifically canceled.
+/// The task itself being canceled must be checked separately.
+@available(SwiftStdlib 5.5, *)
 @_silgen_name("swift_taskGroup_isCancelled")
 func _taskGroupIsCancelled(group: Builtin.RawPointer) -> Bool
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @_silgen_name("swift_taskGroup_wait_next_throwing")
 func _taskGroupWaitNext<T>(group: Builtin.RawPointer) async throws -> T?
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
+@_silgen_name("swift_task_hasTaskGroupStatusRecord")
+func _taskHasTaskGroupStatusRecord() -> Bool
+
+@available(SwiftStdlib 5.5, *)
 enum PollStatus: Int {
   case empty   = 0
   case waiting = 1
@@ -825,7 +877,7 @@ enum PollStatus: Int {
   case error   = 3
 }
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @_silgen_name("swift_taskGroup_isEmpty")
 func _taskGroupIsEmpty(
   _ group: Builtin.RawPointer

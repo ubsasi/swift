@@ -601,11 +601,12 @@ namespace {
         PrintWithColorRAII(OS, DeclModifierColor) << " trailing_semi";
     }
 
-    void printInherited(ArrayRef<TypeLoc> Inherited) {
+    void printInherited(ArrayRef<InheritedEntry> Inherited) {
       if (Inherited.empty())
         return;
       OS << " inherits: ";
-      interleave(Inherited, [&](TypeLoc Super) { Super.getType().print(OS); },
+      interleave(Inherited,
+                 [&](InheritedEntry Super) { Super.getType().print(OS); },
                  [&] { OS << ", "; });
     }
 
@@ -3113,6 +3114,12 @@ public:
 
   void visitOwnedTypeRepr(OwnedTypeRepr *T) {
     printCommon("type_owned") << '\n';
+    printRec(T->getBase());
+    PrintWithColorRAII(OS, ParenthesisColor) << ')';
+  }
+
+  void visitIsolatedTypeRepr(IsolatedTypeRepr *T) {
+    printCommon("isolated") << '\n';
     printRec(T->getBase());
     PrintWithColorRAII(OS, ParenthesisColor) << ')';
   }

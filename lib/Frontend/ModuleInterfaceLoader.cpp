@@ -1132,6 +1132,17 @@ void InterfaceSubContextDelegateImpl::inheritOptionsForBuildingInterface(
     GenericArgs.push_back(triple);
   }
 
+  if (LangOpts.ClangTarget.hasValue()) {
+    genericSubInvocation.getLangOptions().ClangTarget = LangOpts.ClangTarget;
+    auto triple = ArgSaver.save(genericSubInvocation.getLangOptions()
+      .ClangTarget->getTriple());
+    assert(!triple.empty());
+    // In explicit module build, all PCMs will be built using the given clang target.
+    // So the Swift interface should know that as well to load these PCMs properly.
+    GenericArgs.push_back("-clang-target");
+    GenericArgs.push_back(triple);
+  }
+
   // Inherit the Swift language version
   genericSubInvocation.getLangOptions().EffectiveLanguageVersion =
     LangOpts.EffectiveLanguageVersion;
@@ -1171,6 +1182,10 @@ void InterfaceSubContextDelegateImpl::inheritOptionsForBuildingInterface(
   // If we are supposed to use RequireOSSAModules, do so.
   genericSubInvocation.getSILOptions().EnableOSSAModules =
       bool(RequireOSSAModules);
+  if (LangOpts.DisableAvailabilityChecking) {
+    genericSubInvocation.getLangOptions().DisableAvailabilityChecking = true;
+    GenericArgs.push_back("-disable-availability-checking");
+  }
 }
 
 bool InterfaceSubContextDelegateImpl::extractSwiftInterfaceVersionAndArgs(
@@ -1192,23 +1207,21 @@ bool InterfaceSubContextDelegateImpl::extractSwiftInterfaceVersionAndArgs(
   auto VersRe = getSwiftInterfaceFormatVersionRegex();
   auto CompRe = getSwiftInterfaceCompilerVersionRegex();
   auto FlagRe = getSwiftInterfaceModuleFlagsRegex();
-  SmallVector<StringRef, 1> VersMatches, FlagMatches, CompMatches;
+  SmallVector<StringRef, 1> VersMatches, CompMatches;
 
   if (!VersRe.match(SB, &VersMatches)) {
     diagnose(interfacePath, diagnosticLoc,
              diag::error_extracting_version_from_module_interface);
     return true;
   }
-  if (!FlagRe.match(SB, &FlagMatches)) {
+  if (extractCompilerFlagsFromInterface(interfacePath, SB, ArgSaver, SubArgs)) {
     diagnose(interfacePath, diagnosticLoc,
              diag::error_extracting_version_from_module_interface);
     return true;
   }
   assert(VersMatches.size() == 2);
-  assert(FlagMatches.size() == 2);
   // FIXME We should diagnose this at a location that makes sense:
   auto Vers = swift::version::Version(VersMatches[1], SourceLoc(), &Diags);
-  llvm::cl::TokenizeGNUCommandLine(FlagMatches[1], ArgSaver, SubArgs);
 
   if (CompRe.match(SB, &CompMatches)) {
     assert(CompMatches.size() == 2);
@@ -1497,15 +1510,20 @@ InterfaceSubContextDelegateImpl::runInSubCompilerInstance(StringRef moduleName,
   }
   info.BuildArguments = BuildArgs;
   info.Hash = CacheHash;
-  auto target =  *(std::find(BuildArgs.rbegin(), BuildArgs.rend(), "-target") - 1);
+  auto target = *(std::find(BuildArgs.rbegin(), BuildArgs.rend(), "-target") - 1);
   auto langVersion = *(std::find(BuildArgs.rbegin(), BuildArgs.rend(),
                                  "-swift-version") - 1);
-  std::array<StringRef, 6> ExtraPCMArgs = {
-    // PCMs should use the target triple the interface will be using to build
-    "-Xcc", "-target", "-Xcc", target,
+
+  std::vector<StringRef> ExtraPCMArgs = {
     // PCMs should use the effective Swift language version for apinotes.
-    "-Xcc", ArgSaver.save((llvm::Twine("-fapinotes-swift-version=") + langVersion).str())
+    "-Xcc",
+    ArgSaver.save((llvm::Twine("-fapinotes-swift-version=") + langVersion).str())
   };
+  if (!subInvocation.getLangOptions().ClangTarget.hasValue()) {
+    ExtraPCMArgs.insert(ExtraPCMArgs.begin(), {"-Xcc", "-target",
+                                               "-Xcc", target});
+  }
+
   info.ExtraPCMArgs = ExtraPCMArgs;
   // Run the action under the sub compiler instance.
   return action(info);

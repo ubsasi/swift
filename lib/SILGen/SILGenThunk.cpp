@@ -28,6 +28,7 @@
 #include "swift/AST/DiagnosticsSIL.h"
 #include "swift/AST/FileUnit.h"
 #include "swift/AST/ForeignAsyncConvention.h"
+#include "swift/SIL/FormalLinkage.h"
 #include "swift/AST/GenericEnvironment.h"
 #include "swift/SIL/PrettyStackTrace.h"
 #include "swift/SIL/SILArgument.h"
@@ -254,10 +255,14 @@ SILGenModule::getOrCreateForeignAsyncCompletionHandlerImplFunction(
       auto continuationVal = SGF.B.createLoad(loc, continuationAddr,
                                            LoadOwnershipQualifier::Trivial);
       auto continuation = ManagedValue::forUnmanaged(continuationVal);
-      
+
       // Check for an error if the convention includes one.
-      auto errorIndex = convention.completionHandlerErrorParamIndex();
-      auto flagIndex = convention.completionHandlerFlagParamIndex();
+      // Increment the error and flag indices if present.  They do not account
+      // for the fact that they are preceded by the block_storage arguments.
+      auto errorIndex = convention.completionHandlerErrorParamIndex().map(
+          [](auto original) { return original + 1; });
+      auto flagIndex = convention.completionHandlerFlagParamIndex().map(
+          [](auto original) { return original + 1; });
 
       FuncDecl *resumeIntrinsic;
 
@@ -265,8 +270,8 @@ SILGenModule::getOrCreateForeignAsyncCompletionHandlerImplFunction(
       if (errorIndex) {
         resumeIntrinsic = getResumeUnsafeThrowingContinuation();
         auto errorIntrinsic = getResumeUnsafeThrowingContinuationWithError();
-        
-        auto errorArgument = params[*errorIndex + 1];
+
+        auto errorArgument = params[*errorIndex];
         auto someErrorBB = SGF.createBasicBlock(FunctionSection::Postmatter);
         auto noneErrorBB = SGF.createBasicBlock();
         returnBB = SGF.createBasicBlockAfter(noneErrorBB);
@@ -275,8 +280,8 @@ SILGenModule::getOrCreateForeignAsyncCompletionHandlerImplFunction(
         // Check whether there's an error, based on the presence of a flag
         // parameter. If there is a flag parameter, test it against zero.
         if (flagIndex) {
-          auto flagArgument = params[*flagIndex + 1];
-          
+          auto flagArgument = params[*flagIndex];
+
           // The flag must be an integer type. Get the underlying builtin
           // integer field from it.
           auto builtinFlagArg = SGF.emitUnwrapIntegerResult(loc, flagArgument.getValue());
@@ -371,31 +376,31 @@ SILGenModule::getOrCreateForeignAsyncCompletionHandlerImplFunction(
           bridgedArg.forwardInto(SGF, loc, destBuf);
         };
 
+        // Collect the indices which correspond to the values to be returned.
+        SmallVector<unsigned long, 4> paramIndices;
+        for (auto index : indices(params)) {
+          // The first index is the block_storage parameter.
+          if (index == 0)
+            continue;
+          if (errorIndex && index == *errorIndex)
+            continue;
+          if (flagIndex && index == *flagIndex)
+            continue;
+          paramIndices.push_back(index);
+        }
         if (auto resumeTuple = dyn_cast<TupleType>(resumeType)) {
+          assert(paramIndices.size() == resumeTuple->getNumElements());
           assert(params.size() == resumeTuple->getNumElements()
                                    + 1 + (bool)errorIndex + (bool)flagIndex);
           for (unsigned i : indices(resumeTuple.getElementTypes())) {
-            unsigned paramI = i;
-            if (errorIndex && paramI >= *errorIndex) {
-              ++paramI;
-            }
-            if (flagIndex && paramI >= *flagIndex) {
-              ++paramI;
-            }
             auto resumeEltBuf = SGF.B.createTupleElementAddr(loc,
                                                              resumeArgBuf, i);
-            prepareArgument(resumeEltBuf, params[paramI + 1]);
+            prepareArgument(resumeEltBuf, params[paramIndices[i]]);
           }
         } else {
+          assert(paramIndices.size() == 1);
           assert(params.size() == 2 + (bool)errorIndex + (bool)flagIndex);
-          unsigned paramI = 0;
-          if (errorIndex && paramI >= *errorIndex) {
-            ++paramI;
-          }
-          if (flagIndex && paramI >= *flagIndex) {
-            ++paramI;
-          }
-          prepareArgument(resumeArgBuf, params[paramI + 1]);
+          prepareArgument(resumeArgBuf, params[paramIndices[0]]);
         }
         
         // Resume the continuation with the composed bridged result.
@@ -429,7 +434,8 @@ SILFunction *SILGenModule::
 getOrCreateReabstractionThunk(CanSILFunctionType thunkType,
                               CanSILFunctionType fromType,
                               CanSILFunctionType toType,
-                              CanType dynamicSelfType) {
+                              CanType dynamicSelfType,
+                              CanType fromGlobalActorBound) {
   // The reference to the thunk is likely @noescape, but declarations are always
   // escaping.
   auto thunkDeclType =
@@ -445,18 +451,31 @@ getOrCreateReabstractionThunk(CanSILFunctionType thunkType,
   if (dynamicSelfType)
     dynamicSelfInterfaceType = dynamicSelfType->mapTypeOutOfContext()
       ->getCanonicalType();
+  if (fromGlobalActorBound)
+    fromGlobalActorBound = fromGlobalActorBound->mapTypeOutOfContext()
+      ->getCanonicalType();
 
   Mangle::ASTMangler NewMangler;
   std::string name = NewMangler.mangleReabstractionThunkHelper(thunkType,
                        fromInterfaceType, toInterfaceType,
                        dynamicSelfInterfaceType,
+                       fromGlobalActorBound,
                        M.getSwiftModule());
   
   auto loc = RegularLocation::getAutoGeneratedLocation();
+  
+  // The thunk that converts an actor-constrained, non-async function to an
+  // async function is not serializable if the actor's visibility precludes it.
+  auto serializable = IsSerializable;
+  if (fromGlobalActorBound) {
+    auto globalActorLinkage = getTypeLinkage(fromGlobalActorBound);
+    serializable = globalActorLinkage >= FormalLinkage::PublicNonUnique
+      ? IsSerializable : IsNotSerialized;
+  }
 
   SILGenFunctionBuilder builder(*this);
   return builder.getOrCreateSharedFunction(
-      loc, name, thunkDeclType, IsBare, IsTransparent, IsSerializable,
+      loc, name, thunkDeclType, IsBare, IsTransparent, serializable,
       ProfileCounter(), IsReabstractionThunk, IsNotDynamic);
 }
 

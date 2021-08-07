@@ -388,8 +388,14 @@ bool RequirementFailure::diagnoseAsNote() {
   const auto &req = getRequirement();
   const auto *reqDC = getRequirementDC();
 
+  // Layout requirement doesn't have a second type, let's always
+  // `AnyObject`.
+  auto requirementTy = req.getKind() == RequirementKind::Layout
+                           ? getASTContext().getAnyObjectType()
+                           : req.getSecondType();
+
   emitDiagnosticAt(reqDC->getAsDecl(), getDiagnosticAsNote(), getLHS(),
-                   getRHS(), req.getFirstType(), req.getSecondType(), "");
+                   getRHS(), req.getFirstType(), requirementTy);
   return true;
 }
 
@@ -2370,11 +2376,26 @@ bool ContextualFailure::diagnoseAsError() {
 }
 
 bool ContextualFailure::diagnoseAsNote() {
-  auto overload = getCalleeOverloadChoiceIfAvailable(getLocator());
+  auto *locator = getLocator();
+
+  auto overload = getCalleeOverloadChoiceIfAvailable(locator);
   if (!(overload && overload->choice.isDecl()))
     return false;
 
   auto *decl = overload->choice.getDecl();
+
+  if (auto *anchor = getAsExpr(getAnchor())) {
+    anchor = anchor->getSemanticsProvidingExpr();
+
+    if (isa<NilLiteralExpr>(anchor)) {
+      auto argLoc =
+          locator->castLastElementTo<LocatorPathElt::ApplyArgToParam>();
+      emitDiagnosticAt(decl, diag::note_incompatible_argument_value_nil_at_pos,
+                       getToType(), argLoc.getArgIdx() + 1);
+      return true;
+    }
+  }
+
   emitDiagnosticAt(decl, diag::found_candidate_type, getFromType());
   return true;
 }
@@ -2995,7 +3016,7 @@ bool ContextualFailure::tryProtocolConformanceFixIt(
     for (auto protocol : missingProtocols) {
       auto conformance = NormalProtocolConformance(
           nominal->getDeclaredType(), protocol, SourceLoc(), nominal,
-          ProtocolConformanceState::Incomplete);
+          ProtocolConformanceState::Incomplete, /*isUnchecked=*/false);
       ConformanceChecker checker(getASTContext(), &conformance,
                                  missingWitnesses);
       checker.resolveValueWitnesses();
@@ -4968,20 +4989,69 @@ bool ExtraneousArgumentsFailure::diagnoseAsError() {
         params->getStartLoc(), diag::closure_argument_list_tuple, fnType,
         fnType->getNumParams(), params->size(), (params->size() == 1));
 
-    bool onlyAnonymousParams =
+    // Unsed parameter is represented by `_` before `in`.
+    bool onlyUnusedParams =
         std::all_of(params->begin(), params->end(),
                     [](ParamDecl *param) { return !param->hasName(); });
 
     // If closure expects no parameters but N was given,
-    // and all of them are anonymous let's suggest removing them.
-    if (fnType->getNumParams() == 0 && onlyAnonymousParams) {
+    // and all of them are unused, let's suggest removing them.
+    if (fnType->getNumParams() == 0 && onlyUnusedParams) {
       auto inLoc = closure->getInLoc();
       auto &sourceMgr = getASTContext().SourceMgr;
 
-      if (inLoc.isValid())
+      if (inLoc.isValid()) {
         diag.fixItRemoveChars(params->getStartLoc(),
                               Lexer::getLocForEndOfToken(sourceMgr, inLoc));
+        return true;
+      }
     }
+
+    diag.flush();
+
+    // If all of the parameters are anonymous, let's point out references
+    // to make it explicit where parameters are used in complex closure body,
+    // which helps in situations where braces are missing for potential inner
+    // closures e.g.
+    //
+    // func a(_: () -> Void) {}
+    // func b(_: (Int) -> Void) {}
+    //
+    // a {
+    //   ...
+    //   b($0.member)
+    // }
+    //
+    // Here `$0` is associated with `a` since braces around `member` reference
+    // are missing.
+    if (!closure->hasSingleExpressionBody() &&
+        llvm::all_of(params->getArray(),
+                     [](ParamDecl *P) { return P->isAnonClosureParam(); })) {
+      if (auto *body = closure->getBody()) {
+        struct ParamRefFinder : public ASTWalker {
+          DiagnosticEngine &D;
+          ParameterList *Params;
+
+          ParamRefFinder(DiagnosticEngine &diags, ParameterList *params)
+              : D(diags), Params(params) {}
+
+          std::pair<bool, Expr *> walkToExprPre(Expr *E) override {
+            if (auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+              if (llvm::is_contained(Params->getArray(), DRE->getDecl())) {
+                auto *P = cast<ParamDecl>(DRE->getDecl());
+                D.diagnose(DRE->getLoc(), diag::use_of_anon_closure_param,
+                           P->getName());
+              }
+            }
+            return {true, E};
+          }
+        };
+
+        ParamRefFinder finder(getASTContext().Diags, params);
+        body->walk(finder);
+      }
+    }
+
     return true;
   }
 
@@ -5271,8 +5341,17 @@ bool ExtraneousReturnFailure::diagnoseAsError() {
     if (FD->getResultTypeRepr() == nullptr &&
         FD->getParameters()->getStartLoc().isValid() &&
         !FD->getBaseIdentifier().empty()) {
-      auto fixItLoc = Lexer::getLocForEndOfToken(
-          getASTContext().SourceMgr, FD->getParameters()->getEndLoc());
+      // Insert the fix-it after the parameter list, and after any
+      // effects specifiers.
+      SourceLoc loc = FD->getParameters()->getEndLoc();
+      if (auto asyncLoc = FD->getAsyncLoc())
+        loc = asyncLoc;
+
+      if (auto throwsLoc = FD->getThrowsLoc())
+        if (throwsLoc.getOpaquePointerValue() > loc.getOpaquePointerValue())
+          loc = throwsLoc;
+
+      auto fixItLoc = Lexer::getLocForEndOfToken(getASTContext().SourceMgr, loc);
       emitDiagnostic(diag::add_return_type_note)
           .fixItInsert(fixItLoc, " -> <#Return Type#>");
     }
@@ -5883,6 +5962,27 @@ bool ThrowingFunctionConversionFailure::diagnoseAsError() {
 }
 
 bool AsyncFunctionConversionFailure::diagnoseAsError() {
+  auto *locator = getLocator();
+
+  if (locator->isLastElement<LocatorPathElt::ApplyArgToParam>()) {
+    emitDiagnostic(diag::cannot_pass_async_func_to_sync_parameter,
+                   getFromType());
+
+    if (auto *closure = getAsExpr<ClosureExpr>(getAnchor())) {
+      auto asyncLoc = closure->getAsyncLoc();
+
+      // 'async' effect is inferred from the body of the closure.
+      if (asyncLoc.isInvalid()) {
+        if (auto asyncNode = findAsyncNode(closure)) {
+          emitDiagnosticAt(::getLoc(asyncNode),
+                           diag::async_inferred_from_operation);
+        }
+      }
+    }
+
+    return true;
+  }
+
   emitDiagnostic(diag::async_functiontype_mismatch, getFromType(),
                  getToType());
   return true;
@@ -6733,13 +6833,9 @@ bool UnableToInferClosureParameterType::diagnoseAsError() {
   llvm::SmallString<16> id;
   llvm::raw_svector_ostream OS(id);
 
-  if (PD->isAnonClosureParam()) {
-    OS << "$" << paramIdx;
-  } else {
-    OS << "'" << PD->getParameterName() << "'";
-  }
+  OS << "'" << PD->getParameterName() << "'";
 
-  auto loc = PD->isAnonClosureParam() ? getLoc() : PD->getLoc();
+  auto loc = PD->isImplicit() ? getLoc() : PD->getLoc();
   emitDiagnosticAt(loc, diag::cannot_infer_closure_parameter_type, OS.str());
   return true;
 }
@@ -7352,9 +7448,15 @@ bool InvalidMemberRefOnProtocolMetatype::diagnoseAsError() {
   if (auto *whereClause = extension->getTrailingWhereClause()) {
     auto sourceRange = whereClause->getSourceRange();
     note.fixItInsertAfter(sourceRange.End, ", Self == <#Type#> ");
-  } else {
-    auto nameRepr = extension->getExtendedTypeRepr();
-    note.fixItInsertAfter(nameRepr->getEndLoc(), " where Self == <#Type#>");
+  } else if (auto nameRepr = extension->getExtendedTypeRepr()) {
+    // Type repr is not always available so we need to be defensive
+    // about its presence and validity.
+    if (nameRepr->isInvalid())
+      return true;
+
+    if (auto noteLoc = nameRepr->getEndLoc()) {
+      note.fixItInsertAfter(noteLoc, " where Self == <#Type#>");
+    }
   }
 
   return true;
@@ -7379,8 +7481,8 @@ SourceRange CheckedCastBaseFailure::getCastRange() const {
   llvm_unreachable("There is no other kind of checked cast!");
 }
 
-std::tuple<Type, Type, unsigned>
-CoercibleOptionalCheckedCastFailure::unwrapedTypes() const {
+std::tuple<Type, Type, int>
+CoercibleOptionalCheckedCastFailure::unwrappedTypes() const {
   SmallVector<Type, 4> fromOptionals;
   SmallVector<Type, 4> toOptionals;
   Type unwrappedFromType =
@@ -7396,8 +7498,7 @@ bool CoercibleOptionalCheckedCastFailure::diagnoseIfExpr() const {
     return false;
 
   Type unwrappedFrom, unwrappedTo;
-  unsigned extraFromOptionals;
-  std::tie(unwrappedFrom, unwrappedTo, extraFromOptionals) = unwrapedTypes();
+  std::tie(unwrappedFrom, unwrappedTo, std::ignore) = unwrappedTypes();
 
   SourceRange diagFromRange = getFromRange();
   SourceRange diagToRange = getToRange();
@@ -7428,8 +7529,8 @@ bool CoercibleOptionalCheckedCastFailure::diagnoseForcedCastExpr() const {
   auto fromType = getFromType();
   auto toType = getToType();
   Type unwrappedFrom, unwrappedTo;
-  unsigned extraFromOptionals;
-  std::tie(unwrappedFrom, unwrappedTo, extraFromOptionals) = unwrapedTypes();
+  int extraFromOptionals;
+  std::tie(unwrappedFrom, unwrappedTo, extraFromOptionals) = unwrappedTypes();
 
   SourceRange diagFromRange = getFromRange();
   SourceRange diagToRange = getToRange();
@@ -7471,8 +7572,7 @@ bool CoercibleOptionalCheckedCastFailure::diagnoseConditionalCastExpr() const {
   auto fromType = getFromType();
   auto toType = getToType();
   Type unwrappedFrom, unwrappedTo;
-  unsigned extraFromOptionals;
-  std::tie(unwrappedFrom, unwrappedTo, extraFromOptionals) = unwrapedTypes();
+  std::tie(unwrappedFrom, unwrappedTo, std::ignore) = unwrappedTypes();
 
   SourceRange diagFromRange = getFromRange();
   SourceRange diagToRange = getToRange();

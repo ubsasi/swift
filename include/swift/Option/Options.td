@@ -586,6 +586,10 @@ def experimental_cxx_stdlib :
   Separate<["-"], "experimental-cxx-stdlib">,
   HelpText<"C++ standard library to use; forwarded to Clang's -stdlib flag">;
 
+def experimental_emit_module_separately:
+  Flag<["-"], "experimental-emit-module-separately">,
+  Flags<[FrontendOption, NoInteractiveOption, HelpHidden]>,
+  HelpText<"Schedule a swift module emission job instead of a merge-modules job (new Driver only)">;
 
 // Diagnostic control options
 def suppress_warnings : Flag<["-"], "suppress-warnings">,
@@ -1077,6 +1081,13 @@ def target_variant : Separate<["-"], "target-variant">,
   HelpText<"Generate 'zippered' code for macCatalyst that can run on the specified"
            " variant target triple in addition to the main -target triple">;
 
+def clang_target : Separate<["-"], "clang-target">,
+  Flags<[FrontendOption, SwiftAPIExtractOption, SwiftSymbolGraphExtractOption]>,
+  HelpText<"Separately set the target we should use for internal Clang instance">;
+
+def disable_clang_target : Flag<["-"], "disable-clang-target">,
+  HelpText<"Disable a separately specified target triple for Clang instance to use">;
+
 def profile_generate : Flag<["-"], "profile-generate">,
   Flags<[FrontendOption, NoInteractiveOption]>,
   HelpText<"Generate instrumented code to collect execution counts">;
@@ -1234,5 +1245,16 @@ def minimum_access_level : Separate<["-"], "minimum-access-level">,
   Flags<[NoDriverOption, SwiftSymbolGraphExtractOption]>,
   HelpText<"Include symbols with this access level or more">,
   MetaVarName<"<level>">;
+
+def skip_inherited_docs : Flag<["-"], "skip-inherited-docs">,
+  Flags<[SwiftSymbolGraphExtractOption, FrontendOption,
+         NoInteractiveOption, SupplementaryOutput, HelpHidden]>,
+  HelpText<"Skip emitting doc comments for members inherited through classes or "
+           "default implementations">;
+
+def include_spi_symbols : Flag<["-"], "include-spi-symbols">,
+  Flags<[SwiftSymbolGraphExtractOption, FrontendOption,
+         NoInteractiveOption, SupplementaryOutput, HelpHidden]>,
+  HelpText<"Add symbols with SPI information to the symbol graph">;
 
 include "FrontendOptions.td"

@@ -119,7 +119,11 @@ public:
 
   Optional<ProtocolConformance *> NSErrorConformanceToError;
 
-  Optional<FuncDecl*> RunChildTask;
+  Optional<FuncDecl*> AsyncLetStart;
+  Optional<FuncDecl*> AsyncLetGet;
+  Optional<FuncDecl*> AsyncLetGetThrowing;
+  Optional<FuncDecl*> EndAsyncLet;
+
   Optional<FuncDecl*> TaskFutureGet;
   Optional<FuncDecl*> TaskFutureGetThrowing;
 
@@ -174,7 +178,8 @@ public:
                                            CanSILFunctionType thunkType,
                                            CanSILFunctionType fromType,
                                            CanSILFunctionType toType,
-                                           CanType dynamicSelfType);
+                                           CanType dynamicSelfType,
+                                           CanType fromGlobalActor);
   
   /// Get or create the declaration of a completion handler block
   /// implementation function for an ObjC API that was imported
@@ -482,8 +487,14 @@ public:
   /// Retrieve the conformance of NSError to the Error protocol.
   ProtocolConformance *getNSErrorConformanceToError();
 
-  /// Retrieve the _Concurrency._runChildTask intrinsic.
-  FuncDecl *getRunChildTask();
+  /// Retrieve the _Concurrency._asyncLetStart intrinsic.
+  FuncDecl *getAsyncLetStart();
+  /// Retrieve the _Concurrency._asyncLetGet intrinsic.
+  FuncDecl *getAsyncLetGet();
+  /// Retrieve the _Concurrency._asyncLetGetThrowing intrinsic.
+  FuncDecl *getAsyncLetGetThrowing();
+  /// Retrieve the _Concurrency._asyncLetFinish intrinsic.
+  FuncDecl *getFinishAsyncLet();
 
   /// Retrieve the _Concurrency._taskFutureGet intrinsic.
   FuncDecl *getTaskFutureGet();

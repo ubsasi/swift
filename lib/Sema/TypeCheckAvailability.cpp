@@ -400,13 +400,15 @@ private:
     // The potential versions in the declaration are constrained by both
     // the declared availability of the declaration and the potential versions
     // of its lexical context.
-    AvailabilityContext DeclInfo =
+    AvailabilityContext ExplicitDeclInfo =
         swift::AvailabilityInference::availableRange(D, Context);
+    AvailabilityContext DeclInfo = ExplicitDeclInfo;
     DeclInfo.intersectWith(getCurrentTRC()->getAvailabilityInfo());
 
     TypeRefinementContext *NewTRC =
         TypeRefinementContext::createForDecl(Context, D, getCurrentTRC(),
                                              DeclInfo,
+                                             ExplicitDeclInfo,
                                              refinementSourceRangeForDecl(D));
     
     // Record the TRC for this storage declaration so that
@@ -646,6 +648,8 @@ private:
     for (StmtConditionElement Element : Cond) {
       TypeRefinementContext *CurrentTRC = getCurrentTRC();
       AvailabilityContext CurrentInfo = CurrentTRC->getAvailabilityInfo();
+      AvailabilityContext CurrentExplicitInfo =
+        CurrentTRC->getExplicitAvailabilityInfo();
 
       // If the element is not a condition, walk it in the current TRC.
       if (Element.getKind() != StmtConditionElement::CK_Availability) {
@@ -708,24 +712,17 @@ private:
         continue;
       }
 
-
-      // If the version range for the current TRC is completely contained in
-      // the range for the spec, then a version query can never be false, so the
-      // spec is useless. If so, report this.
-      if (CurrentInfo.isContainedIn(NewConstraint)) {
+      // If the explicitly-specified (via #availability) version range for the
+      // current TRC is completely contained in the range for the spec, then
+      // a version query can never be false, so the spec is useless.
+      // If so, report this.
+      if (CurrentExplicitInfo.isContainedIn(NewConstraint)) {
         DiagnosticEngine &Diags = Context.Diags;
-        // Some availability checks will always pass because the minimum
-        // deployment target guarantees they will never be false. We don't
-        // diagnose these checks as useless because the source file may
-        // be shared with other projects/targets having older deployment
-        // targets. We don't currently have a mechanism for the user to
-        // suppress these warnings (for example, by indicating when the
-        // required compatibility version is different than the deployment
-        // target).
         if (CurrentTRC->getReason() != TypeRefinementContext::Reason::Root) {
           PlatformKind BestPlatform = targetPlatform(Context.LangOpts);
           auto *PlatformSpec =
               dyn_cast<PlatformVersionConstraintAvailabilitySpec>(Spec);
+
           // If possible, try to report the diagnostic in terms for the
           // platform the user uttered in the '#available()'. For a platform
           // that inherits availability from another platform it may be
@@ -738,7 +735,9 @@ private:
           Diags.diagnose(CurrentTRC->getIntroductionLoc(),
                          diag::availability_query_useless_enclosing_scope_here);
         }
+      }
 
+      if (CurrentInfo.isContainedIn(NewConstraint)) {
         // No need to actually create the refinement context if we know it is
         // useless.
         continue;
@@ -1617,6 +1616,48 @@ void TypeChecker::diagnosePotentialOpaqueTypeUnavailability(
   fixAvailability(ReferenceRange, ReferenceDC, RequiredRange, Context);
 }
 
+static void diagnosePotentialConcurrencyUnavailability(
+    SourceRange ReferenceRange, const DeclContext *ReferenceDC,
+    const UnavailabilityReason &Reason) {
+  ASTContext &Context = ReferenceDC->getASTContext();
+
+  auto RequiredRange = Reason.getRequiredOSVersionRange();
+  {
+    auto Err =
+      Context.Diags.diagnose(
+          ReferenceRange.Start,
+          diag::availability_concurrency_only_version_newer,
+          prettyPlatformString(targetPlatform(Context.LangOpts)),
+          Reason.getRequiredOSVersionRange().getLowerEndpoint());
+
+    // Direct a fixit to the error if an existing guard is nearly-correct
+    if (fixAvailabilityByNarrowingNearbyVersionCheck(ReferenceRange,
+                                                     ReferenceDC,
+                                                     RequiredRange, Context, Err))
+      return;
+  }
+  fixAvailability(ReferenceRange, ReferenceDC, RequiredRange, Context);
+}
+
+
+void TypeChecker::checkConcurrencyAvailability(SourceRange ReferenceRange,
+                                               const DeclContext *ReferenceDC) {
+  // Check the availability of concurrency runtime support.
+  ASTContext &ctx = ReferenceDC->getASTContext();
+  if (ctx.LangOpts.DisableAvailabilityChecking)
+    return;
+  
+  auto runningOS =
+    TypeChecker::overApproximateAvailabilityAtLocation(
+      ReferenceRange.Start, ReferenceDC);
+  auto availability = ctx.getConcurrencyAvailability();
+  if (!runningOS.isContainedIn(availability)) {
+    diagnosePotentialConcurrencyUnavailability(
+      ReferenceRange, ReferenceDC,
+      UnavailabilityReason::requiresVersionRange(availability.getOSVersion()));
+  }
+}
+
 void TypeChecker::diagnosePotentialUnavailability(
     const ValueDecl *D, SourceRange ReferenceRange,
     const DeclContext *ReferenceDC,
@@ -1737,7 +1778,8 @@ static bool isInsideCompatibleUnavailableDeclaration(
   // but allow the use of types.
   PlatformKind platform = attr->Platform;
   if (platform == PlatformKind::none &&
-      !isa<TypeDecl>(D)) {
+      !isa<TypeDecl>(D) &&
+      !isa<ExtensionDecl>(D)) {
     return false;
   }
 

@@ -52,6 +52,7 @@
 #include "swift/Basic/StringExtras.h"
 #include "swift/Strings.h"
 #include "swift/Subsystems.h"
+#include "swift/SymbolGraphGen/SymbolGraphOptions.h"
 #include "swift/Syntax/References.h"
 #include "swift/Syntax/SyntaxArena.h"
 #include "clang/AST/Type.h"
@@ -283,6 +284,10 @@ struct ASTContext::Implementation {
 
   /// The module loader used to load Clang modules from DWARF.
   ClangModuleLoader *TheDWARFModuleLoader = nullptr;
+
+  /// Map from Swift declarations to deserialized resolved locations, ie.
+  /// actual \c SourceLocs that require opening their external buffer.
+  llvm::DenseMap<const Decl *, ExternalSourceLocs *> ExternalSourceLocs;
 
   /// Map from Swift declarations to raw comments.
   llvm::DenseMap<const Decl *, std::pair<RawComment, bool>> RawComments;
@@ -563,6 +568,7 @@ ASTContext *ASTContext::get(LangOptions &langOpts,
                             TypeCheckerOptions &typeckOpts,
                             SearchPathOptions &SearchPathOpts,
                             ClangImporterOptions &ClangImporterOpts,
+                            symbolgraphgen::SymbolGraphOptions &SymbolGraphOpts,
                             SourceManager &SourceMgr,
                             DiagnosticEngine &Diags) {
   // If more than two data structures are concatentated, then the aggregate
@@ -577,17 +583,19 @@ ASTContext *ASTContext::get(LangOptions &langOpts,
   new (impl) Implementation();
   return new (mem)
       ASTContext(langOpts, typeckOpts, SearchPathOpts, ClangImporterOpts,
-                 SourceMgr, Diags);
+                 SymbolGraphOpts, SourceMgr, Diags);
 }
 
 ASTContext::ASTContext(LangOptions &langOpts, TypeCheckerOptions &typeckOpts,
                        SearchPathOptions &SearchPathOpts,
                        ClangImporterOptions &ClangImporterOpts,
+                       symbolgraphgen::SymbolGraphOptions &SymbolGraphOpts,
                        SourceManager &SourceMgr, DiagnosticEngine &Diags)
   : LangOpts(langOpts),
     TypeCheckerOpts(typeckOpts),
     SearchPathOpts(SearchPathOpts),
     ClangImporterOpts(ClangImporterOpts),
+    SymbolGraphOpts(SymbolGraphOpts),
     SourceMgr(SourceMgr), Diags(Diags),
     evaluator(Diags, langOpts),
     TheBuiltinModule(createBuiltinModule(*this)),
@@ -973,8 +981,10 @@ ProtocolDecl *ASTContext::getProtocol(KnownProtocolKind kind) const {
     M = getLoadedModule(Id_Differentiation);
     break;
   case KnownProtocolKind::Actor:
+  case KnownProtocolKind::GlobalActor:
   case KnownProtocolKind::AsyncSequence:
   case KnownProtocolKind::AsyncIteratorProtocol:
+  case KnownProtocolKind::SerialExecutor:
     M = getLoadedModule(Id_Concurrency);
     break;
   default:
@@ -1934,7 +1944,7 @@ bool ASTContext::shouldPerformTypoCorrection() {
   return NumTypoCorrections <= LangOpts.TypoCorrectionLimit;
 }
 
-bool ASTContext::canImportModule(ImportPath::Element ModuleName) {
+bool ASTContext::canImportModuleImpl(ImportPath::Element ModuleName) const {
   // If this module has already been successfully imported, it is importable.
   if (getLoadedModule(ImportPath::Module::Builder(ModuleName).get()) != nullptr)
     return true;
@@ -1950,8 +1960,20 @@ bool ASTContext::canImportModule(ImportPath::Element ModuleName) {
     }
   }
 
-  FailedModuleImportNames.insert(ModuleName.Item);
   return false;
+}
+
+bool ASTContext::canImportModule(ImportPath::Element ModuleName) {
+  if (canImportModuleImpl(ModuleName)) {
+    return true;
+  } else {
+    FailedModuleImportNames.insert(ModuleName.Item);
+    return false;
+  }
+}
+
+bool ASTContext::canImportModule(ImportPath::Element ModuleName) const {
+  return canImportModuleImpl(ModuleName);
 }
 
 ModuleDecl *
@@ -2020,6 +2042,20 @@ ModuleDecl *ASTContext::getStdlibModule(bool loadIfAbsent) {
   return TheStdlibModule;
 }
 
+Optional<ExternalSourceLocs *>
+ASTContext::getExternalSourceLocs(const Decl *D) {
+  auto Known = getImpl().ExternalSourceLocs.find(D);
+  if (Known == getImpl().ExternalSourceLocs.end())
+    return None;
+
+  return Known->second;
+}
+
+void ASTContext::setExternalSourceLocs(const Decl *D,
+                                       ExternalSourceLocs *Locs) {
+  getImpl().ExternalSourceLocs[D] = Locs;
+}
+
 Optional<std::pair<RawComment, bool>> ASTContext::getRawComment(const Decl *D) {
   auto Known = getImpl().RawComments.find(D);
   if (Known == getImpl().RawComments.end())
@@ -2049,7 +2085,8 @@ ASTContext::getConformance(Type conformingType,
                            ProtocolDecl *protocol,
                            SourceLoc loc,
                            DeclContext *dc,
-                           ProtocolConformanceState state) {
+                           ProtocolConformanceState state,
+                           bool isUnchecked) {
   assert(dc->isTypeContext());
 
   llvm::FoldingSetNodeID id;
@@ -2065,7 +2102,8 @@ ASTContext::getConformance(Type conformingType,
   // Build a new normal protocol conformance.
   auto result
     = new (*this, AllocationArena::Permanent)
-      NormalProtocolConformance(conformingType, protocol, loc, dc, state);
+        NormalProtocolConformance(
+          conformingType, protocol, loc, dc, state,isUnchecked);
   normalConformances.InsertNode(result, insertPos);
 
   return result;
@@ -2656,6 +2694,7 @@ AnyFunctionType::Param swift::computeSelfParam(AbstractFunctionDecl *AFD,
   bool isStatic = false;
   SelfAccessKind selfAccess = SelfAccessKind::NonMutating;
   bool isDynamicSelf = false;
+  bool isIsolated = false;
 
   if (auto *FD = dyn_cast<FuncDecl>(AFD)) {
     isStatic = FD->isStatic();
@@ -2672,6 +2711,11 @@ AnyFunctionType::Param swift::computeSelfParam(AbstractFunctionDecl *AFD,
     // FIXME: All methods of non-final classes should have this.
     else if (wantDynamicSelf && FD->hasDynamicSelfResult())
       isDynamicSelf = true;
+
+    // If this is a non-static method within an actor, the 'self' parameter
+    // is isolated if this declaration is isolated.
+    isIsolated = evaluateOrDefault(
+        Ctx.evaluator, HasIsolatedSelfRequest{AFD}, false);
   } else if (auto *CD = dyn_cast<ConstructorDecl>(AFD)) {
     if (isInitializingCtor) {
       // initializing constructors of value types always have an implicitly
@@ -2687,7 +2731,7 @@ AnyFunctionType::Param swift::computeSelfParam(AbstractFunctionDecl *AFD,
     if (Ctx.isSwiftVersionAtLeast(5)) {
       if (wantDynamicSelf && CD->isConvenienceInit())
         if (auto *classDecl = selfTy->getClassOrBoundGenericClass())
-          if (!classDecl->isFinal())
+          if (!classDecl->isSemanticallyFinal())
             isDynamicSelf = true;
     }
   } else if (isa<DestructorDecl>(AFD)) {
@@ -2705,7 +2749,7 @@ AnyFunctionType::Param swift::computeSelfParam(AbstractFunctionDecl *AFD,
   if (isStatic)
     return AnyFunctionType::Param(MetatypeType::get(selfTy, Ctx));
 
-  auto flags = ParameterTypeFlags();
+  auto flags = ParameterTypeFlags().withIsolated(isIsolated);
   switch (selfAccess) {
   case SelfAccessKind::Consuming:
     flags = flags.withOwned(true);
@@ -3179,7 +3223,8 @@ void AnyFunctionType::decomposeInput(
     result.emplace_back(
         type->getInOutObjectType(), Identifier(),
         ParameterTypeFlags::fromParameterType(type, false, false, false,
-                                              ValueOwnership::Default, false));
+                                              ValueOwnership::Default, false,
+                                              false));
     return;
   }
 }

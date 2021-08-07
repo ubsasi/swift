@@ -66,6 +66,7 @@ private:
   Stmt *walkToStmtPost(Stmt *S) override;
 
   std::pair<bool, Pattern *> walkToPatternPre(Pattern *P) override;
+  Pattern *walkToPatternPost(Pattern *P) override;
 
   bool handleImports(ImportDecl *Import);
   bool handleCustomAttributes(Decl *D);
@@ -233,6 +234,65 @@ std::pair<bool, Stmt *> SemaAnnotator::walkToStmtPre(Stmt *S) {
         Cancelled = true;
       // Already walked children.
       return { false, Continue ? DeferS : nullptr };
+    }
+
+    auto doSkipChildren = [&]() -> std::pair<bool, Stmt *> {
+      if (!walkToStmtPost(S))
+        return {false, nullptr};
+      return {false, S};
+    };
+
+    auto doStopTraversal = [&]() -> std::pair<bool, Stmt *> {
+      Cancelled = true;
+      return {false, nullptr};
+    };
+
+    // Make sure to walk a ForEachStmt in source order. Note this is a narrow
+    // fix for release/5.5. On main, this is fixed in the ASTWalker itself.
+    // rdar://78781061
+    if (auto *FE = dyn_cast<ForEachStmt>(S)) {
+      if (auto *P = FE->getPattern()) {
+        auto *NewP = P->walk(*this);
+        if (!NewP)
+          return doStopTraversal();
+        assert(NewP == P);
+      }
+      if (auto *SE = FE->getSequence()) {
+        auto *NewSE = SE->walk(*this);
+        if (!NewSE)
+          return doStopTraversal();
+        assert(NewSE == SE);
+      }
+      if (auto *Where = FE->getWhere()) {
+        auto *NewWhere = Where->walk(*this);
+        if (!NewWhere)
+          return doStopTraversal();
+        assert(NewWhere == Where);
+      }
+      if (auto *IteratorNext = FE->getConvertElementExpr()) {
+        auto *NewIteratorNext = IteratorNext->walk(*this);
+        if (!NewIteratorNext)
+          return doStopTraversal();
+        assert(NewIteratorNext == IteratorNext);
+      }
+      if (auto *IteratorVar = FE->getIteratorVar()) {
+        if (IteratorVar->walk(*this))
+          return doStopTraversal();
+      }
+      if (auto *IteratorVarRef = FE->getIteratorVarRef()) {
+        auto *NewIteratorVarRef = IteratorVarRef->walk(*this);
+        if (!NewIteratorVarRef)
+          return doStopTraversal();
+        assert(NewIteratorVarRef == IteratorVarRef);
+      }
+      if (auto *Body = FE->getBody()) {
+        auto *NewBody = Body->walk(*this);
+        if (!NewBody)
+          return doStopTraversal();
+        assert(NewBody == Body);
+      }
+      // Already visited.
+      return doSkipChildren();
     }
   }
   return { TraverseChildren, S };
@@ -587,6 +647,9 @@ std::pair<bool, Pattern *> SemaAnnotator::walkToPatternPre(Pattern *P) {
     return { false, nullptr };
   }
 
+  if (!SEWalker.walkToPatternPre(P))
+    return { false, P };
+
   if (P->isImplicit())
     return { true, P };
 
@@ -607,6 +670,16 @@ std::pair<bool, Pattern *> SemaAnnotator::walkToPatternPre(Pattern *P) {
   // subpattern.  The type will be walked as a part of another TypedPattern.
   TP->getSubPattern()->walk(*this);
   return { false, P };
+}
+
+Pattern *SemaAnnotator::walkToPatternPost(Pattern *P) {
+  if (isDone())
+     return nullptr;
+
+  bool Continue = SEWalker.walkToPatternPost(P);
+  if (!Continue)
+    Cancelled = true;
+  return Continue ? P : nullptr;
 }
 
 bool SemaAnnotator::handleCustomAttributes(Decl *D) {
@@ -806,32 +879,37 @@ bool SemaAnnotator::shouldIgnore(Decl *D) {
 
 bool SourceEntityWalker::walk(SourceFile &SrcFile) {
   SemaAnnotator Annotator(*this);
-  return SrcFile.walk(Annotator);
+  return performWalk(Annotator, [&]() { return SrcFile.walk(Annotator); });
 }
 
 bool SourceEntityWalker::walk(ModuleDecl &Mod) {
   SemaAnnotator Annotator(*this);
-  return Mod.walk(Annotator);
+  return performWalk(Annotator, [&]() { return Mod.walk(Annotator); });
 }
 
 bool SourceEntityWalker::walk(Stmt *S) {
   SemaAnnotator Annotator(*this);
-  return S->walk(Annotator);
+  return performWalk(Annotator, [&]() { return S->walk(Annotator); });
 }
 
 bool SourceEntityWalker::walk(Expr *E) {
   SemaAnnotator Annotator(*this);
-  return E->walk(Annotator);
+  return performWalk(Annotator, [&]() { return E->walk(Annotator); });
+}
+
+bool SourceEntityWalker::walk(Pattern *P) {
+  SemaAnnotator Annotator(*this);
+  return performWalk(Annotator, [&]() { return P->walk(Annotator); });
 }
 
 bool SourceEntityWalker::walk(Decl *D) {
   SemaAnnotator Annotator(*this);
-  return D->walk(Annotator);
+  return performWalk(Annotator, [&]() { return D->walk(Annotator); });
 }
 
 bool SourceEntityWalker::walk(DeclContext *DC) {
   SemaAnnotator Annotator(*this);
-  return DC->walkContext(Annotator);
+  return performWalk(Annotator, [&]() { return DC->walkContext(Annotator); });
 }
 
 bool SourceEntityWalker::walk(ASTNode N) {

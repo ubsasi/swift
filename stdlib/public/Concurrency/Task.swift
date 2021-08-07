@@ -15,212 +15,87 @@ import Swift
 
 // ==== Task -------------------------------------------------------------------
 
-/// An asynchronous task (just "Task" hereafter) is the analogue of a thread for
-/// asynchronous functions. All asynchronous functions run as part of some task.
+/// A unit of asynchronous work.
 ///
-/// A task can only be interacted with by code running "in" the task,
-/// by invoking the appropriate context sensitive static functions which operate
-/// on the "current" task. Because all such functions are `async` they can only
+/// An instance of `Task` always represents a top-level task. The instance
+/// can be used to await its completion, cancel the task, etc., The task will
+/// run to completion even if there are no other instances of the `Task`.
+///
+/// `Task` also provides appropriate context-sensitive static functions which
+/// operate on the "current" task, which might either be a detached task or
+/// a child task. Because all such functions are `async` they can only
 /// be invoked as part of an existing task, and therefore are guaranteed to be
 /// effective.
 ///
-/// A task's execution can be seen as a series of periods where the task was
-/// running. Each such period ends at a suspension point or -- finally -- the
+/// Only code that's running as part of the task can interact with that task,
+/// by invoking the appropriate context-sensitive static functions which operate
+/// on the current task.
+///
+/// A task's execution can be seen as a series of periods where the task ran.
+/// Each such period ends at a suspension point or the
 /// completion of the task.
 ///
 /// These partial periods towards the task's completion are `PartialAsyncTask`.
-/// Partial tasks are generally not interacted with by end-users directly,
-/// unless implementing a scheduler.
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-public struct Task {
+/// Unless you're implementing a scheduler,
+/// you don't generally interact with partial tasks directly.
+///
+/// Task Cancellation
+/// =================
+///
+/// Tasks include a shared mechanism for indicating cancellation,
+/// but not a shared implementation for how to handle cancellation.
+/// Depending on the work you're doing in the task,
+/// the correct way to stop that work varies.
+/// Likewise,
+/// it's the responsibility of the code running as part of the task
+/// to check for cancellation whenever stopping is appropriate.
+/// In a long-task that includes multiple pieces,
+/// you might need to check for cancellation at several points,
+/// and handle cancellation differently at each point.
+/// If you only need to throw an error to stop the work,
+/// call the `Task.checkCancellation()` function to check for cancellation.
+/// Other responses to cancellation include
+/// returning the work completed so far, returning an empty result, or returning `nil`.
+///
+/// Cancellation is a purely Boolean state;
+/// there's no way to include additional information
+/// like the reason for cancellation.
+/// This reflects the fact that a task can be canceled for many reasons,
+/// and additional reasons can accrue during the cancellation process.
+@available(SwiftStdlib 5.5, *)
+@frozen
+public struct Task<Success, Failure: Error>: Sendable {
+  @usableFromInline
   internal let _task: Builtin.NativeObject
 
-  // May only be created by the standard library.
+  @_alwaysEmitIntoClient
   internal init(_ task: Builtin.NativeObject) {
     self._task = task
   }
 }
 
-// ==== Current Task -----------------------------------------------------------
-
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 extension Task {
-
-  /// Returns 'current' `Task` instance, representing the task from within which
-  /// this function was called.
+  /// Wait for the task to complete, returning (or throwing) its result.
   ///
-  /// All functions available on the Task
-  @available(*, deprecated, message: "`Task.current` has been deprecated and will be removed, use static functions on Task instead.")
-  public static var current: Task? {
-    guard let _task = _getCurrentAsyncTask() else {
-      return nil
-    }
-
-    // FIXME: This retain seems pretty wrong, however if we don't we WILL crash
-    //        with "destroying a task that never completed" in the task's destroy.
-    //        How do we solve this properly?
-    Builtin.retain(_task)
-
-    return Task(_task)
-  }
-
-}
-
-// ==== Task Priority ----------------------------------------------------------
-
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-extension Task {
-
-  /// Returns the `current` task's priority.
+  /// ### Priority
+  /// If the task has not completed yet, its priority will be elevated to the
+  /// priority of the current task. Note that this may not be as effective as
+  /// creating the task with the "right" priority to in the first place.
   ///
-  /// If no current `Task` is available, returns `Priority.default`.
+  /// ### Cancellation
+  /// If the awaited on task gets cancelled externally the `get()` will throw
+  /// a cancellation error.
   ///
-  /// - SeeAlso: `Task.Priority`
-  /// - SeeAlso: `Task.priority`
-  public static var currentPriority: Priority {
-    withUnsafeCurrentTask { task in
-      task?.priority ?? Priority.default
-    }
-  }
-
-  /// Returns the `current` task's priority.
-  ///
-  /// If no current `Task` is available, returns `Priority.default`.
-  ///
-  /// - SeeAlso: `Task.Priority`
-  /// - SeeAlso: `Task.currentPriority`
-  @available(*, deprecated, message: "Storing `Task` instances has been deprecated, and as such instance functions on Task are deprecated and will be removed soon. Use the static 'Task.currentPriority' instead.")
-  public var priority: Priority {
-    getJobFlags(_task).priority
-  }
-
-  /// Task priority may inform decisions an `Executor` makes about how and when
-  /// to schedule tasks submitted to it.
-  ///
-  /// ### Priority scheduling
-  /// An executor MAY utilize priority information to attempt running higher
-  /// priority tasks first, and then continuing to serve lower priority tasks.
-  ///
-  /// The exact semantics of how priority is treated are left up to each
-  /// platform and `Executor` implementation.
-  ///
-  /// ### Priority inheritance
-  /// Child tasks automatically inherit their parent task's priority.
-  ///
-  /// Detached tasks (created by `detach`) DO NOT inherit task priority,
-  /// as they are "detached" from their parent tasks after all.
-  ///
-  /// ### Priority elevation
-  /// In some situations the priority of a task must be elevated (or "escalated", "raised"):
-  ///
-  /// - if a `Task` running on behalf of an actor, and a new higher-priority
-  ///   task is enqueued to the actor, its current task must be temporarily
-  ///   elevated to the priority of the enqueued task, in order to allow the new
-  ///   task to be processed at--effectively-- the priority it was enqueued with.
-  ///   - this DOES NOT affect `Task.currentPriority()`.
-  /// - if a task is created with a `Task.Handle`, and a higher-priority task
-  ///   calls the `await handle.get()` function the priority of this task must be
-  ///   permanently increased until the task completes.
-  ///   - this DOES affect `Task.currentPriority()`.
-  ///
-  /// TODO: Define the details of task priority; It is likely to be a concept
-  ///       similar to Darwin Dispatch's QoS; bearing in mind that priority is not as
-  ///       much of a thing on other platforms (i.e. server side Linux systems).
-  public enum Priority: Int, Comparable {
-    // Values must be same as defined by the internal `JobPriority`.
-    case userInteractive = 0x21
-    case userInitiated   = 0x19
-    case `default`       = 0x15
-    case utility         = 0x11
-    case background      = 0x09
-    case unspecified     = 0x00
-
-    public static func < (lhs: Priority, rhs: Priority) -> Bool {
-      lhs.rawValue < rhs.rawValue
-    }
-  }
-}
-
-// ==== Task Handle ------------------------------------------------------------
-
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-extension Task {
-  /// A task handle refers to an in-flight `Task`,
-  /// allowing for potentially awaiting for its result or Cancelling it.
-  ///
-  /// It is not a programming error to drop a handle without awaiting or cancelling it,
-  /// i.e. the task will run regardless of the handle still being present or not.
-  /// Dropping a handle however means losing the ability to await on the task's result
-  /// and losing the ability to cancel it.
-  public struct Handle<Success, Failure: Error>: Sendable {
-    internal let _task: Builtin.NativeObject
-
-    internal init(_ task: Builtin.NativeObject) {
-      self._task = task
-    }
-
-    /// Returns the `Task` that this handle refers to.
-    @available(*, deprecated, message: "Storing `Task` instances has been deprecated and will be removed soon.")
-    public var task: Task {
-      Task(_task)
-    }
-
-    /// Wait for the task to complete, returning (or throwing) its result.
-    ///
-    /// ### Priority
-    /// If the task has not completed yet, its priority will be elevated to the
-    /// priority of the current task. Note that this may not be as effective as
-    /// creating the task with the "right" priority to in the first place.
-    ///
-    /// ### Cancellation
-    /// If the awaited on task gets cancelled externally the `get()` will throw
-    /// a cancellation error.
-    ///
-    /// If the task gets cancelled internally, e.g. by checking for cancellation
-    /// and throwing a specific error or using `checkCancellation` the error
-    /// thrown out of the task will be re-thrown here.
-    public func get() async throws -> Success {
+  /// If the task gets cancelled internally --
+  /// for example, by checking for cancellation
+  /// and throwing a specific error, or by calling `checkCancellation()`,
+  /// then the error thrown by the task is rethrown here.
+  public var value: Success {
+    get async throws {
       return try await _taskFutureGetThrowing(_task)
     }
-
-    /// Wait for the task to complete, returning its `Result`.
-    ///
-    /// ### Priority
-    /// If the task has not completed yet, its priority will be elevated to the
-    /// priority of the current task. Note that this may not be as effective as
-    /// creating the task with the "right" priority to in the first place.
-    ///
-    /// ### Cancellation
-    /// If the awaited on task gets cancelled externally the `get()` will throw
-    /// a cancellation error.
-    ///
-    /// If the task gets cancelled internally, e.g. by checking for cancellation
-    /// and throwing a specific error or using `checkCancellation` the error
-    /// thrown out of the task will be re-thrown here.
-    public func getResult() async -> Result<Success, Failure> {
-      do {
-        return .success(try await get())
-      } catch {
-        return .failure(error as! Failure) // as!-safe, guaranteed to be Failure
-      }
-    }
-
-    /// Attempt to cancel the task.
-    ///
-    /// Whether this function has any effect is task-dependent.
-    ///
-    /// For a task to respect cancellation it must cooperatively check for it
-    /// while running. Many tasks will check for cancellation before beginning
-    /// their "actual work", however this is not a requirement nor is it guaranteed
-    /// how and when tasks check for cancellation in general.
-    public func cancel() {
-      Builtin.cancelAsyncTask(_task)
-    }
   }
-}
-
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-extension Task.Handle where Failure == Never {
 
   /// Wait for the task to complete, returning its result.
   ///
@@ -230,42 +105,67 @@ extension Task.Handle where Failure == Never {
   /// creating the task with the "right" priority to in the first place.
   ///
   /// ### Cancellation
-  /// The task this handle refers to may check for cancellation, however
+  /// If the awaited on task gets cancelled externally the `get()` will throw
+  /// a cancellation error.
+  ///
+  /// If the task gets cancelled internally --
+  /// for example, by checking for cancellation
+  /// and throwing a specific error, or by calling `checkCancellation()`,
+  /// then the error thrown by the task is returned here.
+  public var result: Result<Success, Failure> {
+    get async {
+      do {
+        return .success(try await value)
+      } catch {
+        return .failure(error as! Failure) // as!-safe, guaranteed to be Failure
+      }
+    }
+  }
+
+  /// Attempt to cancel the task.
+  ///
+  /// Whether this function has any effect is task-dependent.
+  ///
+  /// For a task to respect cancellation it must cooperatively check for it
+  /// while running. Many tasks will check for cancellation before beginning
+  /// their "actual work", however this is not a requirement nor is it guaranteed
+  /// how and when tasks check for cancellation in general.
+  public func cancel() {
+    Builtin.cancelAsyncTask(_task)
+  }
+}
+
+@available(SwiftStdlib 5.5, *)
+extension Task where Failure == Never {
+  /// Wait for the task to complete, returning its result.
+  ///
+  /// If the task hasn't completed,
+  /// its priority increases to that of the current task.
+  /// Note that this might not be as effective as
+  /// creating the task with the correct priority,
+  /// depending on the executor's scheduling details.
+  ///
+  /// ### Cancellation
+  /// The task this refers to may check for cancellation, however
   /// since it is not-throwing it would have to handle it using some other
   /// way than throwing a `CancellationError`, e.g. it could provide a neutral
   /// value of the `Success` type, or encode that cancellation has occurred in
   /// that type itself.
-  public func get() async -> Success {
-    return await _taskFutureGet(_task)
-  }
-  
-}
-
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-extension Task.Handle: Hashable {
-  public func hash(into hasher: inout Hasher) {
-    UnsafeRawPointer(Builtin.bridgeToRawPointer(_task)).hash(into: &hasher)
+  public var value: Success {
+    get async {
+      return await _taskFutureGet(_task)
+    }
   }
 }
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-extension Task.Handle: Equatable {
-  public static func ==(lhs: Self, rhs: Self) -> Bool {
-    UnsafeRawPointer(Builtin.bridgeToRawPointer(lhs._task)) ==
-      UnsafeRawPointer(Builtin.bridgeToRawPointer(rhs._task))
-  }
-}
-
-// ==== Conformances -----------------------------------------------------------
-
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 extension Task: Hashable {
   public func hash(into hasher: inout Hasher) {
     UnsafeRawPointer(Builtin.bridgeToRawPointer(_task)).hash(into: &hasher)
   }
 }
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 extension Task: Equatable {
   public static func ==(lhs: Self, rhs: Self) -> Bool {
     UnsafeRawPointer(Builtin.bridgeToRawPointer(lhs._task)) ==
@@ -273,270 +173,467 @@ extension Task: Equatable {
   }
 }
 
-// ==== Job Flags --------------------------------------------------------------
+// ==== Task Priority ----------------------------------------------------------
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-extension Task {
-  /// Flags for schedulable jobs.
+/// Task priority may inform decisions an `Executor` makes about how and when
+/// to schedule tasks submitted to it.
+///
+/// ### Priority scheduling
+/// An executor MAY utilize priority information to attempt running higher
+/// priority tasks first, and then continuing to serve lower priority tasks.
+///
+/// The exact semantics of how priority is treated are left up to each
+/// platform and `Executor` implementation.
+///
+/// ### Priority inheritance
+/// Child tasks automatically inherit their parent task's priority.
+///
+/// Detached tasks (created by `Task.detached`) DO NOT inherit task priority,
+/// as they are "detached" from their parent tasks after all.
+///
+/// ### Priority elevation
+/// In some situations the priority of a task must be elevated (or "escalated", "raised"):
+///
+/// - if a `Task` running on behalf of an actor, and a new higher-priority
+///   task is enqueued to the actor, its current task must be temporarily
+///   elevated to the priority of the enqueued task, in order to allow the new
+///   task to be processed at--effectively-- the priority it was enqueued with.
+///   - this DOES NOT affect `Task.currentPriority()`.
+/// - if a task is created with a `Task.Handle`, and a higher-priority task
+///   calls the `await handle.get()` function the priority of this task must be
+///   permanently increased until the task completes.
+///   - this DOES affect `Task.currentPriority()`.
+///
+/// TODO: Define the details of task priority; It is likely to be a concept
+///       similar to Darwin Dispatch's QoS; bearing in mind that priority is not as
+///       much of a thing on other platforms (i.e. server side Linux systems).
+@available(SwiftStdlib 5.5, *)
+public struct TaskPriority: RawRepresentable, Sendable {
+  public typealias RawValue = UInt8
+  public var rawValue: UInt8
+
+  public init(rawValue: UInt8) {
+    self.rawValue = rawValue
+  }
+
+  public static let high: TaskPriority = .init(rawValue: 0x19)
+
+  @_alwaysEmitIntoClient
+  public static var medium: TaskPriority {
+    .init(rawValue: 0x15)
+  }
+
+  public static let low: TaskPriority = .init(rawValue: 0x11)
+
+  public static let userInitiated: TaskPriority = high
+  public static let utility: TaskPriority = low
+  public static let background: TaskPriority = .init(rawValue: 0x09)
+
+  @available(*, deprecated, renamed: "medium")
+  public static let `default`: TaskPriority = .init(rawValue: 0x15)
+}
+
+@available(SwiftStdlib 5.5, *)
+extension TaskPriority: Equatable {
+  public static func == (lhs: TaskPriority, rhs: TaskPriority) -> Bool {
+    lhs.rawValue == rhs.rawValue
+  }
+
+  public static func != (lhs: TaskPriority, rhs: TaskPriority) -> Bool {
+    lhs.rawValue != rhs.rawValue
+  }
+}
+
+@available(SwiftStdlib 5.5, *)
+extension TaskPriority: Comparable {
+  public static func < (lhs: TaskPriority, rhs: TaskPriority) -> Bool {
+    lhs.rawValue < rhs.rawValue
+  }
+
+  public static func <= (lhs: TaskPriority, rhs: TaskPriority) -> Bool {
+    lhs.rawValue <= rhs.rawValue
+  }
+
+  public static func > (lhs: TaskPriority, rhs: TaskPriority) -> Bool {
+    lhs.rawValue > rhs.rawValue
+  }
+
+  public static func >= (lhs: TaskPriority, rhs: TaskPriority) -> Bool {
+    lhs.rawValue >= rhs.rawValue
+  }
+}
+
+@available(SwiftStdlib 5.5, *)
+extension TaskPriority: Codable { }
+
+@available(SwiftStdlib 5.5, *)
+extension Task where Success == Never, Failure == Never {
+
+  /// Returns the `current` task's priority.
   ///
-  /// This is a port of the C++ FlagSet.
-  struct JobFlags {
-    /// Kinds of schedulable jobs.
-    enum Kind: Int {
-      case task = 0
-    }
-
-    /// The actual bit representation of these flags.
-    var bits: Int = 0
-
-    /// The kind of job described by these flags.
-    var kind: Kind {
-      get {
-        Kind(rawValue: bits & 0xFF)!
-      }
-
-      set {
-        bits = (bits & ~0xFF) | newValue.rawValue
-      }
-    }
-
-    /// Whether this is an asynchronous task.
-    var isAsyncTask: Bool { kind == .task }
-
-    /// The priority given to the job.
-    var priority: Priority {
-      get {
-        Priority(rawValue: (bits & 0xFF00) >> 8)!
-      }
-
-      set {
-        bits = (bits & ~0xFF00) | (newValue.rawValue << 8)
-      }
-    }
-
-    /// Whether this is a child task.
-    var isChildTask: Bool {
-      get {
-        (bits & (1 << 24)) != 0
-      }
-
-      set {
-        if newValue {
-          bits = bits | 1 << 24
-        } else {
-          bits = (bits & ~(1 << 24))
-        }
-      }
-    }
-
-    /// Whether this is a future.
-    var isFuture: Bool {
-      get {
-        (bits & (1 << 25)) != 0
-      }
-
-      set {
-        if newValue {
-          bits = bits | 1 << 25
-        } else {
-          bits = (bits & ~(1 << 25))
-        }
-      }
-    }
-
-    /// Whether this is a group child.
-    var isGroupChildTask: Bool {
-      get {
-        (bits & (1 << 26)) != 0
-      }
-
-      set {
-        if newValue {
-          bits = bits | 1 << 26
-        } else {
-          bits = (bits & ~(1 << 26))
-        }
-      }
-    }
-
-  }
-}
-
-// ==== Detached Tasks ---------------------------------------------------------
-
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-extension Task {
-
-  @discardableResult
-  @available(*, deprecated, message: "`Task.runDetached` was replaced by `detach` and will be removed shortly.")
-  public static func runDetached<T>(
-    priority: Task.Priority = .unspecified,
-    operation: __owned @Sendable @escaping () async throws -> T
-  ) -> Task.Handle<T, Error> {
-    detach(priority: priority, operation: operation)
-  }
-
-}
-
-/// Run given throwing `operation` as part of a new top-level task.
-///
-/// Creating detached tasks should, generally, be avoided in favor of using
-/// `async` functions, `async let` declarations and `await` expressions - as
-/// those benefit from structured, bounded concurrency which is easier to reason
-/// about, as well as automatically inheriting the parent tasks priority,
-/// task-local storage, deadlines, as well as being cancelled automatically
-/// when their parent task is cancelled. Detached tasks do not get any of those
-/// benefits, and thus should only be used when an operation is impossible to
-/// be modelled with child tasks.
-///
-/// ### Cancellation
-/// A detached task always runs to completion unless it is explicitly cancelled.
-/// Specifically, dropping a detached tasks `Task.Handle` does _not_ automatically
-/// cancel given task.
-///
-/// Cancelling a task must be performed explicitly via `handle.cancel()`.
-///
-/// - Note: it is generally preferable to use child tasks rather than detached
-///   tasks. Child tasks automatically carry priorities, task-local state,
-///   deadlines and have other benefits resulting from the structured
-///   concurrency concepts that they model. Consider using detached tasks only
-///   when strictly necessary and impossible to model operations otherwise.
-///
-/// - Parameters:
-///   - priority: priority of the task
-///   - executor: the executor on which the detached closure should start
-///               executing on.
-///   - operation: the operation to execute
-/// - Returns: handle to the task, allowing to `await handle.get()` on the
-///     tasks result or `cancel` it. If the operation fails the handle will
-///     throw the error the operation has thrown when awaited on.
-@discardableResult
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-public func detach<T>(
-  priority: Task.Priority = .unspecified,
-  operation: __owned @Sendable @escaping () async -> T
-) -> Task.Handle<T, Never> {
-  // Set up the job flags for a new task.
-  var flags = Task.JobFlags()
-  flags.kind = .task
-  flags.priority = priority
-  flags.isFuture = true
-
-  // Create the asynchronous task future.
-  let (task, _) = Builtin.createAsyncTaskFuture(flags.bits, operation)
-
-  // Enqueue the resulting job.
-  _enqueueJobGlobal(Builtin.convertTaskToJob(task))
-
-  return Task.Handle<T, Never>(task)
-}
-
-/// Run given throwing `operation` as part of a new top-level task.
-///
-/// Creating detached tasks should, generally, be avoided in favor of using
-/// `async` functions, `async let` declarations and `await` expressions - as
-/// those benefit from structured, bounded concurrency which is easier to reason
-/// about, as well as automatically inheriting the parent tasks priority,
-/// task-local storage, deadlines, as well as being cancelled automatically
-/// when their parent task is cancelled. Detached tasks do not get any of those
-/// benefits, and thus should only be used when an operation is impossible to
-/// be modelled with child tasks.
-///
-/// ### Cancellation
-/// A detached task always runs to completion unless it is explicitly cancelled.
-/// Specifically, dropping a detached tasks `Task.Handle` does _not_ automatically
-/// cancel given task.
-///
-/// Cancelling a task must be performed explicitly via `handle.cancel()`.
-///
-/// - Note: it is generally preferable to use child tasks rather than detached
-///   tasks. Child tasks automatically carry priorities, task-local state,
-///   deadlines and have other benefits resulting from the structured
-///   concurrency concepts that they model. Consider using detached tasks only
-///   when strictly necessary and impossible to model operations otherwise.
-///
-/// - Parameters:
-///   - priority: priority of the task
-///   - executor: the executor on which the detached closure should start
-///               executing on.
-///   - operation: the operation to execute
-/// - Returns: handle to the task, allowing to `await handle.get()` on the
-///     tasks result or `cancel` it. If the operation fails the handle will
-///     throw the error the operation has thrown when awaited on.
-@discardableResult
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-public func detach<T>(
-  priority: Task.Priority = .unspecified,
-  operation: __owned @Sendable @escaping () async throws -> T
-) -> Task.Handle<T, Error> {
-  // Set up the job flags for a new task.
-  var flags = Task.JobFlags()
-  flags.kind = .task
-  flags.priority = priority
-  flags.isFuture = true
-
-  // Create the asynchronous task future.
-  let (task, _) = Builtin.createAsyncTaskFuture(flags.bits, operation)
-
-  // Enqueue the resulting job.
-  _enqueueJobGlobal(Builtin.convertTaskToJob(task))
-
-  return Task.Handle<T, Error>(task)
-}
-
-/// Run given `operation` as asynchronously in its own top-level task.
-///
-/// The `async` function should be used when creating asynchronous work
-/// that operates on behalf of the synchronous function that calls it.
-/// Like `detach`, the async function creates a separate, top-level task.
-/// Unlike `detach`, the task creating by `async` inherits the priority and
-/// actor context of the caller, so the `operation` is treated more like an
-/// asynchronous extension to the synchronous operation. Additionally, `async`
-/// does not return a handle to refer to the task.
-///
-/// - Parameters:
-///   - priority: priority of the task. If unspecified, the priority will
-///               be inherited from the task that is currently executing
-///               or, if there is none, from the platform's understanding of
-///               which thread is executing.
-///   - operation: the operation to execute
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-public func async(
-  priority: Task.Priority = .unspecified,
-  @_inheritActorContext @_implicitSelfCapture operation: __owned @Sendable @escaping () async -> Void
-) {
-  // Determine the priority at which we should create this task
-  let actualPriority: Task.Priority
-  if priority == .unspecified {
-    actualPriority = withUnsafeCurrentTask { task in
-      // If we are running on behalf of a task,
+  /// If no current `Task` is available, queries the system to determine the
+  /// priority at which the current function is running. If the system cannot
+  /// provide an appropriate priority, returns `Priority.default`.
+  ///
+  /// - SeeAlso: `TaskPriority`
+  public static var currentPriority: TaskPriority {
+    withUnsafeCurrentTask { task in
+      // If we are running on behalf of a task, use that task's priority.
       if let task = task {
         return task.priority
       }
 
-      return Task.Priority(rawValue: _getCurrentThreadPriority()) ?? .unspecified
+      // Otherwise, query the system.
+      return TaskPriority(rawValue: UInt8(_getCurrentThreadPriority()))
     }
-  } else {
-    actualPriority = priority
+  }
+}
+
+@available(SwiftStdlib 5.5, *)
+extension TaskPriority {
+  /// Downgrade user-interactive to user-initiated.
+  var _downgradeUserInteractive: TaskPriority {
+    return self
+  }
+}
+
+// ==== Job Flags --------------------------------------------------------------
+
+/// Flags for schedulable jobs.
+///
+/// This is a port of the C++ FlagSet.
+@available(SwiftStdlib 5.5, *)
+struct JobFlags {
+  /// Kinds of schedulable jobs.
+  enum Kind: Int32 {
+    case task = 0
   }
 
-  // Set up the job flags for a new task.
-  var flags = Task.JobFlags()
-  flags.kind = .task
-  flags.priority = actualPriority
-  flags.isFuture = true
+  /// The actual bit representation of these flags.
+  var bits: Int32 = 0
 
-  // Create the asynchronous task future.
-  let (task, _) = Builtin.createAsyncTaskFuture(flags.bits, operation)
+  /// The kind of job described by these flags.
+  var kind: Kind {
+    get {
+      Kind(rawValue: bits & 0xFF)!
+    }
 
-  // Enqueue the resulting job.
-  _enqueueJobGlobal(Builtin.convertTaskToJob(task))
+    set {
+      bits = (bits & ~0xFF) | newValue.rawValue
+    }
+  }
+
+  /// Whether this is an asynchronous task.
+  var isAsyncTask: Bool { kind == .task }
+
+  /// The priority given to the job.
+  var priority: TaskPriority? {
+    get {
+      let value = (Int(bits) & 0xFF00) >> 8
+
+      if value == 0 {
+        return nil
+      }
+
+      return TaskPriority(rawValue: UInt8(value))
+    }
+
+    set {
+      bits = (bits & ~0xFF00) | Int32((Int(newValue?.rawValue ?? 0) << 8))
+    }
+  }
+
+  /// Whether this is a child task.
+  var isChildTask: Bool {
+    get {
+      (bits & (1 << 24)) != 0
+    }
+
+    set {
+      if newValue {
+        bits = bits | 1 << 24
+      } else {
+        bits = (bits & ~(1 << 24))
+      }
+    }
+  }
+
+  /// Whether this is a future.
+  var isFuture: Bool {
+    get {
+      (bits & (1 << 25)) != 0
+    }
+
+    set {
+      if newValue {
+        bits = bits | 1 << 25
+      } else {
+        bits = (bits & ~(1 << 25))
+      }
+    }
+  }
+
+  /// Whether this is a group child.
+  var isGroupChildTask: Bool {
+    get {
+      (bits & (1 << 26)) != 0
+    }
+
+    set {
+      if newValue {
+        bits = bits | 1 << 26
+      } else {
+        bits = (bits & ~(1 << 26))
+      }
+    }
+  }
+
+  /// Whether this is a task created by the 'async' operation, which
+  /// conceptually continues the work of the synchronous code that invokes
+  /// it.
+  var isContinuingAsyncTask: Bool {
+    get {
+      (bits & (1 << 27)) != 0
+    }
+
+    set {
+      if newValue {
+        bits = bits | 1 << 27
+      } else {
+        bits = (bits & ~(1 << 27))
+      }
+    }
+  }
+}
+
+// ==== Task Creation Flags --------------------------------------------------
+
+/// Form task creation flags for use with the createAsyncTask builtins.
+@available(SwiftStdlib 5.5, *)
+@_alwaysEmitIntoClient
+func taskCreateFlags(
+  priority: TaskPriority?, isChildTask: Bool, copyTaskLocals: Bool,
+  inheritContext: Bool, enqueueJob: Bool,
+  addPendingGroupTaskUnconditionally: Bool
+) -> Int {
+  var bits = 0
+  bits |= (bits & ~0xFF) | Int(priority?.rawValue ?? 0)
+  if isChildTask {
+    bits |= 1 << 8
+  }
+  if copyTaskLocals {
+    bits |= 1 << 10
+  }
+  if inheritContext {
+    bits |= 1 << 11
+  }
+  if enqueueJob {
+    bits |= 1 << 12
+  }
+  if addPendingGroupTaskUnconditionally {
+    bits |= 1 << 13
+  }
+  return bits
+}
+
+// ==== Task Creation ----------------------------------------------------------
+@available(SwiftStdlib 5.5, *)
+extension Task where Failure == Never {
+  /// Run given `operation` as asynchronously in its own top-level task.
+  ///
+  /// The `async` function should be used when creating asynchronous work
+  /// that operates on behalf of the synchronous function that calls it.
+  /// Like `Task.detached`, the async function creates a separate, top-level
+  /// task.
+  ///
+  /// Unlike `Task.detached`, the task creating by the `Task` initializer
+  /// inherits the priority and actor context of the caller, so the `operation`
+  /// is treated more like an asynchronous extension to the synchronous
+  /// operation.
+  ///
+  /// - Parameters:
+  ///   - priority: priority of the task. If nil, the priority will come from
+  ///     Task.currentPriority.
+  ///   - operation: the operation to execute
+  @discardableResult
+  @_alwaysEmitIntoClient
+  public init(
+    priority: TaskPriority? = nil,
+    @_inheritActorContext @_implicitSelfCapture operation: __owned @Sendable @escaping () async -> Success
+  ) {
+#if compiler(>=5.5) && $BuiltinCreateAsyncTaskInGroup
+    // Set up the job flags for a new task.
+    let flags = taskCreateFlags(
+      priority: priority, isChildTask: false, copyTaskLocals: true,
+      inheritContext: true, enqueueJob: true,
+      addPendingGroupTaskUnconditionally: false)
+
+    // Create the asynchronous task.
+    let (task, _) = Builtin.createAsyncTask(flags, operation)
+
+    self._task = task
+#else
+    fatalError("Unsupported Swift compiler")
+#endif
+  }
+}
+
+@available(SwiftStdlib 5.5, *)
+extension Task where Failure == Error {
+  /// Run given `operation` as asynchronously in its own top-level task.
+  ///
+  /// This initializer creates asynchronous work on behalf of the synchronous function that calls it.
+  /// Like `Task.detached`, this initializer creates a separate, top-level task.
+  /// Unlike `Task.detached`, the task created inherits the priority and
+  /// actor context of the caller, so the `operation` is treated more like an
+  /// asynchronous extension to the synchronous operation.
+  ///
+  /// - Parameters:
+  ///   - priority: priority of the task. If nil, the priority will come from
+  ///     Task.currentPriority.
+  ///   - operation: the operation to execute
+  @discardableResult
+  @_alwaysEmitIntoClient
+  public init(
+    priority: TaskPriority? = nil,
+    @_inheritActorContext @_implicitSelfCapture operation: __owned @Sendable @escaping () async throws -> Success
+  ) {
+#if compiler(>=5.5) && $BuiltinCreateAsyncTaskInGroup
+    // Set up the task flags for a new task.
+    let flags = taskCreateFlags(
+      priority: priority, isChildTask: false, copyTaskLocals: true,
+      inheritContext: true, enqueueJob: true,
+      addPendingGroupTaskUnconditionally: false
+    )
+
+    // Create the asynchronous task future.
+    let (task, _) = Builtin.createAsyncTask(flags, operation)
+
+    self._task = task
+#else
+    fatalError("Unsupported Swift compiler")
+#endif
+  }
+}
+
+// ==== Detached Tasks ---------------------------------------------------------
+@available(SwiftStdlib 5.5, *)
+extension Task where Failure == Never {
+  /// Run given throwing `operation` as part of a new top-level task.
+  ///
+  /// Creating detached tasks should, generally, be avoided in favor of using
+  /// `async` functions, `async let` declarations and `await` expressions - as
+  /// those benefit from structured, bounded concurrency which is easier to reason
+  /// about, as well as automatically inheriting the parent tasks priority,
+  /// task-local storage, deadlines, as well as being cancelled automatically
+  /// when their parent task is cancelled. Detached tasks do not get any of those
+  /// benefits, and thus should only be used when an operation is impossible to
+  /// be modelled with child tasks.
+  ///
+  /// ### Cancellation
+  /// A detached task always runs to completion unless it is explicitly cancelled.
+  /// Specifically, dropping a detached tasks `Task` does _not_ automatically
+  /// cancel given task.
+  ///
+  /// Cancelling a task must be performed explicitly via `cancel()`.
+  ///
+  /// - Note: it is generally preferable to use child tasks rather than detached
+  ///   tasks. Child tasks automatically carry priorities, task-local state,
+  ///   deadlines and have other benefits resulting from the structured
+  ///   concurrency concepts that they model. Consider using detached tasks only
+  ///   when strictly necessary and impossible to model operations otherwise.
+  ///
+  /// - Parameters:
+  ///   - priority: priority of the task
+  ///   - operation: the operation to execute
+  /// - Returns: handle to the task, allowing to `await get()` on the
+  ///     tasks result or `cancel` it. If the operation fails the handle will
+  ///     throw the error the operation has thrown when awaited on.
+  @discardableResult
+  @_alwaysEmitIntoClient
+  public static func detached(
+    priority: TaskPriority? = nil,
+    operation: __owned @Sendable @escaping () async -> Success
+  ) -> Task<Success, Failure> {
+#if compiler(>=5.5) && $BuiltinCreateAsyncTaskInGroup
+    // Set up the job flags for a new task.
+    let flags = taskCreateFlags(
+      priority: priority, isChildTask: false, copyTaskLocals: false,
+      inheritContext: false, enqueueJob: true,
+      addPendingGroupTaskUnconditionally: false)
+
+    // Create the asynchronous task future.
+    let (task, _) = Builtin.createAsyncTask(flags, operation)
+
+    return Task(task)
+#else
+    fatalError("Unsupported Swift compiler")
+#endif
+  }
+}
+
+@available(SwiftStdlib 5.5, *)
+extension Task where Failure == Error {
+  /// Run given throwing `operation` as part of a new top-level task.
+  ///
+  /// Creating detached tasks should, generally, be avoided in favor of using
+  /// `async` functions, `async let` declarations and `await` expressions - as
+  /// those benefit from structured, bounded concurrency which is easier to reason
+  /// about, as well as automatically inheriting the parent tasks priority,
+  /// task-local storage, deadlines, as well as being cancelled automatically
+  /// when their parent task is cancelled. Detached tasks do not get any of those
+  /// benefits, and thus should only be used when an operation is impossible to
+  /// be modelled with child tasks.
+  ///
+  /// ### Cancellation
+  /// A detached task always runs to completion unless it is explicitly cancelled.
+  /// Specifically, dropping a detached tasks `Task.Handle` does _not_ automatically
+  /// cancel given task.
+  ///
+  /// Cancelling a task must be performed explicitly via `handle.cancel()`.
+  ///
+  /// - Note: it is generally preferable to use child tasks rather than detached
+  ///   tasks. Child tasks automatically carry priorities, task-local state,
+  ///   deadlines and have other benefits resulting from the structured
+  ///   concurrency concepts that they model. Consider using detached tasks only
+  ///   when strictly necessary and impossible to model operations otherwise.
+  ///
+  /// - Parameters:
+  ///   - priority: priority of the task
+  ///   - executor: the executor on which the detached closure should start
+  ///               executing on.
+  ///   - operation: the operation to execute
+  /// - Returns: handle to the task, allowing to `await handle.get()` on the
+  ///     tasks result or `cancel` it. If the operation fails the handle will
+  ///     throw the error the operation has thrown when awaited on.
+  @discardableResult
+  @_alwaysEmitIntoClient
+  public static func detached(
+    priority: TaskPriority? = nil,
+    operation: __owned @Sendable @escaping () async throws -> Success
+  ) -> Task<Success, Failure> {
+#if compiler(>=5.5) && $BuiltinCreateAsyncTaskInGroup
+    // Set up the job flags for a new task.
+    let flags = taskCreateFlags(
+      priority: priority, isChildTask: false, copyTaskLocals: false,
+      inheritContext: false, enqueueJob: true,
+      addPendingGroupTaskUnconditionally: false
+    )
+
+    // Create the asynchronous task future.
+    let (task, _) = Builtin.createAsyncTask(flags, operation)
+
+    return Task(task)
+#else
+    fatalError("Unsupported Swift compiler")
+#endif
+  }
 }
 
 // ==== Async Handler ----------------------------------------------------------
 
 // TODO: remove this?
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 func _runAsyncHandler(operation: @escaping () async -> ()) {
   typealias ConcurrentFunctionType = @Sendable () async -> ()
   detach(
@@ -544,97 +641,62 @@ func _runAsyncHandler(operation: @escaping () async -> ()) {
   )
 }
 
-// ==== Async Sleep ------------------------------------------------------------
-
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-extension Task {
-  /// Suspends the current task for _at least_ the given duration
-  /// in nanoseconds.
-  ///
-  /// This function does _not_ block the underlying thread.
-  public static func sleep(_ duration: UInt64) async {
-    // Set up the job flags for a new task.
-    var flags = Task.JobFlags()
-    flags.kind = .task
-    flags.priority = .default
-    flags.isFuture = true
-
-    // Create the asynchronous task future.
-    let (task, _) = Builtin.createAsyncTaskFuture(flags.bits, {})
-
-    // Enqueue the resulting job.
-    _enqueueJobGlobalWithDelay(duration, Builtin.convertTaskToJob(task))
-
-    await Handle<Void, Never>(task).get()
-  }
-}
-
 // ==== Voluntary Suspension -----------------------------------------------------
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-extension Task {
+@available(SwiftStdlib 5.5, *)
+extension Task where Success == Never, Failure == Never {
 
-  /// Explicitly suspend the current task, potentially giving up execution actor
-  /// of current actor/task, allowing other tasks to execute.
+  /// Suspends the current task and allows other tasks to execute.
   ///
-  /// This is not a perfect cure for starvation;
-  /// if the task is the highest-priority task in the system, it might go
-  /// immediately back to executing.
+  /// A task can voluntarily suspend itself
+  /// in the middle of a long-running operation
+  /// that doesn't contain any suspension points,
+  /// to let other tasks run for a while
+  /// before execution returns back to this task.
+  ///
+  /// If this task is the highest-priority task in the system,
+  /// the executor immediately resumes execution of the same task.
+  /// As such,
+  /// this method isn't necessarily a way to avoid resource starvation.
   public static func yield() async {
-    // Prepare the job flags
-    var flags = JobFlags()
-    flags.kind = .task
-    flags.priority = .default
-    flags.isFuture = true
-
-    // Create the asynchronous task future, it will do nothing, but simply serves
-    // as a way for us to yield our execution until the executor gets to it and
-    // resumes us.
-    // TODO: consider if it would be useful for this task to be a child task
-    let (task, _) = Builtin.createAsyncTaskFuture(flags.bits, {})
-
-    // Enqueue the resulting job.
-    _enqueueJobGlobal(Builtin.convertTaskToJob(task))
-
-    let _ = await Handle<Void, Never>(task).get()
+    return await Builtin.withUnsafeContinuation { (continuation: Builtin.RawUnsafeContinuation) -> Void in
+      let job = _taskCreateNullaryContinuationJob(
+          priority: Int(Task.currentPriority.rawValue),
+          continuation: continuation)
+      _enqueueJobGlobal(job)
+    }
   }
 }
 
 // ==== UnsafeCurrentTask ------------------------------------------------------
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-extension Task {
-
-  @available(*, deprecated, message: "`Task.unsafeCurrent` was replaced by `withUnsafeCurrentTask { task in ... }`, and will be removed soon.")
-  public static var unsafeCurrent: UnsafeCurrentTask? {
-    guard let _task = _getCurrentAsyncTask() else {
-      return nil
-    }
-    // FIXME: This retain seems pretty wrong, however if we don't we WILL crash
-    //        with "destroying a task that never completed" in the task's destroy.
-    //        How do we solve this properly?
-    Builtin.retain(_task)
-    return UnsafeCurrentTask(_task)
-  }
-}
-
 /// Calls the given closure with the with the "current" task in which this
 /// function was invoked.
 ///
-/// If invoked from an asynchronous function the task will always be non-nil,
-/// as an asynchronous function is always running within some task.
-/// However if invoked from a synchronous function the task may be nil,
-/// meaning that the function is not executing within a task, i.e. there is no
-/// asynchronous context available in the call stack.
+/// If you call this function from the body of an asynchronous function,
+/// the unsafe task handle passed to the closure is always non-nil
+/// because an asynchronous function always runs in the context of a task.
+/// However if you call this function from the body of a synchronous function,
+/// and that function isn't executing in the context of any task,
+/// the unsafe task handle is `nil`.
 ///
-/// It is generally not safe to escape/store the `UnsafeCurrentTask` for future
-/// use, as some operations on it may only be performed from the same task
-/// that it is representing.
+/// Don't store an unsafe task handle
+/// for use outside this method's closure.
+/// Storing an unsafe task handle doesn't have an impact on the task's actual life cycle,
+/// and the behavior of accessing an unsafe task handle
+/// outside of the `withUnsafeCurrentTask(body:)` method's closure isn't defined.
+/// Instead, use the `task` property of `UnsafeCurrentTask`
+/// to access an instance of `Task` that you can store long-term
+/// and interact with outside of the closure body.
 ///
-/// It is possible to obtain a `Task` fom the `UnsafeCurrentTask` which is safe
-/// to access from other tasks or even store for future reference e.g. equality
-/// checks.
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+/// - Parameters:
+///   - body: A closure that takes an `UnsafeCurrentTask` parameter.
+///     If `body` has a return value,
+///     that value is also used as the return value
+///     for the `withUnsafeCurrentTask(body:)` function.
+///
+/// - Returns: The return value, if any, of the `body` closure.
+@available(SwiftStdlib 5.5, *)
 public func withUnsafeCurrentTask<T>(body: (UnsafeCurrentTask?) throws -> T) rethrows -> T {
   guard let _task = _getCurrentAsyncTask() else {
     return try body(nil)
@@ -648,35 +710,32 @@ public func withUnsafeCurrentTask<T>(body: (UnsafeCurrentTask?) throws -> T) ret
   return try body(UnsafeCurrentTask(_task))
 }
 
-/// An *unsafe* 'current' task handle.
+/// An unsafe task handle for the current task.
 ///
-/// An `UnsafeCurrentTask` should not be stored for "later" access.
+/// To get an instance of `UnsafeCurrentTask` for the current task,
+/// call the `withUnsafeCurrentTask(body:)` method.
+/// Don't try to store an unsafe task handle
+/// for use outside that method's closure.
+/// Storing an unsafe task handle doesn't have an impact on the task's actual life cycle,
+/// and the behavior of accessing an unsafe task handle
+/// outside of the `withUnsafeCurrentTask(body:)` method's closure isn't defined.
+/// Instead, use the `task` property of `UnsafeCurrentTask`
+/// to access an instance of `Task` that you can store long-term
+/// and interact with outside of the closure body.
 ///
-/// Storing an `UnsafeCurrentTask` has no implication on the task's actual lifecycle.
-///
-/// The sub-set of APIs of `UnsafeCurrentTask` which also exist on `Task` are
-/// generally safe to be invoked from any task/thread.
-///
-/// All other APIs must not, be called 'from' any other task than the one
-/// represented by this handle itself. Doing so may result in undefined behavior,
-/// and most certainly will break invariants in other places of the program
-/// actively running on this task.
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+/// Only APIs on `UnsafeCurrentTask` that are also part of `Task`
+/// are safe to invoke from another task
+/// besides the one that this task handle represents.
+/// Calling other APIs from another task is undefined behavior,
+/// breaks invariants in other parts of the program running on this task,
+/// and may lead to crashes or data loss.
+@available(SwiftStdlib 5.5, *)
 public struct UnsafeCurrentTask {
   internal let _task: Builtin.NativeObject
 
   // May only be created by the standard library.
   internal init(_ task: Builtin.NativeObject) {
     self._task = task
-  }
-
-  /// Returns `Task` representing the same asynchronous context as this 'UnsafeCurrentTask'.
-  ///
-  /// Operations on `Task` (unlike `UnsafeCurrentTask`) are safe to be called
-  /// from any other task (or thread).
-  @available(*, deprecated, message: "Storing `Task` instances has been deprecated and will be removed soon.")
-  public var task: Task {
-    Task(_task)
   }
 
   /// Returns `true` if the task is cancelled, and should stop executing.
@@ -686,26 +745,29 @@ public struct UnsafeCurrentTask {
     _taskIsCancelled(_task)
   }
 
-  /// Returns the `current` task's priority.
+  /// The current task's priority.
   ///
-  /// If no current `Task` is available, returns `Priority.default`.
-  ///
-  /// - SeeAlso: `Task.Priority`
+  /// - SeeAlso: `TaskPriority`
   /// - SeeAlso: `Task.currentPriority`
-  public var priority: Task.Priority {
-    getJobFlags(_task).priority
+  public var priority: TaskPriority {
+    getJobFlags(_task).priority ?? TaskPriority(
+        rawValue: UInt8(_getCurrentThreadPriority()))
   }
 
+  /// Cancel the current task.
+  public func cancel() {
+    _taskCancel(_task)
+  }
 }
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 extension UnsafeCurrentTask: Hashable {
   public func hash(into hasher: inout Hasher) {
     UnsafeRawPointer(Builtin.bridgeToRawPointer(_task)).hash(into: &hasher)
   }
 }
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 extension UnsafeCurrentTask: Equatable {
   public static func ==(lhs: Self, rhs: Self) -> Bool {
     UnsafeRawPointer(Builtin.bridgeToRawPointer(lhs._task)) ==
@@ -714,33 +776,32 @@ extension UnsafeCurrentTask: Equatable {
 }
 
 // ==== Internal ---------------------------------------------------------------
-
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @_silgen_name("swift_task_getCurrent")
 func _getCurrentAsyncTask() -> Builtin.NativeObject?
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @_silgen_name("swift_task_getJobFlags")
-func getJobFlags(_ task: Builtin.NativeObject) -> Task.JobFlags
+func getJobFlags(_ task: Builtin.NativeObject) -> JobFlags
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @_silgen_name("swift_task_enqueueGlobal")
 @usableFromInline
 func _enqueueJobGlobal(_ task: Builtin.Job)
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @_silgen_name("swift_task_enqueueGlobalWithDelay")
 @usableFromInline
 func _enqueueJobGlobalWithDelay(_ delay: UInt64, _ task: Builtin.Job)
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @_silgen_name("swift_task_asyncMainDrainQueue")
 public func _asyncMainDrainQueue() -> Never
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 public func _runAsyncMain(_ asyncFun: @escaping () async throws -> ()) {
 #if os(Windows)
-  detach {
+  Task.detached {
     do {
       try await asyncFun()
       exit(0)
@@ -758,7 +819,7 @@ public func _runAsyncMain(_ asyncFun: @escaping () async throws -> ()) {
     }
   }
 
-  detach {
+  Task.detached {
     await _doMain(asyncFun)
     exit(0)
   }
@@ -769,51 +830,32 @@ public func _runAsyncMain(_ asyncFun: @escaping () async throws -> ()) {
 // FIXME: both of these ought to take their arguments _owned so that
 // we can do a move out of the future in the common case where it's
 // unreferenced
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @_silgen_name("swift_task_future_wait")
 public func _taskFutureGet<T>(_ task: Builtin.NativeObject) async -> T
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @_silgen_name("swift_task_future_wait_throwing")
 public func _taskFutureGetThrowing<T>(_ task: Builtin.NativeObject) async throws -> T
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
-public func _runChildTask<T>(
-  operation: @Sendable @escaping () async throws -> T
-) async -> Builtin.NativeObject {
-  let currentTask = Builtin.getCurrentAsyncTask()
-
-  // Set up the job flags for a new task.
-  var flags = Task.JobFlags()
-  flags.kind = .task
-  flags.priority = getJobFlags(currentTask).priority
-  flags.isFuture = true
-  flags.isChildTask = true
-
-  // Create the asynchronous task future.
-  let (task, _) = Builtin.createAsyncTaskFuture(
-      flags.bits, operation)
-
-  // Enqueue the resulting job.
-  _enqueueJobGlobal(Builtin.convertTaskToJob(task))
-
-  return task
-}
-
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @_silgen_name("swift_task_cancel")
 func _taskCancel(_ task: Builtin.NativeObject)
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @_silgen_name("swift_task_isCancelled")
 func _taskIsCancelled(_ task: Builtin.NativeObject) -> Bool
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
+@_silgen_name("swift_task_createNullaryContinuationJob")
+func _taskCreateNullaryContinuationJob(priority: Int, continuation: Builtin.RawUnsafeContinuation) -> Builtin.Job
+
+@available(SwiftStdlib 5.5, *)
 @usableFromInline
 @_silgen_name("swift_task_isCurrentExecutor")
 func _taskIsCurrentExecutor(_ executor: Builtin.Executor) -> Bool
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @usableFromInline
 @_silgen_name("swift_task_reportUnexpectedExecutor")
 func _reportUnexpectedExecutor(_ _filenameStart: Builtin.RawPointer,
@@ -822,7 +864,7 @@ func _reportUnexpectedExecutor(_ _filenameStart: Builtin.RawPointer,
                                _ _line: Builtin.Word,
                                _ _executor: Builtin.Executor)
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @_silgen_name("swift_task_getCurrentThreadPriority")
 func _getCurrentThreadPriority() -> Int
 
@@ -830,17 +872,11 @@ func _getCurrentThreadPriority() -> Int
 
 /// Intrinsic used by SILGen to launch a task for bridging a Swift async method
 /// which was called through its ObjC-exported completion-handler-based API.
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @_alwaysEmitIntoClient
 @usableFromInline
-internal func _runTaskForBridgedAsyncMethod(_ body: @escaping () async -> Void) {
-  // TODO: We can probably do better than detach
-  // if we're already running on behalf of a task,
-  // if the receiver of the method invocation is itself an Actor, or in other
-  // situations.
-#if compiler(>=5.5) && $Sendable
-  detach { await body() }
-#endif
+internal func _runTaskForBridgedAsyncMethod(@_inheritActorContext _ body: __owned @Sendable @escaping () async -> Void) {
+  Task(operation: body)
 }
 
 #endif

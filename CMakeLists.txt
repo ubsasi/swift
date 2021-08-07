@@ -408,8 +408,12 @@ option(SWIFT_ENABLE_EXPERIMENTAL_DIFFERENTIABLE_PROGRAMMING
   "Enable experimental Swift differentiable programming features"
   FALSE)
 
+option(SWIFT_IMPLICIT_CONCURRENCY_IMPORT
+  "Implicitly import the Swift concurrency module"
+  TRUE)
+
 option(SWIFT_ENABLE_EXPERIMENTAL_CONCURRENCY
-  "Enable experimental Swift concurrency model"
+  "Enable build of the Swift concurrency module"
   FALSE)
 
 option(SWIFT_ENABLE_DISPATCH
@@ -462,7 +466,9 @@ endif()
 
 set(SWIFT_BUILD_HOST_DISPATCH FALSE)
 if(SWIFT_ENABLE_DISPATCH AND NOT CMAKE_SYSTEM_NAME STREQUAL Darwin)
-  if(SWIFT_BUILD_SYNTAXPARSERLIB OR SWIFT_BUILD_SOURCEKIT)
+  # Only build libdispatch for the host if the host tools are being built and
+  # specifically if these two libraries that depend on it are built.
+  if(SWIFT_INCLUDE_TOOLS AND (SWIFT_BUILD_SYNTAXPARSERLIB OR SWIFT_BUILD_SOURCEKIT))
     set(SWIFT_BUILD_HOST_DISPATCH TRUE)
   endif()
 

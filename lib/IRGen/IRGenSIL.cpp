@@ -1057,7 +1057,7 @@ public:
   void emitDebugVariableDeclaration(StorageType Storage, DebugTypeInfo Ty,
                                     SILType SILTy, const SILDebugScope *DS,
                                     VarDecl *VarDecl, SILDebugVariable VarInfo,
-                                    IndirectionKind Indirection = DirectValue) {
+                                    IndirectionKind Indirection) {
     // TODO: fix demangling for C++ types (SR-13223).
     if (swift::TypeBase *ty = SILTy.getASTType().getPointer()) {
       if (MetatypeType *metaTy = dyn_cast<MetatypeType>(ty))
@@ -1732,7 +1732,8 @@ IRGenSILFunction::IRGenSILFunction(IRGenModule &IGM, SILFunction *f)
   }
 
   if (f->getLoweredFunctionType()->isAsync()) {
-    setupAsync(Signature::forAsyncEntry(IGM, f->getLoweredFunctionType())
+    setupAsync(Signature::forAsyncEntry(IGM, f->getLoweredFunctionType(),
+                                        /*useSpecialConvention*/ false)
                    .getAsyncContextIndex());
   }
 }
@@ -1951,14 +1952,15 @@ static void emitEntryPointArgumentsNativeCC(IRGenSILFunction &IGF,
   }
 
   if (funcTy->isAsync()) {
-    emitAsyncFunctionEntry(
-        IGF, getAsyncContextLayout(IGF.IGM, IGF.CurSILFn),
-        LinkEntity::forSILFunction(IGF.CurSILFn),
-        Signature::forAsyncEntry(IGF.IGM, funcTy).getAsyncContextIndex());
+    emitAsyncFunctionEntry(IGF, getAsyncContextLayout(IGF.IGM, IGF.CurSILFn),
+                           LinkEntity::forSILFunction(IGF.CurSILFn),
+                           Signature::forAsyncEntry(
+                               IGF.IGM, funcTy, /*useSpecialConvention*/ false)
+                               .getAsyncContextIndex());
     if (IGF.CurSILFn->isDynamicallyReplaceable()) {
       IGF.IGM.createReplaceableProlog(IGF, IGF.CurSILFn);
       // Remap the entry block.
-      IGF.LoweredBBs[&*IGF.CurSILFn->begin()] = LoweredBB(&IGF.CurFn->back(), {});
+      IGF.LoweredBBs[&*IGF.CurSILFn->begin()] = LoweredBB(IGF.Builder.GetInsertBlock(), {});
     }
   }
 
@@ -2503,7 +2505,7 @@ void IRGenSILFunction::visitDifferentiabilityWitnessFunctionInst(
   setLoweredFunctionPointer(i, FunctionPointer(fnType, diffWitness, signature));
 }
 
-static FunctionPointer::Kind classifyFunctionPointerKind(SILFunction *fn) {
+FunctionPointer::Kind irgen::classifyFunctionPointerKind(SILFunction *fn) {
   using SpecialKind = FunctionPointer::SpecialKind;
 
   // Check for some special cases, which are currently all async:
@@ -2513,6 +2515,20 @@ static FunctionPointer::Kind classifyFunctionPointerKind(SILFunction *fn) {
       return SpecialKind::TaskFutureWait;
     if (name.equals("swift_task_future_wait_throwing"))
       return SpecialKind::TaskFutureWaitThrowing;
+
+    if (name.equals("swift_asyncLet_wait"))
+      return SpecialKind::AsyncLetWait;
+    if (name.equals("swift_asyncLet_wait_throwing"))
+      return SpecialKind::AsyncLetWaitThrowing;
+
+    if (name.equals("swift_asyncLet_get"))
+      return SpecialKind::AsyncLetGet;
+    if (name.equals("swift_asyncLet_get_throwing"))
+      return SpecialKind::AsyncLetGetThrowing;
+
+    if (name.equals("swift_asyncLet_finish"))
+      return SpecialKind::AsyncLetFinish;
+    
     if (name.equals("swift_taskGroup_wait_next_throwing"))
       return SpecialKind::TaskGroupWaitNext;
   }
@@ -2524,9 +2540,9 @@ void IRGenSILFunction::visitFunctionRefBaseInst(FunctionRefBaseInst *i) {
   auto fn = i->getInitiallyReferencedFunction();
   auto fnType = fn->getLoweredFunctionType();
 
-  auto fpKind = classifyFunctionPointerKind(fn);
+  auto fpKind = irgen::classifyFunctionPointerKind(fn);
 
-  auto sig = IGM.getSignature(fnType, fpKind.suppressGenerics());
+  auto sig = IGM.getSignature(fnType, fpKind.useSpecialConvention());
 
   // Note that the pointer value returned by getAddrOfSILFunction doesn't
   // necessarily have element type sig.getType(), e.g. if it's imported.
@@ -3066,11 +3082,15 @@ void IRGenSILFunction::visitFullApplySite(FullApplySite site) {
   }
 
   // Pass the generic arguments.
-  if (hasPolymorphicParameters(origCalleeType) &&
-      !emission->getCallee().getFunctionPointer().suppressGenerics()) {
+  auto useSpecialConvention =
+      emission->getCallee().getFunctionPointer().useSpecialConvention();
+  if (hasPolymorphicParameters(origCalleeType) && !useSpecialConvention) {
     SubstitutionMap subMap = site.getSubstitutionMap();
     emitPolymorphicArguments(*this, origCalleeType,
                              subMap, &witnessMetadata, llArgs);
+  } else if (useSpecialConvention) {
+    llArgs.add(emission->getResumeFunctionPointer());
+    llArgs.add(emission->getAsyncContext());
   }
 
   // Add all those arguments.
@@ -4689,6 +4709,14 @@ void IRGenSILFunction::emitPoisonDebugValueInst(DebugValueInst *i) {
   Builder.CreateStore(newShadowVal, shadowAddress, ptrAlign);
 }
 
+/// Determine whether the debug-info-carrying instruction \c i belongs to an
+/// async function and thus may get allocated in the coroutine context. These
+/// variables need to be marked with the Coro flag, so LLVM's CoroSplit pass can
+/// recognize them.
+static bool InCoroContext(SILFunction &f, SILInstruction &i) {
+  return f.isAsync() && !i.getDebugScope()->InlinedCallSite;
+}
+
 void IRGenSILFunction::visitDebugValueInst(DebugValueInst *i) {
   if (i->poisonRefs()) {
     emitPoisonDebugValueInst(i);
@@ -4733,11 +4761,8 @@ void IRGenSILFunction::visitDebugValueInst(DebugValueInst *i) {
   if (!IGM.DebugInfo)
     return;
 
-  IndirectionKind Indirection = DirectValue;
-  if (CurSILFn->isAsync() && !i->getDebugScope()->InlinedCallSite &&
-      (Copy.empty() || !isa<llvm::Constant>(Copy[0]))) {
-    Indirection = CoroDirectValue;
-  }
+  IndirectionKind Indirection =
+    InCoroContext(*CurSILFn, *i) ? CoroDirectValue : DirectValue;
 
   emitDebugVariableDeclaration(Copy, DbgTy, SILTy, i->getDebugScope(),
                                i->getDecl(), *VarInfo, Indirection);
@@ -5097,7 +5122,8 @@ void IRGenSILFunction::emitDebugInfoForAllocStack(AllocStackInst *i,
   assert(isa<llvm::AllocaInst>(addr) || isa<llvm::UndefValue>(addr) ||
          isa<llvm::IntrinsicInst>(addr) || isCallToSwiftTaskAlloc(addr));
 
-  auto Indirection = DirectValue;
+  auto Indirection =
+      InCoroContext(*CurSILFn, *i) ? CoroDirectValue : DirectValue;
   if (!IGM.IRGen.Opts.DisableDebuggerShadowCopies &&
       !IGM.IRGen.Opts.shouldOptimize())
     if (auto *Alloca = dyn_cast<llvm::AllocaInst>(addr))
@@ -5105,7 +5131,8 @@ void IRGenSILFunction::emitDebugInfoForAllocStack(AllocStackInst *i,
         // Store the address of the dynamic alloca on the stack.
         addr = emitShadowCopy(addr, DS, *VarInfo, IGM.getPointerAlignment(),
                               /*init*/ true);
-        Indirection = IndirectValue;
+        Indirection =
+            InCoroContext(*CurSILFn, *i) ? CoroIndirectValue : IndirectValue;
       }
 
   if (!Decl)
@@ -5346,9 +5373,9 @@ void IRGenSILFunction::visitAllocBoxInst(swift::AllocBoxInst *i) {
   if (!IGM.DebugInfo)
     return;
 
-  IGM.DebugInfo->emitVariableDeclaration(Builder, Storage, DbgTy,
-                                         i->getDebugScope(), Decl, *VarInfo,
-                                         IndirectValue);
+  IGM.DebugInfo->emitVariableDeclaration(
+      Builder, Storage, DbgTy, i->getDebugScope(), Decl, *VarInfo,
+      InCoroContext(*CurSILFn, *i) ? CoroIndirectValue : IndirectValue);
 }
 
 void IRGenSILFunction::visitProjectBoxInst(swift::ProjectBoxInst *i) {
@@ -6151,12 +6178,8 @@ void IRGenSILFunction::visitCheckedCastAddrBranchInst(
 }
 
 void IRGenSILFunction::visitHopToExecutorInst(HopToExecutorInst *i) {
-  if (!i->getFunction()->isAsync()) {
-    // This should never occur.
-    assert(false && "The hop_to_executor should have been eliminated");
-    return;
-  }
-  assert(i->getTargetExecutor()->getType().is<BuiltinExecutorType>());
+  assert(i->getTargetExecutor()->getType().getOptionalObjectType()
+           .is<BuiltinExecutorType>());
   llvm::Value *resumeFn = Builder.CreateIntrinsicCall(
           llvm::Intrinsic::coro_async_resume, {});
 

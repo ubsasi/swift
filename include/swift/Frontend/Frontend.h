@@ -41,6 +41,7 @@
 #include "swift/Serialization/Validation.h"
 #include "swift/Subsystems.h"
 #include "swift/TBDGen/TBDGen.h"
+#include "swift/SymbolGraphGen/SymbolGraphOptions.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Option/ArgList.h"
@@ -86,6 +87,7 @@ class CompilerInvocation {
   TypeCheckerOptions TypeCheckerOpts;
   FrontendOptions FrontendOpts;
   ClangImporterOptions ClangImporterOpts;
+  symbolgraphgen::SymbolGraphOptions SymbolGraphOpts;
   SearchPathOptions SearchPathOpts;
   DiagnosticOptions DiagnosticOpts;
   MigratorOptions MigratorOpts;
@@ -255,6 +257,11 @@ public:
   ClangImporterOptions &getClangImporterOptions() { return ClangImporterOpts; }
   const ClangImporterOptions &getClangImporterOptions() const {
     return ClangImporterOpts;
+  }
+
+  symbolgraphgen::SymbolGraphOptions &getSymbolGraphOptions() { return SymbolGraphOpts; }
+  const symbolgraphgen::SymbolGraphOptions &getSymbolGraphOptions() const {
+    return SymbolGraphOpts;
   }
 
   SearchPathOptions &getSearchPathOptions() { return SearchPathOpts; }
@@ -528,6 +535,14 @@ public:
   ArrayRef<SourceFile *> getPrimarySourceFiles() const {
     return getMainModule()->getPrimarySourceFiles();
   }
+
+  /// Verify that if an implicit import of the `Concurrency` module if expected,
+  /// it can actually be imported. Emit a warning, otherwise.
+  void verifyImplicitConcurrencyImport();
+
+  /// Whether the Swift Concurrency support library can be imported
+  /// i.e. if it can be found.
+  bool canImportSwiftConcurrency() const;
 
   /// Gets the SourceFile which is the primary input for this CompilerInstance.
   /// \returns the primary SourceFile, or nullptr if there is no primary input;

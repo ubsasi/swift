@@ -596,4 +596,25 @@ func foo<FunctionSignature><ParameterClause>() </ParameterClause></FunctionSigna
 #"<StringSegment>abc</StringSegment>"#</StringLiteralExpr><StringLiteralExpr>
 #"<StringSegment>abc </StringSegment><ExpressionSegment>\#(<TupleExprElement><IdentifierExpr>foo</IdentifierExpr></TupleExprElement>)</ExpressionSegment><StringSegment></StringSegment>"#</StringLiteralExpr><StringLiteralExpr>
 ##"<StringSegment>abc</StringSegment>"##</StringLiteralExpr><StringLiteralExpr>
-##"<StringSegment>abc </StringSegment><ExpressionSegment>\##(<TupleExprElement><IdentifierExpr>foo</IdentifierExpr></TupleExprElement>)</ExpressionSegment><StringSegment></StringSegment>"##</StringLiteralExpr>
+##"<StringSegment>abc </StringSegment><ExpressionSegment>\##(<TupleExprElement><IdentifierExpr>foo</IdentifierExpr></TupleExprElement>)</ExpressionSegment><StringSegment></StringSegment>"##</StringLiteralExpr><PostfixIfConfigExpr><FunctionCallExpr><IdentifierExpr>
+
+foo</IdentifierExpr>()</FunctionCallExpr><IfConfigDecl><IfConfigClause>
+#if <IdentifierExpr>COND1</IdentifierExpr><ForcedValueExpr><FunctionCallExpr><OptionalChainingExpr><MemberAccessExpr>
+  .bar</MemberAccessExpr>?</OptionalChainingExpr>()</FunctionCallExpr>!</ForcedValueExpr></IfConfigClause><IfConfigClause>
+#elseif <IdentifierExpr>COND2</IdentifierExpr><MemberAccessExpr><PostfixIfConfigExpr><IfConfigDecl><IfConfigClause>
+  #if <BooleanLiteralExpr>true</BooleanLiteralExpr><FunctionCallExpr><MemberAccessExpr>
+    .call</MemberAccessExpr>()</FunctionCallExpr></IfConfigClause><IfConfigClause>
+  #elseif <BooleanLiteralExpr>true</BooleanLiteralExpr><PostfixIfConfigExpr><IfConfigDecl><IfConfigClause>
+    #if <BooleanLiteralExpr>true</BooleanLiteralExpr><MemberAccessExpr>
+      .other</MemberAccessExpr></IfConfigClause>
+    #endif</IfConfigDecl></PostfixIfConfigExpr></IfConfigClause><IfConfigClause>
+  #else<PostfixIfConfigExpr><FunctionCallExpr><MemberAccessExpr>
+    .before</MemberAccessExpr>()</FunctionCallExpr><IfConfigDecl><IfConfigClause>
+    #if <BooleanLiteralExpr>true</BooleanLiteralExpr><FunctionCallExpr><MemberAccessExpr>
+      .after</MemberAccessExpr>()</FunctionCallExpr></IfConfigClause>
+    #endif</IfConfigDecl></PostfixIfConfigExpr></IfConfigClause>
+  #endif</IfConfigDecl></PostfixIfConfigExpr>
+  .member</MemberAccessExpr></IfConfigClause><IfConfigClause>
+#else<FunctionCallExpr><MemberAccessExpr>
+  .baz</MemberAccessExpr>() <ClosureExpr>{}</ClosureExpr></FunctionCallExpr></IfConfigClause>
+#endif</IfConfigDecl></PostfixIfConfigExpr>

@@ -392,7 +392,8 @@ public:
 
   Optional<StringRef> getGroupNameByUSR(StringRef USR) const override;
 
-  Optional<BasicDeclLocs> getBasicLocsForDecl(const Decl *D) const override;
+  Optional<ExternalSourceLocs::RawLocs>
+  getExternalRawLocsForDecl(const Decl *D) const override;
 
   void collectAllGroups(SmallVectorImpl<StringRef> &Names) const override;
 
@@ -457,6 +458,10 @@ public:
   }
 };
 
+/// Extract compiler arguments from an interface file buffer.
+bool extractCompilerFlagsFromInterface(StringRef interfacePath,
+                                       StringRef buffer, llvm::StringSaver &ArgSaver,
+                                       SmallVectorImpl<const char *> &SubArgs);
 
 } // end namespace swift
 

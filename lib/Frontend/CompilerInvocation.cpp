@@ -18,6 +18,7 @@
 #include "swift/Option/Options.h"
 #include "swift/Option/SanitizerOptions.h"
 #include "swift/Strings.h"
+#include "swift/SymbolGraphGen/SymbolGraphOptions.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Option/Arg.h"
@@ -423,6 +424,8 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
       = A->getOption().matches(OPT_enable_conformance_availability_errors);
   }
 
+  Opts.WarnOnPotentiallyUnavailableEnumCase |=
+      Args.hasArg(OPT_warn_on_potentially_unavailable_enum_case);
   if (auto A = Args.getLastArg(OPT_enable_access_control,
                                OPT_disable_access_control)) {
     Opts.EnableAccessControl
@@ -637,6 +640,20 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
     Opts.TargetVariant = llvm::Triple(A->getValue());
   }
 
+  // Collect -clang-target value if specified in the front-end invocation.
+  // Usually, the driver will pass down a clang target with the
+  // exactly same value as the main target, so we could dignose the usage of
+  // unavailable APIs.
+  // The reason we cannot infer clang target from -target is that not all
+  // front-end invocation will include a -target to start with. For instance,
+  // when compiling a Swift module from a textual interface, -target isn't
+  // necessary because the textual interface hardcoded the proper target triple
+  // to use. Inferring -clang-target there will always give us the default
+  // target triple.
+  if (const Arg *A = Args.getLastArg(OPT_clang_target)) {
+    Opts.ClangTarget = llvm::Triple(A->getValue());
+  }
+
   Opts.EnableCXXInterop |= Args.hasArg(OPT_enable_cxx_interop);
   Opts.EnableObjCInterop =
       Args.hasFlag(OPT_enable_objc_interop, OPT_disable_objc_interop,
@@ -704,21 +721,15 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
     Opts.VerifySyntaxTree = true;
   }
 
+  // Configure lexing to parse and remember comments if:
+  //   - Emitting a swiftdoc/swiftsourceinfo
+  //   - Performing index-while-building
+  //   - Emitting a symbol graph file
   // If we are asked to emit a module documentation file, configure lexing and
   // parsing to remember comments.
-  if (FrontendOpts.InputsAndOutputs.hasModuleDocOutputPath()) {
-    Opts.AttachCommentsToDecls = true;
-  }
-
-  // If we are doing index-while-building, configure lexing and parsing to
-  // remember comments.
-  if (!FrontendOpts.IndexStorePath.empty()) {
-    Opts.AttachCommentsToDecls = true;
-  }
-
-  // If we are emitting a symbol graph file, configure lexing and parsing to
-  // remember comments.
-  if (FrontendOpts.EmitSymbolGraph) {
+  if (FrontendOpts.InputsAndOutputs.hasModuleDocOutputPath() ||
+      FrontendOpts.InputsAndOutputs.hasModuleSourceInfoOutputPath() ||
+      !FrontendOpts.IndexStorePath.empty() || FrontendOpts.EmitSymbolGraph) {
     Opts.AttachCommentsToDecls = true;
   }
 
@@ -925,6 +936,28 @@ static bool ParseClangImporterArgs(ClangImporterOptions &Opts,
       Args.hasArg(OPT_disable_clangimporter_source_import);
 
   return false;
+}
+
+static void ParseSymbolGraphArgs(symbolgraphgen::SymbolGraphOptions &Opts,
+                                 ArgList &Args,
+                                 DiagnosticEngine &Diags,
+                                 LangOptions &LangOpts) {
+  using namespace options;
+
+  if (const Arg *A = Args.getLastArg(OPT_emit_symbol_graph_dir)) {
+    Opts.OutputDir = A->getValue();
+  }
+
+  Opts.Target = LangOpts.Target;
+
+  Opts.SkipInheritedDocs = Args.hasArg(OPT_skip_inherited_docs);
+  Opts.IncludeSPISymbols = Args.hasArg(OPT_include_spi_symbols);
+
+  // default values for generating symbol graphs during a build
+  Opts.MinimumAccessLevel = AccessLevel::Public;
+  Opts.PrettyPrint = false;
+  Opts.EmitSynthesizedMembers = true;
+  Opts.PrintMessages = false;
 }
 
 static bool ParseSearchPathArgs(SearchPathOptions &Opts,
@@ -1887,6 +1920,8 @@ bool CompilerInvocation::parseArgs(
                              workingDirectory)) {
     return true;
   }
+
+  ParseSymbolGraphArgs(SymbolGraphOpts, ParsedArgs, Diags, LangOpts);
 
   if (ParseSearchPathArgs(SearchPathOpts, ParsedArgs, Diags,
                           workingDirectory)) {

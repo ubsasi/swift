@@ -28,6 +28,7 @@
 #include "swift/Basic/LangOptions.h"
 #include "swift/Basic/Located.h"
 #include "swift/Basic/Malloc.h"
+#include "swift/SymbolGraphGen/SymbolGraphOptions.h"
 #include "clang/AST/DeclTemplate.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -73,6 +74,7 @@ namespace swift {
   class DerivativeAttr;
   class DifferentiableAttr;
   class ExtensionDecl;
+  struct ExternalSourceLocs;
   class ForeignRepresentationInfo;
   class FuncDecl;
   class GenericContext;
@@ -229,6 +231,7 @@ class ASTContext final {
   ASTContext(LangOptions &langOpts, TypeCheckerOptions &typeckOpts,
              SearchPathOptions &SearchPathOpts,
              ClangImporterOptions &ClangImporterOpts,
+             symbolgraphgen::SymbolGraphOptions &SymbolGraphOpts,
              SourceManager &SourceMgr,
              DiagnosticEngine &Diags);
 
@@ -244,6 +247,7 @@ public:
   static ASTContext *get(LangOptions &langOpts, TypeCheckerOptions &typeckOpts,
                          SearchPathOptions &SearchPathOpts,
                          ClangImporterOptions &ClangImporterOpts,
+                         symbolgraphgen::SymbolGraphOptions &SymbolGraphOpts,
                          SourceManager &SourceMgr, DiagnosticEngine &Diags);
   ~ASTContext();
 
@@ -264,6 +268,9 @@ public:
 
   /// The clang importer options used by this AST context.
   ClangImporterOptions &ClangImporterOpts;
+
+  /// The symbol graph generation options used by this AST context.
+  symbolgraphgen::SymbolGraphOptions &SymbolGraphOpts;
 
   /// The source manager object.
   SourceManager &SourceMgr;
@@ -879,6 +886,13 @@ public:
   /// If there is no Clang module loader, returns a null pointer.
   /// The loader is owned by the AST context.
   ClangModuleLoader *getDWARFModuleLoader() const;
+
+  /// Check whether the module with a given name can be imported without
+  /// importing it.
+  ///
+  /// Note that even if this check succeeds, errors may still occur if the
+  /// module is loaded in full.
+  bool canImportModuleImpl(ImportPath::Element ModulePath) const;
 public:
   namelookup::ImportCache &getImportCache() const;
 
@@ -908,6 +922,7 @@ public:
   /// Note that even if this check succeeds, errors may still occur if the
   /// module is loaded in full.
   bool canImportModule(ImportPath::Element ModulePath);
+  bool canImportModule(ImportPath::Element ModulePath) const;
 
   /// \returns a module with a given name that was already loaded.  If the
   /// module was not loaded, returns nullptr.
@@ -972,7 +987,8 @@ public:
                  ProtocolDecl *protocol,
                  SourceLoc loc,
                  DeclContext *dc,
-                 ProtocolConformanceState state);
+                 ProtocolConformanceState state,
+                 bool isUnchecked);
 
   /// Produce a self-conformance for the given protocol.
   SelfProtocolConformance *
@@ -1170,6 +1186,10 @@ public:
 
 private:
   friend Decl;
+
+  Optional<ExternalSourceLocs *> getExternalSourceLocs(const Decl *D);
+  void setExternalSourceLocs(const Decl *D, ExternalSourceLocs *Locs);
+
   Optional<std::pair<RawComment, bool>> getRawComment(const Decl *D);
   void setRawComment(const Decl *D, RawComment RC, bool FromSerialized);
 

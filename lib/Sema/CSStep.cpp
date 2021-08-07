@@ -282,11 +282,11 @@ StepResult DependentComponentSplitterStep::take(bool prevFailed) {
     for (auto index : swift::indices(indices)) {
       dependsOnSolutions.push_back(&(*dependsOnSets[index])[indices[index]]);
     }
+    ContextualSolutions.push_back(std::make_unique<SmallVector<Solution, 2>>());
 
-    followup.push_back(
-        std::make_unique<ComponentStep>(CS, Index, Constraints, Component,
-                                         std::move(dependsOnSolutions),
-                                         Solutions));
+    followup.push_back(std::make_unique<ComponentStep>(
+        CS, Index, Constraints, Component, std::move(dependsOnSolutions),
+        *ContextualSolutions.back()));
   } while (nextCombination(dependsOnSetsRef, indices));
 
   /// Wait until all of the component steps are done.
@@ -294,6 +294,10 @@ StepResult DependentComponentSplitterStep::take(bool prevFailed) {
 }
 
 StepResult DependentComponentSplitterStep::resume(bool prevFailed) {
+  for (auto &ComponentStepSolutions : ContextualSolutions) {
+    Solutions.append(std::make_move_iterator(ComponentStepSolutions->begin()),
+                     std::make_move_iterator(ComponentStepSolutions->end()));
+  }
   return done(/*isSuccess=*/!Solutions.empty());
 }
 
@@ -358,22 +362,36 @@ StepResult ComponentStep::take(bool prevFailed) {
     return finalize(/*isSuccess=*/false);
   }
 
+  auto printConstraints = [&](const ConstraintList &constraints) {
+    for (auto &constraint : constraints)
+      constraint.print(getDebugLogger(), &CS.getASTContext().SourceMgr);
+  };
+
   // If we don't have any disjunction or type variable choices left, we're done
   // solving. Make sure we don't have any unsolved constraints left over, using
-  // report_fatal_error to make sure we trap in release builds instead of
-  // potentially miscompiling.
+  // report_fatal_error to make sure we trap in debug builds and fail the step
+  // in release builds.
   if (!CS.ActiveConstraints.empty()) {
-    CS.print(llvm::errs());
-    llvm::report_fatal_error("Active constraints left over?");
+    if (CS.isDebugMode()) {
+      getDebugLogger() << "(failed due to remaining active constraints:\n";
+      printConstraints(CS.ActiveConstraints);
+      getDebugLogger() << ")\n";
+    }
+
+    CS.InvalidState = true;
+    return finalize(/*isSuccess=*/false);
   }
+
   if (!CS.solverState->allowsFreeTypeVariables()) {
     if (!CS.InactiveConstraints.empty()) {
-      CS.print(llvm::errs());
-      llvm::report_fatal_error("Inactive constraints left over?");
-    }
-    if (CS.hasFreeTypeVariables()) {
-      CS.print(llvm::errs());
-      llvm::report_fatal_error("Free type variables left over?");
+      if (CS.isDebugMode()) {
+        getDebugLogger() << "(failed due to remaining inactive constraints:\n";
+        printConstraints(CS.InactiveConstraints);
+        getDebugLogger() << ")\n";
+      }
+
+      CS.InvalidState = true;
+      return finalize(/*isSuccess=*/false);
     }
   }
 
@@ -612,7 +630,7 @@ bool DisjunctionStep::shouldSkip(const DisjunctionChoice &choice) const {
 
   // Skip disabled overloads in the diagnostic mode if they do not have a
   // fix attached to them e.g. overloads where labels didn't match up.
-  if (choice.isDisabled() && !(CS.shouldAttemptFixes() && choice.hasFix()))
+  if (choice.isDisabled())
     return skip("disabled");
 
   // Skip unavailable overloads (unless in dignostic mode).

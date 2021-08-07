@@ -167,7 +167,7 @@ CastsTests.test("Dynamic casts of CF types to protocol existentials (SR-2289)")
     reason: "This test behaves unpredictably in optimized mode."))
 .code {
   expectTrue(isP(10 as Int))
-  if #available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *) {
+  if #available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *) {
     expectTrue(isP(CFBitVector.makeImmutable(from: [10, 20])))
     expectTrue(isP(CFMutableBitVector.makeMutable(from: [10, 20])))
   }
@@ -195,7 +195,7 @@ CastsTests.test("Casting struct -> Obj-C -> Protocol fails (SR-3871, SR-5590, SR
 
 
 protocol P4552 {}
-if #available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *) {
+if #available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *) {
 CastsTests.test("Casting Any(Optional(T)) -> Protocol fails (SR-4552)") {
   struct S: P4552 {
     let tracker = LifetimeTracked(13)
@@ -257,7 +257,7 @@ CastsTests.test("Store Swift metatype in ObjC property and cast back to Any.Type
   let sValue2 = a.sVar as? Any.Type
   let objcValue2 = a.objcVar as? Any.Type
   expectTrue(sValue2 == b)
-  if #available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *) {
+  if #available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *) {
     expectTrue(sValue2 == objcValue2)
     expectTrue(objcValue2 == b)
   }
@@ -303,7 +303,7 @@ CastsTests.test("Casts from @objc Type") {
   let user = User(name: "Kermit")
   let exporter: Exporter = UserExporter()
 
-  if #available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *) {
+  if #available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *) {
     expectTrue(exporter.type is User.Type)
   }
   expectNotNil(exporter.export(item: user))
@@ -319,7 +319,7 @@ CastsTests.test("Conditional NSNumber -> Bool casts") {
 #endif
 
 // rdar://45217461 ([dynamic casting] [SR-8964]: Type check operator (is) fails for Any! variable holding an Error (struct) value)
-if #available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *) {
+if #available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *) {
 CastsTests.test("Casts from Any(struct) to Error (SR-8964)") {
   struct MyError: Error { }
 
@@ -343,7 +343,7 @@ CastsTests.test("Dynamic cast to ObjC protocol") {
 #endif
 
 // SR-6126
-if #available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *) {
+if #available(macOS 11.3, iOS 14.5, tvOS 14.5, watchOS 7.4, *) {
 CastsTests.test("Nil handling for Optionals and Arrays (SR-6126)") {
   func check(_ arg: Int??) -> String {
     switch arg {
@@ -393,7 +393,7 @@ CastsTests.test("Swift Protocol Metatypes don't self-conform") {
   let a = SwiftProtocol.self
   // `is P.Protocol` tests whether the argument is a subtype of P.
   // In particular, the protocol identifier `P.self` is such a subtype.
-  if #available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *) {
+  if #available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *) {
     expectNotNil(runtimeCast(a, to: SwiftProtocol.Protocol.self)) // Fixed by rdar://58991956
   }
   expectNotNil(a as? SwiftProtocol.Protocol)
@@ -446,7 +446,7 @@ CastsTests.test("Self-conformance for Error.self")
 @objc protocol ObjCProtocol {}
 CastsTests.test("ObjC Protocol Metatypes self-conform") {
   let a = ObjCProtocol.self
-  if #available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *) {
+  if #available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *) {
     expectNotNil(runtimeCast(a, to: ObjCProtocol.Protocol.self))
   }
   expectNotNil(a as? ObjCProtocol.Protocol)
@@ -472,7 +472,7 @@ CastsTests.test("String/NSString extension compat") {
 #endif
 
 protocol P1999 {}
-if #available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *) {
+if #available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *) {
 CastsTests.test("Cast Any(Optional(class)) to Protocol type (SR-1999)") {
   class Foo: P1999 { }
 
@@ -622,6 +622,7 @@ CastsTests.test("NSNull?.none -> Any? should set outer nil") {
 }
 #endif
 
+if #available(macOS 11.3, iOS 14.5, tvOS 14.5, watchOS 7.4, *) {
 CastsTests.test("Int??.some(nil) => Int??? should inject naturally") {
   let a: Int?? = .some(nil)
   let b = a as? Int???
@@ -630,7 +631,9 @@ CastsTests.test("Int??.some(nil) => Int??? should inject naturally") {
   let e = d!
   expectNil(e)
 }
+}
 
+if #available(macOS 11.3, iOS 14.5, tvOS 14.5, watchOS 7.4, *) {
 CastsTests.test("Int??.some(nil) => String??? should inject naturally") {
   let a: Int?? = .some(nil)
   let b = runtimeCast(a, to: String???.self)
@@ -639,7 +642,9 @@ CastsTests.test("Int??.some(nil) => String??? should inject naturally") {
   let e = d!
   expectNil(e)
 }
+}
 
+if #available(macOS 11.3, iOS 14.5, tvOS 14.5, watchOS 7.4, *) {
 CastsTests.test("Int??.some(nil) => Any??? should inject naturally") {
   let a: Int?? = .some(nil)
   let b = a as? Any???
@@ -647,6 +652,7 @@ CastsTests.test("Int??.some(nil) => Any??? should inject naturally") {
   let d = c!
   let e = d!
   expectNil(e)
+}
 }
 
 #if _runtime(_ObjC)
@@ -947,5 +953,15 @@ CastsTests.test("Recursive AnyHashable") {
   expectEqual(s.x, hp)
   expectEqual(s.x, p)
 }
+
+#if _runtime(_ObjC)
+CastsTests.test("Artificial subclass protocol conformance") {
+  class SwiftClass: NSObject {}
+  let subclass: AnyClass = objc_allocateClassPair(SwiftClass.self,
+                                                  "ArtificialSwiftSubclass", 0)!
+  objc_registerClassPair(subclass)
+  expectFalse(subclass is P.Type)
+}
+#endif
 
 runAllTests()

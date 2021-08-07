@@ -75,8 +75,6 @@ class ModuleFile
   llvm::BitstreamCursor SILIndexCursor;
   llvm::BitstreamCursor DeclMemberTablesCursor;
 
-  friend StringRef getNameOfModule(const ModuleFile *);
-
 public:
   static std::unique_ptr<llvm::MemoryBuffer> getModuleName(ASTContext &Ctx,
                                                            StringRef modulePath,
@@ -333,23 +331,26 @@ public:
     return issue;
   }
 
-  /// Emits one last diagnostic, logs the error, and then aborts for the stack
-  /// trace.
-  LLVM_ATTRIBUTE_NORETURN void fatal(llvm::Error error);
-  void fatalIfNotSuccess(llvm::Error error) {
+  /// Emits one last diagnostic, adds the current module details and errors to
+  /// the pretty stack trace, and then aborts.
+  LLVM_ATTRIBUTE_NORETURN void fatal(llvm::Error error) const;
+  void fatalIfNotSuccess(llvm::Error error) const {
     if (error)
       fatal(std::move(error));
   }
-  template <typename T> T fatalIfUnexpected(llvm::Expected<T> expected) {
+  template <typename T> T fatalIfUnexpected(llvm::Expected<T> expected) const {
     if (expected)
       return std::move(expected.get());
     fatal(expected.takeError());
   }
 
-  LLVM_ATTRIBUTE_NORETURN void fatal() {
+  LLVM_ATTRIBUTE_NORETURN void fatal() const {
     fatal(llvm::make_error<llvm::StringError>(
         "(see \"While...\" info below)", llvm::inconvertibleErrorCode()));
   }
+
+  /// Outputs information useful for diagnostics to \p out
+  void outputDiagnosticInfo(llvm::raw_ostream &os) const;
 
   ASTContext &getContext() const {
     assert(FileContext && "no associated context yet");
@@ -469,12 +470,23 @@ public:
 
   /// Whether this module is compiled while allowing errors
   /// ('-experimental-allow-module-with-compiler-errors').
-  bool isAllowModuleWithCompilerErrorsEnabled() const {
+  bool compiledAllowingCompilerErrors() const {
     return Core->Bits.IsAllowModuleWithCompilerErrorsEnabled;
   }
 
+  /// Whether currently allowing modules with compiler errors (ie.
+  /// '-experimental-allow-module-with-compiler-errors' is currently enabled).
+  bool allowCompilerErrors() const;
+
   /// \c true if this module has incremental dependency information.
   bool hasIncrementalInfo() const { return Core->hasIncrementalInfo(); }
+
+  /// \c true if this module has a corresponding .swiftsourceinfo file.
+  bool hasSourceInfoFile() const { return Core->hasSourceInfoFile(); }
+
+  /// \c true if this module has information from a corresponding
+  /// .swiftsourceinfo file (ie. the file exists and has been read).
+  bool hasSourceInfo() const { return Core->hasSourceInfo(); }
 
   /// Associates this module file with the AST node representing it.
   ///
@@ -697,7 +709,8 @@ public:
   Optional<CommentInfo> getCommentForDecl(const Decl *D) const;
   Optional<CommentInfo> getCommentForDeclByUSR(StringRef USR) const;
   Optional<StringRef> getGroupNameByUSR(StringRef USR) const;
-  Optional<BasicDeclLocs> getBasicDeclLocsForDecl(const Decl *D) const;
+  Optional<ExternalSourceLocs::RawLocs>
+  getExternalRawLocsForDecl(const Decl *D) const;
   Identifier getDiscriminatorForPrivateValue(const ValueDecl *D);
   Optional<Fingerprint> loadFingerprint(const IterableDeclContext *IDC) const;
   void collectBasicSourceFileInfo(

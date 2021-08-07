@@ -73,7 +73,7 @@ using namespace swift;
 static void checkInheritanceClause(
     llvm::PointerUnion<const TypeDecl *, const ExtensionDecl *> declUnion) {
   const DeclContext *DC;
-  ArrayRef<TypeLoc> inheritedClause;
+  ArrayRef<InheritedEntry> inheritedClause;
   const ExtensionDecl *ext = nullptr;
   const TypeDecl *typeDecl = nullptr;
   const Decl *decl;
@@ -1218,6 +1218,7 @@ static std::string getFixItStringForDecodable(ClassDecl *CD,
 static void diagnoseClassWithoutInitializers(ClassDecl *classDecl) {
   ASTContext &C = classDecl->getASTContext();
   C.Diags.diagnose(classDecl, diag::class_without_init,
+                   classDecl->isExplicitActor(),
                    classDecl->getDeclaredType());
 
   // HACK: We've got a special case to look out for and diagnose specifically to
@@ -1562,7 +1563,7 @@ public:
       // Force some requests, which can produce diagnostics.
 
       // Check redeclaration.
-      (void) evaluateOrDefault(decl->getASTContext().evaluator,
+      (void) evaluateOrDefault(Context.evaluator,
                                CheckRedeclarationRequest{VD}, {});
 
       // Compute access level.
@@ -1576,6 +1577,12 @@ public:
       (void) VD->isObjC();
       (void) VD->isDynamic();
 
+      // Check for actor isolation of top-level and local declarations.
+      // Declarations inside types are handled in checkConformancesInContext()
+      // to avoid cycles involving associated type inference.
+      if (!VD->getDeclContext()->isTypeContext())
+        (void) getActorIsolation(VD);
+
       // If this is a member of a nominal type, don't allow it to have a name of
       // "Type" or "Protocol" since we reserve the X.Type and X.Protocol
       // expressions to mean something builtin to the language.  We *do* allow
@@ -1585,7 +1592,7 @@ public:
            VD->getName().isSimpleName(Context.Id_Protocol)) &&
           VD->getNameLoc().isValid() &&
           Context.SourceMgr.extractText({VD->getNameLoc(), 1}) != "`") {
-        auto &DE = getASTContext().Diags;
+        auto &DE = Context.Diags;
         DE.diagnose(VD->getNameLoc(), diag::reserved_member_name,
                     VD->getName(), VD->getBaseIdentifier().str());
         DE.diagnose(VD->getNameLoc(), diag::backticks_to_escape)
@@ -1792,31 +1799,6 @@ public:
     });
   }
 
-  /// If the given pattern binding has a property wrapper, check the
-  /// isolation and effects of the backing storage initializer.
-  void checkPropertyWrapperBackingInitializer(PatternBindingDecl *PBD) {
-    auto singleVar = PBD->getSingleVar();
-    if (!singleVar)
-      return;
-
-    if (!singleVar->hasAttachedPropertyWrapper())
-      return;
-
-    auto *backingVar = singleVar->getPropertyWrapperBackingProperty();
-    if (!backingVar)
-      return;
-
-    auto backingPBD = backingVar->getParentPatternBinding();
-    if (!backingPBD)
-      return;
-
-    auto initInfo = singleVar->getPropertyWrapperInitializerInfo();
-    if (auto initializer = initInfo.getInitFromWrappedValue()) {
-      checkPropertyWrapperActorIsolation(backingPBD, initializer);
-      TypeChecker::checkPropertyWrapperEffects(backingPBD, initializer);
-    }
-  }
-
   void visitPatternBindingDecl(PatternBindingDecl *PBD) {
     DeclContext *DC = PBD->getDeclContext();
 
@@ -1963,8 +1945,6 @@ public:
         }
       }
     }
-
-    checkPropertyWrapperBackingInitializer(PBD);
   }
 
   void visitSubscriptDecl(SubscriptDecl *SD) {
@@ -2024,6 +2004,14 @@ public:
           SD->supportsMutation()) {
         SD->diagnose(diag::dynamic_self_in_mutable_subscript);
       }
+    }
+
+    // Reject "class" methods on actors.
+    if (SD->getStaticSpelling() == StaticSpellingKind::KeywordClass &&
+        SD->getDeclContext()->getSelfClassDecl() &&
+        SD->getDeclContext()->getSelfClassDecl()->isActor()) {
+      SD->diagnose(diag::class_subscript_not_in_class, false)
+          .fixItReplace(SD->getStaticLoc(), "static");
     }
 
     // Now check all the accessors.
@@ -2314,6 +2302,14 @@ public:
     // Check for circular inheritance.
     (void)CD->getSuperclassDecl();
 
+    if (auto superclass = CD->getSuperclassDecl()) {
+      // Actors cannot have superclasses, nor can they be superclasses.
+      if (CD->isActor() && !superclass->isNSObject())
+        CD->diagnose(diag::actor_inheritance);
+      else if (superclass->isActor())
+        CD->diagnose(diag::actor_inheritance);
+    }
+
     // Force lowering of stored properties.
     (void) CD->getStoredProperties();
 
@@ -2321,6 +2317,9 @@ public:
     (void) CD->getDestructor();
 
     TypeChecker::checkDeclAttributes(CD);
+
+    if (CD->isActor())
+      TypeChecker::checkConcurrencyAvailability(CD->getLoc(), CD);
 
     for (Decl *Member : CD->getABIMembers())
       visit(Member);
@@ -2572,6 +2571,13 @@ public:
     return AFD->getResilienceExpansion() != ResilienceExpansion::Minimal;
   }
 
+  /// FIXME: This is an egregious hack to turn off availability checking
+  /// for specific functions that were missing availability in older versions
+  /// of existing libraries that we must nonethess still support.
+  static bool hasHistoricallyWrongAvailability(FuncDecl *func) {
+    return func->getName().isCompoundName("swift_deletedAsyncMethodError", { });
+  }
+
   void visitFuncDecl(FuncDecl *FD) {
     // Force these requests in case they emit diagnostics.
     (void) FD->getInterfaceType();
@@ -2616,6 +2622,10 @@ public:
 
     checkImplementationOnlyOverride(FD);
 
+    if (FD->getAsyncLoc().isValid() &&
+        !hasHistoricallyWrongAvailability(FD))
+      TypeChecker::checkConcurrencyAvailability(FD->getAsyncLoc(), FD);
+    
     if (requiresDefinition(FD) && !FD->hasBody()) {
       // Complain if we should have a body.
       FD->diagnose(diag::func_decl_without_brace);
@@ -2652,6 +2662,14 @@ public:
           }
         }
       }
+    }
+
+    // Reject "class" methods on actors.
+    if (StaticSpelling == StaticSpellingKind::KeywordClass &&
+        FD->getDeclContext()->getSelfClassDecl() &&
+        FD->getDeclContext()->getSelfClassDecl()->isActor()) {
+      FD->diagnose(diag::class_func_not_in_class, false)
+          .fixItReplace(FD->getStaticLoc(), "static");
     }
 
     // Member functions need some special validation logic.
@@ -2858,6 +2876,9 @@ public:
     TypeChecker::checkDeclAttributes(CD);
     TypeChecker::checkParameterList(CD->getParameters(), CD);
 
+    if (CD->getAsyncLoc().isValid())
+      TypeChecker::checkConcurrencyAvailability(CD->getAsyncLoc(), CD);
+
     // Check whether this initializer overrides an initializer in its
     // superclass.
     if (!checkOverrides(CD)) {
@@ -3026,10 +3047,12 @@ void TypeChecker::checkParameterList(ParameterList *params,
       (void) param->getPropertyWrapperInitializerInfo();
 
     auto *SF = param->getDeclContext()->getParentSourceFile();
-    param->visitAuxiliaryDecls([&](VarDecl *auxiliaryDecl) {
-      if (!isa<ParamDecl>(auxiliaryDecl))
-        DeclChecker(param->getASTContext(), SF).visitBoundVariable(auxiliaryDecl);
-    });
+    if (!param->isInvalid()) {
+      param->visitAuxiliaryDecls([&](VarDecl *auxiliaryDecl) {
+        if (!isa<ParamDecl>(auxiliaryDecl))
+          DeclChecker(param->getASTContext(), SF).visitBoundVariable(auxiliaryDecl);
+      });
+    }
   }
 
   // For source compatibilty, allow duplicate internal parameter names
