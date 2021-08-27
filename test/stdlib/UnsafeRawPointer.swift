@@ -231,6 +231,7 @@ UnsafeMutableRawPointerExtraTestSuite.test("moveInitialize:from:") {
   check(Check.RightOverlap)
 }
 
+#if !os(WASI)
 UnsafeMutableRawPointerExtraTestSuite.test("absurd.allocation.misaligned") {
   expectCrashLater()
   let mustFail = UnsafeMutableRawPointer.allocate(byteCount: 1024,
@@ -244,5 +245,6 @@ UnsafeMutableRawPointerExtraTestSuite.test("absurd.allocation.gargantuan") {
                                                   alignment: 0)
   expectUnreachable()
 }
+#endif
 
 runAllTests()
