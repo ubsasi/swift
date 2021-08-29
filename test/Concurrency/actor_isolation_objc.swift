@@ -1,4 +1,4 @@
-// RUN: %target-typecheck-verify-swift -enable-experimental-concurrency -enable-experimental-async-handler
+// RUN: %target-typecheck-verify-swift -enable-experimental-concurrency -enable-experimental-async-handler -disable-availability-checking
 // REQUIRES: concurrency
 // REQUIRES: objc_interop
 
@@ -28,7 +28,7 @@ actor A {
     _ = #keyPath(A.z)
   }
 
-  nonisolated let w: Int = 0 // expected-note{{add '@objc' to expose this property to Objective-C}}
+  let w: Int = 0 // expected-note{{add '@objc' to expose this property to Objective-C}}
 
   var x: Int = 0 // expected-note{{add '@objc' to expose this property to Objective-C}}
 
@@ -53,5 +53,15 @@ func outside(a : A) async {
   await a.i() // expected-warning {{no 'async' operations occur within 'await' expression}}
 }
 
+actor Dril: NSObject {
+  // expected-note@+2 {{add 'async' to function 'postSynchronouslyTo(twitter:)' to make it asynchronous}}
+  // expected-error@+1 {{actor-isolated instance method 'postSynchronouslyTo(twitter:)' cannot be @objc}}
+  @objc func postSynchronouslyTo(twitter msg: String) -> Bool {
+    return true
+  }
 
-
+  @MainActor
+  @objc func postFromMainActorTo(twitter msg: String) -> Bool {
+    return true
+  }
+}

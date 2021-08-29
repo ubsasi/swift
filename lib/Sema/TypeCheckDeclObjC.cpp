@@ -403,7 +403,8 @@ static bool checkObjCActorIsolation(const ValueDecl *VD,
   auto behavior = behaviorLimitForObjCReason(Reason, VD->getASTContext());
 
   switch (auto restriction = ActorIsolationRestriction::forDeclaration(
-              const_cast<ValueDecl *>(VD), /*fromExpression=*/false)) {
+              const_cast<ValueDecl *>(VD), VD->getDeclContext(),
+              /*fromExpression=*/false)) {
   case ActorIsolationRestriction::CrossActorSelf:
     // FIXME: Substitution map?
     diagnoseNonConcurrentTypesInReference(
@@ -1203,10 +1204,11 @@ static Optional<ObjCReason> shouldMarkClassAsObjC(const ClassDecl *CD) {
         .limitBehavior(behavior);
     }
 
-    // Only allow ObjC-rooted classes to be @objc.
+    // Only allow actors and ObjC-rooted classes to be @objc.
     // (Leave a hole for test cases.)
     if (ancestry.contains(AncestryFlags::ObjC) &&
-        !ancestry.contains(AncestryFlags::ClangImported)) {
+        !ancestry.contains(AncestryFlags::ClangImported) &&
+        !CD->isActor()) {
       if (ctx.LangOpts.EnableObjCAttrRequiresFoundation) {
         ctx.Diags.diagnose(attrLoc,
                            diag::invalid_objc_swift_rooted_class)

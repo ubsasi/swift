@@ -1,4 +1,4 @@
-// RUN: %target-run-simple-swift(-Xfrontend -enable-experimental-concurrency %import-libdispatch)
+// RUN: %target-run-simple-swift(-Xfrontend -enable-experimental-concurrency -Xfrontend -disable-availability-checking %import-libdispatch)
 // REQUIRES: concurrency
 // REQUIRES: executable_test
 
@@ -6,6 +6,7 @@
 // UNSUPPORTED: use_os_stdlib
 // UNSUPPORTED: back_deployment_runtime
 // UNSUPPORTED: OS=windows-msvc
+// UNSUPPORTED: OS=wasi
 
 // for sleep
 #if canImport(Darwin)
@@ -20,7 +21,7 @@ class Canary {
   }
 }
 
-if #available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *) {
+if #available(SwiftStdlib 5.5, *) {
   let task = detach {
     let canary = Canary()
     _ = await Task.withCancellationHandler {

@@ -1,4 +1,4 @@
-// RUN: %target-run-simple-swift(-Xfrontend -enable-experimental-concurrency -parse-as-library) | %FileCheck %s --dump-input=always
+// RUN: %target-run-simple-swift(-Xfrontend -enable-experimental-concurrency -Xfrontend -disable-availability-checking -parse-as-library) | %FileCheck %s --dump-input=always
 // REQUIRES: executable_test
 // REQUIRES: concurrency
 // UNSUPPORTED: use_os_stdlib
@@ -12,7 +12,7 @@ func boom() async throws -> Int {
   throw Boom()
 }
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 func test_taskGroup_next() async {
   let sum = await withThrowingTaskGroup(of: Int.self, returning: Int.self) { group in
     for n in 1...10 {
@@ -43,7 +43,7 @@ func test_taskGroup_next() async {
   print("result with group.next(): \(sum)")
 }
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 func test_taskGroup_for_in() async {
   let sum = await withThrowingTaskGroup(of: Int.self, returning: Int.self) { group in
     for n in 1...10 {
@@ -74,7 +74,7 @@ func test_taskGroup_for_in() async {
   print("result with for-in: \(sum)")
 }
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 func test_taskGroup_asyncIterator() async {
   let sum = await withThrowingTaskGroup(of: Int.self, returning: Int.self) { group in
     for n in 1...10 {
@@ -112,7 +112,7 @@ func test_taskGroup_asyncIterator() async {
   print("result with async iterator: \(sum)")
 }
 
-@available(macOS 9999, iOS 9999, watchOS 9999, tvOS 9999, *)
+@available(SwiftStdlib 5.5, *)
 @main struct Main {
   static func main() async {
     await test_taskGroup_next()

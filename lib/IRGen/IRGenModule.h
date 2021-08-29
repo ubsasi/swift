@@ -733,9 +733,13 @@ public:
   llvm::PointerType *AsyncFunctionPointerPtrTy;
   llvm::PointerType *SwiftContextPtrTy;
   llvm::PointerType *SwiftTaskPtrTy;
+  llvm::PointerType *SwiftAsyncLetPtrTy;
+  llvm::IntegerType *SwiftTaskOptionRecordPtrTy;
   llvm::PointerType *SwiftTaskGroupPtrTy;
+  llvm::StructType  *SwiftTaskOptionRecordTy;
+  llvm::StructType  *SwiftTaskGroupTaskOptionRecordTy;
   llvm::PointerType *SwiftJobPtrTy;
-  llvm::PointerType *ExecutorFirstTy;
+  llvm::IntegerType *ExecutorFirstTy;
   llvm::IntegerType *ExecutorSecondTy;
   llvm::FunctionType *TaskContinuationFunctionTy;
   llvm::PointerType *TaskContinuationFunctionPtrTy;
@@ -1330,6 +1334,7 @@ public:
   llvm::Constant *getFixLifetimeFn();
   
   llvm::Constant *getFixedClassInitializationFn();
+  llvm::Function *getAwaitAsyncContinuationFn();
 
   /// The constructor used when generating code.
   ///
@@ -1394,7 +1399,7 @@ public:
   void finishEmitAfterTopLevel();
 
   Signature getSignature(CanSILFunctionType fnType,
-                         bool suppressGenerics = false);
+                         bool useSpecialConvention = false);
   llvm::FunctionType *getFunctionType(CanSILFunctionType type,
                                       llvm::AttributeList &attrs,
                                       ForeignFunctionInfo *foreignInfo=nullptr);

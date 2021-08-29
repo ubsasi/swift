@@ -1028,7 +1028,7 @@ static void checkOverrideAccessControl(ValueDecl *baseDecl, ValueDecl *decl,
   } else if (baseHasOpenAccess &&
              classDecl->hasOpenAccess(dc) &&
              decl->getFormalAccess() < AccessLevel::Public &&
-             !decl->isFinal()) {
+             !decl->isSemanticallyFinal()) {
     {
       auto diag = diags.diagnose(decl, diag::override_not_accessible,
                                  /*setter*/false,
@@ -1150,7 +1150,7 @@ bool OverrideMatcher::checkOverride(ValueDecl *baseDecl,
   if (decl->getASTContext().isSwiftVersionAtLeast(5) &&
       baseDecl->getInterfaceType()->hasDynamicSelfType() &&
       !decl->getInterfaceType()->hasDynamicSelfType() &&
-      !classDecl->isFinal()) {
+      !classDecl->isSemanticallyFinal()) {
     diags.diagnose(decl, diag::override_dynamic_self_mismatch);
     diags.diagnose(baseDecl, diag::overridden_here);
   }
@@ -1537,6 +1537,7 @@ namespace  {
     UNINTERESTING_ATTR(ActorIndependent)
     UNINTERESTING_ATTR(GlobalActor)
     UNINTERESTING_ATTR(Async)
+    UNINTERESTING_ATTR(Spawn)
     UNINTERESTING_ATTR(Sendable)
 
     UNINTERESTING_ATTR(AtRethrows)
@@ -1548,6 +1549,7 @@ namespace  {
     UNINTERESTING_ATTR(UnsafeMainActor)
     UNINTERESTING_ATTR(ImplicitSelfCapture)
     UNINTERESTING_ATTR(InheritActorContext)
+    UNINTERESTING_ATTR(Isolated)
 #undef UNINTERESTING_ATTR
 
     void visitAvailableAttr(AvailableAttr *attr) {
@@ -1939,19 +1941,38 @@ static bool checkSingleOverride(ValueDecl *override, ValueDecl *base) {
   }
 
   // The overridden declaration cannot be 'final'.
-  if (base->isFinal() && !isAccessor) {
-    // FIXME: Customize message to the kind of thing.
-    auto baseKind = base->getDescriptiveKind();
-    switch (baseKind) {
-    case DescriptiveDeclKind::StaticProperty:
-    case DescriptiveDeclKind::StaticMethod:
-    case DescriptiveDeclKind::StaticSubscript:
-      override->diagnose(diag::override_static, baseKind);
-      break;
-    default:
-      override->diagnose(diag::override_final,
-                         override->getDescriptiveKind(), baseKind);
-      break;
+  if (base->isSemanticallyFinal() && !isAccessor) {
+    // Use a special diagnostic for overriding an actor's unownedExecutor
+    // method.  TODO: only if it's implicit?  But then we need to
+    // propagate implicitness in module interfaces.
+    auto isActorUnownedExecutor = [&] {
+      auto prop = dyn_cast<VarDecl>(base);
+      return (prop &&
+              prop->isFinal() &&
+              isa<ClassDecl>(prop->getDeclContext()) &&
+              cast<ClassDecl>(prop->getDeclContext())->isActor() &&
+              !prop->isStatic() &&
+              prop->getName() == ctx.Id_unownedExecutor &&
+              prop->getInterfaceType()->getAnyNominal() ==
+                ctx.getUnownedSerialExecutorDecl());
+    };
+
+    if (isActorUnownedExecutor()) {
+      override->diagnose(diag::override_implicit_unowned_executor);
+    } else {
+      // FIXME: Customize message to the kind of thing.
+      auto baseKind = base->getDescriptiveKind();
+      switch (baseKind) {
+      case DescriptiveDeclKind::StaticProperty:
+      case DescriptiveDeclKind::StaticMethod:
+      case DescriptiveDeclKind::StaticSubscript:
+        override->diagnose(diag::override_static, baseKind);
+        break;
+      default:
+        override->diagnose(diag::override_final,
+                           override->getDescriptiveKind(), baseKind);
+        break;
+      }
     }
 
     base->diagnose(diag::overridden_here);

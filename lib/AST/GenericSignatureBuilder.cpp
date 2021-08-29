@@ -2492,7 +2492,7 @@ void DelayedRequirement::dump(llvm::raw_ostream &out) const {
   case Type:
   case Layout:
     out << ": ";
-      break;
+    break;
 
   case SameType:
     out << " == ";
@@ -4166,8 +4166,9 @@ static ConstraintResult visitInherited(
   ASTContext &ctx = typeDecl ? typeDecl->getASTContext()
                              : extDecl->getASTContext();
   auto &evaluator = ctx.evaluator;
-  ArrayRef<TypeLoc> inheritedTypes = typeDecl ? typeDecl->getInherited()
-                                              : extDecl->getInherited();
+  ArrayRef<InheritedEntry> inheritedTypes =
+      typeDecl ? typeDecl->getInherited()
+               : extDecl->getInherited();
   for (unsigned index : indices(inheritedTypes)) {
     Type inheritedType
       = evaluateOrDefault(evaluator,
@@ -5013,6 +5014,9 @@ GenericSignatureBuilder::addSameTypeRequirementBetweenTypeParameters(
                                  equivClass->concreteTypeConstraints.end(),
                                  equivClass2->concreteTypeConstraints.begin(),
                                  equivClass2->concreteTypeConstraints.end());
+
+    for (const auto &conforms : equivClass->conformsTo)
+      (void)resolveConcreteConformance(T1, conforms.first);
   }
 
   // Make T1 the representative of T2, merging the equivalence classes.
@@ -6533,6 +6537,39 @@ GenericSignatureBuilder::finalize(TypeArrayView<GenericTypeParamType> genericPar
                                   bool allowConcreteGenericParams) {
   // Process any delayed requirements that we can handle now.
   processDelayedRequirements();
+
+  {
+    // In various places below, we iterate over the list of equivalence classes
+    // and call getMinimalConformanceSource(). Unfortunately, this function
+    // ends up calling maybeResolveEquivalenceClass(), which can delete equivalence
+    // classes. The workaround is to first iterate safely over a copy of the list,
+    // and pre-compute all minimal conformance sources, before proceeding with the
+    // rest of the function.
+    //
+    // FIXME: This is not even correct, because we may not have reached fixed point
+    // after one round of this. getMinimalConformanceSource() should be removed
+    // instead.
+    SmallVector<PotentialArchetype *, 8> equivalenceClassPAs;
+    for (auto &equivClass : Impl->EquivalenceClasses) {
+      equivalenceClassPAs.push_back(equivClass.members.front());
+    }
+
+    for (auto *pa : equivalenceClassPAs) {
+      auto &equivClass = *pa->getOrCreateEquivalenceClass(*this);
+
+      // Copy the vector and iterate over the copy to avoid iterator invalidation
+      // issues.
+      auto conformsTo = equivClass.conformsTo;
+      for (auto entry : conformsTo) {
+        for (const auto &constraint : entry.second) {
+          bool derivedViaConcrete = false;
+          (void) constraint.source->getMinimalConformanceSource(
+              *this, constraint.getSubjectDependentType({ }), entry.first,
+              derivedViaConcrete);
+        }
+      }
+    }
+  }
 
   computeRedundantRequirements();
   diagnoseRedundantRequirements();

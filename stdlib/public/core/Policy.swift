@@ -34,6 +34,13 @@ extension Never: Error {}
 
 extension Never: Equatable, Comparable, Hashable {}
 
+@available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *)
+extension Never: Identifiable {
+  public var id: Never {
+    switch self {}
+  }
+}
+
 //===----------------------------------------------------------------------===//
 // Standardized aliases
 //===----------------------------------------------------------------------===//
@@ -74,7 +81,7 @@ public typealias Float64 = Double
 //===----------------------------------------------------------------------===//
 /// The default type for an otherwise-unconstrained integer literal.
 public typealias IntegerLiteralType = Int
-/// The default type for an otherwise-unconstrained floating point literal.
+/// The default type for an otherwise-unconstrained floating-point literal.
 public typealias FloatLiteralType = Double
 
 /// The default type for an otherwise-unconstrained Boolean literal.

@@ -764,7 +764,6 @@ public:
       assert(DiagnosticSuppression::isEnabled(getASTContext().Diags) &&
              "Diagnosing and AllowUnresolvedTypeVariables don't seem to mix");
       options |= TypeCheckExprFlags::LeaveClosureBodyUnchecked;
-      options |= TypeCheckExprFlags::AllowUnresolvedTypeVariables;
     }
 
     ContextualTypePurpose ctp = CTP_ReturnStmt;
@@ -1506,7 +1505,6 @@ void StmtChecker::typeCheckASTNode(ASTNode &node) {
       options |= TypeCheckExprFlags::IsDiscarded;
     if (LeaveBraceStmtBodyUnchecked) {
       options |= TypeCheckExprFlags::LeaveClosureBodyUnchecked;
-      options |= TypeCheckExprFlags::AllowUnresolvedTypeVariables;
     }
 
     auto resultTy =
@@ -1921,11 +1919,18 @@ bool TypeCheckASTNodeAtLocRequest::evaluate(Evaluator &evaluator,
     if (Type builderType = getResultBuilderType(func)) {
       auto optBody =
           TypeChecker::applyResultBuilderBodyTransform(func, builderType);
-      if (!optBody || !*optBody)
-        return true;
-      // Wire up the function body now.
-      func->setBody(*optBody, AbstractFunctionDecl::BodyKind::TypeChecked);
-      return false;
+      if (optBody && *optBody) {
+        // Wire up the function body now.
+        func->setBody(*optBody, AbstractFunctionDecl::BodyKind::TypeChecked);
+        return false;
+      }
+      // FIXME: We failed to apply the result builder transform. Fall back to
+      // just type checking the node that contains the code completion token.
+      // This may be missing some context from the result builder but in
+      // practice it often contains sufficient information to provide a decent
+      // level of code completion that's better than providing nothing at all.
+      // The proper solution would be to only partially type check the result
+      // builder so that this fall back would not be necessary.
     } else if (func->hasSingleExpressionBody() &&
                 func->getResultInterfaceType()->isVoid()) {
        // The function returns void.  We don't need an explicit return, no matter
@@ -1941,6 +1946,19 @@ bool TypeCheckASTNodeAtLocRequest::evaluate(Evaluator &evaluator,
   if (auto CE = dyn_cast<ClosureExpr>(DC)) {
     if (CE->getBodyState() == ClosureExpr::BodyState::Parsed) {
       swift::typeCheckASTNodeAtLoc(CE->getParent(), CE->getLoc());
+      // We need the actor isolation of the closure to be set so that we can
+      // annotate results that are on the same global actor.
+      // Since we are evaluating TypeCheckASTNodeAtLocRequest for every closure
+      // from outermost to innermost, we don't want to call checkActorIsolation,
+      // because that would cause actor isolation to be checked multiple times
+      // for nested closures. Instead, call determineClosureActorIsolation
+      // directly and set the closure's actor isolation manually. We can
+      // guarantee of that the actor isolation of enclosing closures have their
+      // isolation checked before nested ones are being checked by the way
+      // TypeCheckASTNodeAtLocRequest is called multiple times, as described
+      // above.
+      auto ActorIsolation = determineClosureActorIsolation(CE);
+      CE->setActorIsolation(ActorIsolation);
       if (CE->getBodyState() != ClosureExpr::BodyState::ReadyForTypeChecking)
         return false;
     }

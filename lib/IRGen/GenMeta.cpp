@@ -918,6 +918,10 @@ namespace {
           continue;
         if (!entry.getMethodWitness().Witness)
           continue;
+        auto silFunc = entry.getMethodWitness().Witness;
+        if (silFunc->isAsync()) {
+          return IGM.getAddrOfAsyncFunctionPointer(silFunc);
+        }
         return IGM.getAddrOfSILFunction(entry.getMethodWitness().Witness,
                                         NotForDefinition);
       }
@@ -1621,6 +1625,9 @@ namespace {
 
         if (MetadataLayout->hasResilientSuperclass())
           flags.class_setHasResilientSuperclass(true);
+
+        if (getType()->isActor())
+          flags.class_setIsActor(true);
 
         if (getType()->isDefaultActor(IGM.getSwiftModule(),
                                       ResilienceExpansion::Maximal))
@@ -5158,8 +5165,10 @@ SpecialProtocol irgen::getSpecialProtocolID(ProtocolDecl *P) {
   case KnownProtocolKind::Differentiable:
   case KnownProtocolKind::FloatingPoint:
   case KnownProtocolKind::Actor:
+  case KnownProtocolKind::SerialExecutor:
   case KnownProtocolKind::Sendable:
   case KnownProtocolKind::UnsafeSendable:
+  case KnownProtocolKind::GlobalActor:
     return SpecialProtocol::None;
   }
 

@@ -356,6 +356,10 @@ public:
   /// Determine whether this type variable represents a closure result type.
   bool isClosureResultType() const;
 
+  /// Determine whether this type variable represents
+  /// a type of a key path expression.
+  bool isKeyPathType() const;
+
   /// Retrieve the representative of the equivalence class to which this
   /// type variable belongs.
   ///
@@ -2126,6 +2130,11 @@ private:
   /// explored.
   size_t MaxMemory = 0;
 
+  /// Flag to indicate to the solver that the system is in invalid
+  /// state and it shouldn't proceed but instead produce a fallback
+  /// diagnostic.
+  bool InvalidState = false;
+
   /// Cached member lookups.
   llvm::DenseMap<std::pair<Type, DeclNameRef>, Optional<LookupResult>>
     MemberLookups;
@@ -2614,6 +2623,11 @@ public:
 
     Phase = newPhase;
   }
+
+  /// Check whether constraint system is in valid state e.g.
+  /// has left-over active/inactive constraints which should
+  /// have been simplified.
+  bool inInvalidState() const { return InvalidState; }
 
   /// Cache the types of the given expression and all subexpressions.
   void cacheExprTypes(Expr *expr) {
@@ -4874,11 +4888,9 @@ private:
   /// \param diff The differences among the solutions.
   /// \param idx1 The index of the first solution.
   /// \param idx2 The index of the second solution.
-  /// \param isForCodeCompletion Whether solving for code completion.
   static SolutionCompareResult
   compareSolutions(ConstraintSystem &cs, ArrayRef<Solution> solutions,
-                   const SolutionDiff &diff, unsigned idx1, unsigned idx2,
-                   bool isForCodeCompletion);
+                   const SolutionDiff &diff, unsigned idx1, unsigned idx2);
 
 public:
   /// Increase the score of the given kind for the current (partial) solution
@@ -4997,6 +5009,13 @@ public:
   /// If we aren't certain that we've emitted a diagnostic, emit a fallback
   /// diagnostic.
   void maybeProduceFallbackDiagnostic(SolutionApplicationTarget target) const;
+
+  /// Check whether given AST node represents an argument of an application
+  /// of some sort (call, operator invocation, subscript etc.)
+  /// and return AST node representing and argument index. E.g. for regular
+  /// calls `test(42)` passing `42` should return node representing
+  /// entire call and index `0`.
+  Optional<std::pair<Expr *, unsigned>> isArgumentExpr(Expr *expr);
 
   SWIFT_DEBUG_DUMP;
   SWIFT_DEBUG_DUMPER(dump(Expr *));
@@ -5306,7 +5325,20 @@ public:
 
   bool attempt(ConstraintSystem &cs) const;
 
-  bool isDisabled() const { return Choice->isDisabled(); }
+  bool isDisabled() const {
+    if (!Choice->isDisabled())
+      return false;
+
+    // If solver is in a diagnostic mode, let's allow
+    // constraints that have fixes or have been disabled
+    // in attempt to produce a solution faster for
+    // well-formed expressions.
+    if (CS.shouldAttemptFixes()) {
+      return !(hasFix() || Choice->isDisabledInPerformanceMode());
+    }
+
+    return true;
+  }
 
   bool hasFix() const {
     return bool(Choice->getFix());
@@ -5583,6 +5615,11 @@ Type getConcreteReplacementForProtocolSelfType(ValueDecl *member);
 /// Determine whether given disjunction constraint represents a set
 /// of operator overload choices.
 bool isOperatorDisjunction(Constraint *disjunction);
+
+/// Find out whether closure body has any `async` or `await` expressions,
+/// declarations, or statements directly in its body (no in other closures
+/// or nested declarations).
+ASTNode findAsyncNode(ClosureExpr *closure);
 
 } // end namespace constraints
 

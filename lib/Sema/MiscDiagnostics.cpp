@@ -77,7 +77,9 @@ static void diagSyntacticUseRestrictions(const Expr *E, const DeclContext *DC,
     SmallPtrSet<DeclRefExpr*, 4> AlreadyDiagnosedBitCasts;
 
     /// Keep track of the arguments to CallExprs.
-    SmallPtrSet<Expr *, 2> CallArgs;
+    ///  Key -> an argument expression,
+    ///  Value -> a call argument is associated with.
+    llvm::SmallDenseMap<Expr *, Expr *, 2> CallArgs;
 
     bool IsExprStmt;
 
@@ -141,14 +143,14 @@ static void diagSyntacticUseRestrictions(const Expr *E, const DeclContext *DC,
         checkUseOfMetaTypeName(Base);
 
       if (auto *OLE = dyn_cast<ObjectLiteralExpr>(E)) {
-        CallArgs.insert(OLE->getArg());
+        CallArgs.insert({OLE->getArg(), E});
       }
 
       if (auto *SE = dyn_cast<SubscriptExpr>(E))
-        CallArgs.insert(SE->getIndex());
+        CallArgs.insert({SE->getIndex(), E});
 
       if (auto *DSE = dyn_cast<DynamicSubscriptExpr>(E))
-        CallArgs.insert(DSE->getIndex());
+        CallArgs.insert({DSE->getIndex(), E});
 
       if (auto *KPE = dyn_cast<KeyPathExpr>(E)) {
         // raise an error if this KeyPath contains an effectful member.
@@ -156,7 +158,7 @@ static void diagSyntacticUseRestrictions(const Expr *E, const DeclContext *DC,
 
         for (auto Comp : KPE->getComponents()) {
           if (auto *Arg = Comp.getIndexExpr())
-            CallArgs.insert(Arg);
+            CallArgs.insert({Arg, E});
         }
       }
 
@@ -164,7 +166,7 @@ static void diagSyntacticUseRestrictions(const Expr *E, const DeclContext *DC,
       // function and inspecting the arguments directly.
       if (auto *Call = dyn_cast<ApplyExpr>(E)) {
         // Record call arguments.
-        CallArgs.insert(Call->getArg());
+        CallArgs.insert({Call->getArg(), E});
 
         // Warn about surprising implicit optional promotions.
         checkOptionalPromotions(Call);
@@ -613,6 +615,11 @@ static void diagSyntacticUseRestrictions(const Expr *E, const DeclContext *DC,
       if (!AlreadyDiagnosedMetatypes.insert(E).second)
         return;
 
+      // In Swift < 6 warn about plain type name passed as an
+      // argument to a subscript, dynamic subscript, or ObjC
+      // literal since it used to be accepted.
+      DiagnosticBehavior behavior = DiagnosticBehavior::Error;
+
       // Allow references to types as a part of:
       // - member references T.foo, T.Type, T.self, etc.
       // - constructor calls T()
@@ -632,11 +639,22 @@ static void diagSyntacticUseRestrictions(const Expr *E, const DeclContext *DC,
             isa<SubscriptExpr>(ParentExpr)) {
           return;
         }
+
+        if (!Ctx.LangOpts.isSwiftVersionAtLeast(6)) {
+          auto argument = CallArgs.find(ParentExpr);
+          if (argument != CallArgs.end()) {
+            auto *callExpr = argument->second;
+            if (isa<SubscriptExpr>(callExpr) ||
+                isa<DynamicSubscriptExpr>(callExpr) ||
+                isa<ObjectLiteralExpr>(callExpr))
+              behavior = DiagnosticBehavior::Warning;
+          }
+        }
       }
 
       // Is this a protocol metatype?
-
-      Ctx.Diags.diagnose(E->getStartLoc(), diag::value_of_metatype_type);
+      Ctx.Diags.diagnose(E->getStartLoc(), diag::value_of_metatype_type)
+          .limitBehavior(behavior);
 
       // Add fix-it to insert '()', only if this is a metatype of
       // non-existential type and has any initializers.
@@ -1509,31 +1527,14 @@ static void diagnoseImplicitSelfUseInClosure(const Expr *E,
             Closures.push_back(ACE);
         }
 
-    static bool isEnclosingSelfReference(VarDecl *var,
-                                   const AbstractClosureExpr *inClosure) {
-      if (var->isSelfParameter())
-        return true;
-
-      // Capture variables have a DC of the parent function.
-      if (inClosure && var->isSelfParamCapture() &&
-          var->getDeclContext() != inClosure->getParent())
-        return true;
-
-      return false;
-    }
-
     /// Return true if this is an implicit reference to self which is required
     /// to be explicit in an escaping closure. Metatype references and value
     /// type references are excluded.
-    static bool isImplicitSelfParamUseLikelyToCauseCycle(Expr *E,
-                                   const AbstractClosureExpr *inClosure) {
+    static bool isImplicitSelfParamUseLikelyToCauseCycle(Expr *E) {
       auto *DRE = dyn_cast<DeclRefExpr>(E);
 
-      if (!DRE || !DRE->isImplicit())
-        return false;
-
-      auto var = dyn_cast<VarDecl>(DRE->getDecl());
-      if (!var || !isEnclosingSelfReference(var, inClosure))
+      if (!DRE || !DRE->isImplicit() || !isa<VarDecl>(DRE->getDecl()) ||
+          !cast<VarDecl>(DRE->getDecl())->isSelfParameter())
         return false;
 
       // Defensive check for type. If the expression doesn't have type here, it
@@ -1616,7 +1617,7 @@ static void diagnoseImplicitSelfUseInClosure(const Expr *E,
       
       SourceLoc memberLoc = SourceLoc();
       if (auto *MRE = dyn_cast<MemberRefExpr>(E))
-        if (isImplicitSelfParamUseLikelyToCauseCycle(MRE->getBase(), ACE)) {
+        if (isImplicitSelfParamUseLikelyToCauseCycle(MRE->getBase())) {
           auto baseName = MRE->getMember().getDecl()->getBaseName();
           memberLoc = MRE->getLoc();
           Diags.diagnose(memberLoc,
@@ -1626,7 +1627,7 @@ static void diagnoseImplicitSelfUseInClosure(const Expr *E,
 
       // Handle method calls with a specific diagnostic + fixit.
       if (auto *DSCE = dyn_cast<DotSyntaxCallExpr>(E))
-        if (isImplicitSelfParamUseLikelyToCauseCycle(DSCE->getBase(), ACE) &&
+        if (isImplicitSelfParamUseLikelyToCauseCycle(DSCE->getBase()) &&
             isa<DeclRefExpr>(DSCE->getFn())) {
           auto MethodExpr = cast<DeclRefExpr>(DSCE->getFn());
           memberLoc = DSCE->getLoc();
@@ -1641,7 +1642,7 @@ static void diagnoseImplicitSelfUseInClosure(const Expr *E,
       }
       
       // Catch any other implicit uses of self with a generic diagnostic.
-      if (isImplicitSelfParamUseLikelyToCauseCycle(E, ACE))
+      if (isImplicitSelfParamUseLikelyToCauseCycle(E))
         Diags.diagnose(E->getLoc(), diag::implicit_use_of_self_in_closure);
 
       return { true, E };

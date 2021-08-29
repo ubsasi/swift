@@ -1247,8 +1247,9 @@ bool SILParser::parseSILType(SILType &Result,
   // Parse attributes.
   ParamDecl::Specifier specifier;
   SourceLoc specifierLoc;
+  SourceLoc isolatedLoc;
   TypeAttributes attrs;
-  P.parseTypeAttributeList(specifier, specifierLoc, attrs);
+  P.parseTypeAttributeList(specifier, specifierLoc, isolatedLoc, attrs);
 
   // Global functions are implicitly @convention(thin) if not specified otherwise.
   if (IsFuncDecl && !attrs.has(TAK_convention)) {
@@ -1258,8 +1259,7 @@ bool SILParser::parseSILType(SILType &Result,
       TypeAttributes::Convention::makeSwiftConvention("thin");
   }
 
-  ParserResult<TypeRepr> TyR = P.parseType(diag::expected_sil_type,
-                                           /*isSILFuncDecl*/ IsFuncDecl);
+  ParserResult<TypeRepr> TyR = P.parseType(diag::expected_sil_type);
 
   if (TyR.isNull())
     return true;
@@ -1268,7 +1268,8 @@ bool SILParser::parseSILType(SILType &Result,
   
   // Apply attributes to the type.
   auto *attrRepr =
-      P.applyAttributeToType(TyR.get(), attrs, specifier, specifierLoc);
+      P.applyAttributeToType(
+        TyR.get(), attrs, specifier, specifierLoc, isolatedLoc);
   const auto Ty =
       performTypeResolution(attrRepr, /*IsSILType=*/true,
                             OuterGenericEnv, OuterGenericParams);

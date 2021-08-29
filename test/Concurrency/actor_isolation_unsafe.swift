@@ -1,4 +1,4 @@
-// RUN: %target-typecheck-verify-swift -enable-experimental-concurrency
+// RUN: %target-typecheck-verify-swift -enable-experimental-concurrency -disable-availability-checking
 // REQUIRES: concurrency
 
 @globalActor
@@ -99,4 +99,14 @@ class C7: C2 {
     globalMain() // expected-error{{call to main actor-isolated global function 'globalMain()' in a synchronous global actor 'SomeGlobalActor'-isolated context}}
     globalSome() // okay
   }
+}
+
+@MainActor(unsafe) // expected-note {{'GloballyIsolatedProto' is isolated to global actor 'MainActor' here}}
+protocol GloballyIsolatedProto {
+}
+
+// rdar://75849035 - trying to conform an actor to a global-actor isolated protocol should result in an error
+func test_conforming_actor_to_global_actor_protocol() {
+  actor MyValue : GloballyIsolatedProto {}
+  // expected-error@-1 {{actor 'MyValue' cannot conform to global actor isolated protocol 'GloballyIsolatedProto'}}
 }

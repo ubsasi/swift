@@ -125,8 +125,9 @@ static EnumDecl *addImplicitCodingKeys_enum(EnumDecl *target) {
   // enum cases based on those case names.
   auto *codingKeyProto = C.getProtocol(KnownProtocolKind::CodingKey);
   auto codingKeyType = codingKeyProto->getDeclaredInterfaceType();
-  TypeLoc protoTypeLoc[1] = {TypeLoc::withoutLoc(codingKeyType)};
-  ArrayRef<TypeLoc> inherited = C.AllocateCopy(protoTypeLoc);
+  InheritedEntry protoTypeLoc[1] = {
+    InheritedEntry(TypeLoc::withoutLoc(codingKeyType))};
+  ArrayRef<InheritedEntry> inherited = C.AllocateCopy(protoTypeLoc);
 
   llvm::SmallVector<EnumDecl *, 4> codingKeys;
 
@@ -159,8 +160,8 @@ static EnumDecl *addImplicitCaseCodingKeys(EnumDecl *target,
 
   auto *codingKeyProto = C.getProtocol(KnownProtocolKind::CodingKey);
   auto codingKeyType = codingKeyProto->getDeclaredInterfaceType();
-  TypeLoc protoTypeLoc[1] = {TypeLoc::withoutLoc(codingKeyType)};
-  ArrayRef<TypeLoc> inherited = C.AllocateCopy(protoTypeLoc);
+  InheritedEntry protoTypeLoc[1] = {InheritedEntry(TypeLoc::withoutLoc(codingKeyType))};
+  ArrayRef<InheritedEntry> inherited = C.AllocateCopy(protoTypeLoc);
 
   // Only derive if this case exist in the CodingKeys enum
   auto *codingKeyCase =
@@ -221,8 +222,8 @@ static EnumDecl *addImplicitCodingKeys(NominalTypeDecl *target) {
   // enum cases based on those var names.
   auto *codingKeyProto = C.getProtocol(KnownProtocolKind::CodingKey);
   auto codingKeyType = codingKeyProto->getDeclaredInterfaceType();
-  TypeLoc protoTypeLoc[1] = {TypeLoc::withoutLoc(codingKeyType)};
-  ArrayRef<TypeLoc> inherited = C.AllocateCopy(protoTypeLoc);
+  InheritedEntry protoTypeLoc[1] = {InheritedEntry(TypeLoc::withoutLoc(codingKeyType))};
+  ArrayRef<InheritedEntry> inherited = C.AllocateCopy(protoTypeLoc);
 
   auto *enumDecl = new (C) EnumDecl(SourceLoc(), C.Id_CodingKeys, SourceLoc(),
                                     inherited, nullptr, target);
@@ -488,6 +489,15 @@ static bool validateCaseCodingKeysEnum(const DerivedConformance &derived,
                           ? addImplicitCaseCodingKeys(
                               enumDecl, elementDecl, codingKeysEnum)
                           : caseCodingKeysDecls.front();
+
+  if (!result) {
+    // There is no coding key defined for this element,
+    // which is okay, because not all elements have to
+    // be considered for serialization. Attempts to
+    // en-/decode them will be handled at runtime.
+    return true;
+  }
+
   auto *codingKeysTypeDecl = dyn_cast<TypeDecl>(result);
   if (!codingKeysTypeDecl) {
     result->diagnose(diag::codable_codingkeys_type_is_not_an_enum_here,
@@ -1146,8 +1156,9 @@ deriveBodyEncodable_enum_encode(AbstractFunctionDecl *encodeDecl, void *) {
     }
 
     // generate: case .<Case>:
+    auto enumType = funcDC->mapTypeIntoContext(enumDecl->getDeclaredInterfaceType());
     auto pat = new (C) EnumElementPattern(
-        TypeExpr::createImplicit(enumDecl->getDeclaredType(), C), SourceLoc(),
+        TypeExpr::createImplicit(enumType, C), SourceLoc(),
         DeclNameLoc(), DeclNameRef(), elt, subpattern);
     pat->setImplicit();
 
@@ -1674,8 +1685,16 @@ deriveBodyDecodable_enum_init(AbstractFunctionDecl *initDecl, void *) {
           }
 
           // Type.self
-          auto *parameterTypeExpr = TypeExpr::createImplicit(
-              funcDC->mapTypeIntoContext(paramDecl->getInterfaceType()), C);
+          auto varType = funcDC->mapTypeIntoContext(
+                  paramDecl->getValueInterfaceType());
+
+          bool useIfPresentVariant = false;
+          if (auto objType = varType->getOptionalObjectType()) {
+            varType = objType;
+            useIfPresentVariant = true;
+          }
+
+          auto *parameterTypeExpr = TypeExpr::createImplicit(varType, C);
           auto *parameterMetaTypeExpr =
               new (C) DotSelfExpr(parameterTypeExpr, SourceLoc(), SourceLoc());
           // BarCodingKeys.x
@@ -1688,9 +1707,12 @@ deriveBodyDecodable_enum_init(AbstractFunctionDecl *initDecl, void *) {
           auto *nestedContainerExpr = new (C)
               DeclRefExpr(ConcreteDeclRef(nestedContainerDecl), DeclNameLoc(),
                           /*Implicit=*/true, AccessSemantics::DirectToStorage);
+
           // decode(_:, forKey:)
+          auto methodName = useIfPresentVariant ? C.Id_decodeIfPresent
+                                                : C.Id_decode;
           auto *decodeCall = UnresolvedDotExpr::createImplicit(
-              C, nestedContainerExpr, C.Id_decode, {Identifier(), C.Id_forKey});
+              C, nestedContainerExpr, methodName, {Identifier(), C.Id_forKey});
 
           // nestedContainer.decode(Type.self, forKey: BarCodingKeys.x)
           auto *callExpr = CallExpr::createImplicit(
@@ -1859,7 +1881,7 @@ static ValueDecl *deriveDecodable_init(DerivedConformance &derived) {
   }
 
   // This constructor should be marked as `required` for non-final classes.
-  if (classDecl && !classDecl->isFinal()) {
+  if (classDecl && !classDecl->isSemanticallyFinal()) {
     auto *reqAttr = new (C) RequiredAttr(/*IsImplicit=*/true);
     initDecl->getAttrs().add(reqAttr);
   }

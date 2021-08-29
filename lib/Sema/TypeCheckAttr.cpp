@@ -139,6 +139,7 @@ public:
   IGNORED_ATTR(UnsafeMainActor)
   IGNORED_ATTR(ImplicitSelfCapture)
   IGNORED_ATTR(InheritActorContext)
+  IGNORED_ATTR(Isolated)
 #undef IGNORED_ATTR
 
   void visitAlignmentAttr(AlignmentAttr *attr) {
@@ -284,12 +285,15 @@ public:
   void visitActorIndependentAttr(ActorIndependentAttr *attr);
   void visitGlobalActorAttr(GlobalActorAttr *attr);
   void visitAsyncAttr(AsyncAttr *attr);
+  void visitSpawnAttr(SpawnAttr *attr);
+  void visitAsyncOrSpawnAttr(DeclAttribute *attr);
   void visitMarkerAttr(MarkerAttr *attr);
 
   void visitReasyncAttr(ReasyncAttr *attr);
   void visitNonisolatedAttr(NonisolatedAttr *attr);
   void visitCompletionHandlerAsyncAttr(CompletionHandlerAsyncAttr *attr);
 };
+
 } // end anonymous namespace
 
 void AttributeChecker::visitTransparentAttr(TransparentAttr *attr) {
@@ -823,7 +827,9 @@ void AttributeChecker::visitAccessControlAttr(AccessControlAttr *attr) {
   }
 
   if (attr->getAccess() == AccessLevel::Open) {
-    if (!isa<ClassDecl>(D) && !D->isPotentiallyOverridable() &&
+    auto classDecl = dyn_cast<ClassDecl>(D);
+    if (!(classDecl && !classDecl->isActor()) &&
+        !D->isPotentiallyOverridable() &&
         !attr->isInvalid()) {
       diagnose(attr->getLocation(), diag::access_control_open_bad_decl)
         .fixItReplace(attr->getRange(), "public");
@@ -950,6 +956,11 @@ static void diagnoseObjCAttrWithoutFoundation(ObjCAttr *attr, Decl *decl,
 
   // We only care about explicitly written @objc attributes.
   if (attr->isImplicit())
+    return;
+
+  // @objc enums do not require -enable-objc-interop or Foundation be have been
+  // imported.
+  if (isa<EnumDecl>(decl))
     return;
 
   auto &ctx = SF->getASTContext();
@@ -2090,7 +2101,8 @@ void AttributeChecker::visitRequiredAttr(RequiredAttr *attr) {
     return;
   }
   // Only classes can have required constructors.
-  if (parentTy->getClassOrBoundGenericClass()) {
+  if (parentTy->getClassOrBoundGenericClass() &&
+      !parentTy->getClassOrBoundGenericClass()->isActor()) {
     // The constructor must be declared within the class itself.
     // FIXME: Allow an SDK overlay to add a required initializer to a class
     // defined in Objective-C
@@ -3376,6 +3388,8 @@ Type TypeChecker::checkReferenceOwnershipAttr(VarDecl *var, Type type,
 
 Optional<Diag<>>
 TypeChecker::diagnosticIfDeclCannotBePotentiallyUnavailable(const Decl *D) {
+  auto *DC = D->getDeclContext();
+
   if (auto *VD = dyn_cast<VarDecl>(D)) {
     if (!VD->hasStorage())
       return None;
@@ -3388,14 +3402,23 @@ TypeChecker::diagnosticIfDeclCannotBePotentiallyUnavailable(const Decl *D) {
 
     // Globals and statics are lazily initialized, so they are safe
     // for potential unavailability.
-    if (!VD->isStatic() && !VD->getDeclContext()->isModuleScopeContext())
+    if (!VD->isStatic() && !DC->isModuleScopeContext())
       return diag::availability_stored_property_no_potential;
 
   } else if (auto *EED = dyn_cast<EnumElementDecl>(D)) {
     // An enum element with an associated value cannot be potentially
     // unavailable.
-    if (EED->hasAssociatedValues())
-      return diag::availability_enum_element_no_potential;
+    if (EED->hasAssociatedValues()) {
+      auto &ctx = DC->getASTContext();
+      auto *SF = DC->getParentSourceFile();
+
+      if (SF->Kind == SourceFileKind::Interface ||
+          ctx.LangOpts.WarnOnPotentiallyUnavailableEnumCase) {
+        return diag::availability_enum_element_no_potential_warn;
+      } else {
+        return diag::availability_enum_element_no_potential;
+      }
+    }
   }
 
   return None;
@@ -4485,7 +4508,7 @@ IndexSubset *DifferentiableAttributeTypeCheckRequest::evaluate(
     if (diagnoseDynamicSelfResult) {
       // Diagnose class initializers in non-final classes.
       if (isa<ConstructorDecl>(original)) {
-        if (!classDecl->isFinal()) {
+        if (!classDecl->isSemanticallyFinal()) {
           diags.diagnose(
               attr->getLocation(),
               diag::differentiable_attr_nonfinal_class_init_unsupported,
@@ -4787,7 +4810,7 @@ static bool typeCheckDerivativeAttr(ASTContext &Ctx, Decl *D,
     if (diagnoseDynamicSelfResult) {
       // Diagnose class initializers in non-final classes.
       if (isa<ConstructorDecl>(originalAFD)) {
-        if (!classDecl->isFinal()) {
+        if (!classDecl->isSemanticallyFinal()) {
           diags.diagnose(attr->getLocation(),
                          diag::derivative_attr_nonfinal_class_init_unsupported,
                          classDecl->getDeclaredInterfaceType());
@@ -5421,14 +5444,17 @@ void AttributeChecker::visitActorIndependentAttr(ActorIndependentAttr *attr) {
   // that do not have storage.
   auto dc = D->getDeclContext();
   if (auto var = dyn_cast<VarDecl>(D)) {
-    // @actorIndependent can not be applied to mutable stored properties, unless if
+    // @actorIndependent is meaningless on a `let`.
+    if (var->isLet()) {
+      diagnoseAndRemoveAttr(attr, diag::actorindependent_let);
+      return;
+    }
+
+    // @actorIndependent can not be applied to stored properties, unless if
     // the 'unsafe' option was specified
     if (var->hasStorage()) {
       switch (attr->getKind()) {
         case ActorIndependentKind::Safe:
-          if (var->isLet())
-            break;
-
           diagnoseAndRemoveAttr(attr, diag::actorindependent_mutable_storage);
           return;
 
@@ -5460,20 +5486,10 @@ void AttributeChecker::visitNonisolatedAttr(NonisolatedAttr *attr) {
   // that do not have storage.
   auto dc = D->getDeclContext();
   if (auto var = dyn_cast<VarDecl>(D)) {
-    // 'nonisolated' can only be applied to 'let' stored properties.
-    // Those must be Sendable.
-    if (var->hasStorage()) {
-      if (!var->isLet()) {
-        diagnoseAndRemoveAttr(attr, diag::nonisolated_mutable_storage);
-        return;
-      }
-
-      // nonisolated lets must have Sendable type.
-      if (shouldDiagnoseNonSendableViolations(dc->getASTContext().LangOpts) &&
-          !isSendableType(dc, var->getType())) {
-        var->diagnose(
-            diag::non_sendable_nonisolated_let, var->getName(), var->getType());
-      }
+    // 'nonisolated' can not be applied to mutable stored properties.
+    if (var->hasStorage() && var->supportsMutation()) {
+      diagnoseAndRemoveAttr(attr, diag::nonisolated_mutable_storage);
+      return;
     }
 
     // @actorIndependent can not be applied to local properties.
@@ -5503,6 +5519,16 @@ void AttributeChecker::visitGlobalActorAttr(GlobalActorAttr *attr) {
 }
 
 void AttributeChecker::visitAsyncAttr(AsyncAttr *attr) {
+  if (isa<VarDecl>(D)) {
+    visitAsyncOrSpawnAttr(attr);
+  }
+}
+
+void AttributeChecker::visitSpawnAttr(SpawnAttr *attr) {
+  visitAsyncOrSpawnAttr(attr);
+}
+
+void AttributeChecker::visitAsyncOrSpawnAttr(DeclAttribute *attr) {
   auto var = dyn_cast<VarDecl>(D);
   if (!var)
     return;

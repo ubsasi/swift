@@ -76,6 +76,7 @@ class CodeCompletionResultBuilder {
   CodeCompletionResultSink &Sink;
   CodeCompletionResult::ResultKind Kind;
   SemanticContextKind SemanticContext;
+  CodeCompletionFlair Flair;
   unsigned NumBytesToErase = 0;
   const Decl *AssociatedDecl = nullptr;
   Optional<CodeCompletionLiteralKind> LiteralKind;
@@ -152,6 +153,10 @@ public:
 
   void setSemanticContext(SemanticContextKind Kind) {
     SemanticContext = Kind;
+  }
+
+  void addFlair(CodeCompletionFlair Options) {
+    Flair |= Options;
   }
 
   void
@@ -351,6 +356,12 @@ public:
   void addDeclAttrKeyword(StringRef Name, StringRef Annotation) {
     addChunkWithText(CodeCompletionString::Chunk::ChunkKind::
                      DeclAttrKeyword, Name);
+    if (!Annotation.empty())
+      addTypeAnnotation(Annotation);
+  }
+
+  void addAttributeKeyword(StringRef Name, StringRef Annotation) {
+    addChunkWithText(CodeCompletionString::Chunk::ChunkKind::Attribute, Name);
     if (!Annotation.empty())
       addTypeAnnotation(Annotation);
   }

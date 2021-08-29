@@ -379,6 +379,7 @@ std::string ASTMangler::mangleReabstractionThunkHelper(
                                             Type FromType,
                                             Type ToType,
                                             Type SelfType,
+                                            Type GlobalActorBound,
                                             ModuleDecl *Module) {
   Mod = Module;
   assert(ThunkType->getPatternSubstitutions().empty() && "not implemented");
@@ -399,6 +400,11 @@ std::string ASTMangler::mangleReabstractionThunkHelper(
     appendOperator("Ty");
   else
     appendOperator("TR");
+  
+  if (GlobalActorBound) {
+    appendType(GlobalActorBound);
+    appendOperator("TU");
+  }
 
   return finalize();
 }
@@ -2469,6 +2475,11 @@ void ASTMangler::appendFunctionSignature(AnyFunctionType *fn,
     appendOperator("Yjl");
     break;
   }
+
+  if (Type globalActor = fn->getGlobalActor()) {
+    appendType(globalActor);
+    appendOperator("Yc");
+  }
 }
 
 void ASTMangler::appendFunctionInputType(
@@ -2558,6 +2569,9 @@ void ASTMangler::appendTypeListElement(Identifier name, Type elementType,
     appendOperator("n");
     break;
   }
+  if (flags.isIsolated())
+    appendOperator("Yi");
+
   if (!name.empty())
     appendIdentifier(name.str());
   if (flags.isVariadic())
@@ -2868,18 +2882,6 @@ CanType ASTMangler::getDeclTypeForMangling(
 
   Type ty = decl->getInterfaceType()->getReferenceStorageReferent();
 
-  // Strip the global actor out of the mangling.
-  ty = ty.transform([](Type type) {
-    if (auto fnType = type->getAs<AnyFunctionType>()) {
-      if (fnType->getGlobalActor()) {
-        return Type(fnType->withExtInfo(
-            fnType->getExtInfo().withGlobalActor(Type())));
-      }
-    }
-
-    return type;
-  });
-
   auto canTy = ty->getCanonicalType();
 
   if (auto gft = dyn_cast<GenericFunctionType>(canTy)) {
@@ -2927,13 +2929,15 @@ void ASTMangler::appendDeclType(const ValueDecl *decl,
 
 bool ASTMangler::tryAppendStandardSubstitution(const GenericTypeDecl *decl) {
   // Bail out if our parent isn't the swift standard library.
-  if (!decl->isStdlibDecl())
+  auto dc = decl->getDeclContext();
+  if (!dc->isModuleScopeContext() ||
+      !dc->getParentModule()->hasStandardSubstitutions())
     return false;
 
   if (isa<NominalTypeDecl>(decl)) {
-    if (char Subst = getStandardTypeSubst(decl->getName().str())) {
-      if (!SubstMerging.tryMergeSubst(*this, Subst, /*isStandardSubst*/ true)) {
-        appendOperator("S", StringRef(&Subst, 1));
+    if (auto Subst = getStandardTypeSubst(decl->getName().str())) {
+      if (!SubstMerging.tryMergeSubst(*this, *Subst, /*isStandardSubst*/ true)){
+        appendOperator("S", *Subst);
       }
       return true;
     }

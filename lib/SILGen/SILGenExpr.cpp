@@ -3552,14 +3552,6 @@ SILGenModule::emitKeyPathComponentForDecl(SILLocation loc,
     return storage->isSettable(storage->getDeclContext());
   };
 
-  // We cannot use the same opened archetype in the getter and setter. Therefore
-  // we create a new one for both the getter and the setter.
-  auto renewOpenedArchetypes = [](SubstitutableType *type) -> Type {
-    if (auto *openedTy = dyn_cast<OpenedArchetypeType>(type))
-      return OpenedArchetypeType::get(openedTy->getOpenedExistentialType());
-    return type;
-  };
-
   if (auto var = dyn_cast<VarDecl>(storage)) {
     CanType componentTy;
     if (!var->getDeclContext()->isTypeContext()) {
@@ -3583,15 +3575,13 @@ SILGenModule::emitKeyPathComponentForDecl(SILLocation loc,
     auto id = getIdForKeyPathComponentComputedProperty(*this, var,
                                                        strategy);
     auto getter = getOrCreateKeyPathGetter(*this, loc,
-             var, subs.subst(renewOpenedArchetypes,
-                             MakeAbstractConformanceForGenericType()),
+             var, subs,
              needsGenericContext ? genericEnv : nullptr,
              expansion, {}, baseTy, componentTy);
     
     if (isSettableInComponent()) {
       auto setter = getOrCreateKeyPathSetter(*this, loc,
-             var, subs.subst(renewOpenedArchetypes,
-                             MakeAbstractConformanceForGenericType()),
+             var, subs,
              needsGenericContext ? genericEnv : nullptr,
              expansion, {}, baseTy, componentTy);
       return KeyPathPatternComponent::forComputedSettableProperty(id,
@@ -3636,8 +3626,7 @@ SILGenModule::emitKeyPathComponentForDecl(SILLocation loc,
     
     auto id = getIdForKeyPathComponentComputedProperty(*this, decl, strategy);
     auto getter = getOrCreateKeyPathGetter(*this, loc,
-             decl, subs.subst(renewOpenedArchetypes,
-                              MakeAbstractConformanceForGenericType()),
+             decl, subs,
              needsGenericContext ? genericEnv : nullptr,
              expansion,
              indexTypes,
@@ -3646,8 +3635,7 @@ SILGenModule::emitKeyPathComponentForDecl(SILLocation loc,
     auto indexPatternsCopy = getASTContext().AllocateCopy(indexPatterns);
     if (isSettableInComponent()) {
       auto setter = getOrCreateKeyPathSetter(*this, loc,
-             decl, subs.subst(renewOpenedArchetypes,
-                              MakeAbstractConformanceForGenericType()),
+             decl, subs,
              needsGenericContext ? genericEnv : nullptr,
              expansion,
              indexTypes,
@@ -5289,7 +5277,7 @@ RValue RValueEmitter::visitPropertyWrapperValuePlaceholderExpr(
 RValue RValueEmitter::visitAppliedPropertyWrapperExpr(
     AppliedPropertyWrapperExpr *E, SGFContext C) {
   auto *param = const_cast<ParamDecl *>(E->getParamDecl());
-  auto argument = visit(E->getValue(), C);
+  auto argument = visit(E->getValue());
   SILDeclRef::Kind initKind;
   switch (E->getValueKind()) {
   case swift::AppliedPropertyWrapperExpr::ValueKind::WrappedValue:
@@ -5300,9 +5288,15 @@ RValue RValueEmitter::visitAppliedPropertyWrapperExpr(
     break;
   }
 
+  // The property wrapper generator function needs the same substitutions as the
+  // enclosing function or closure. If the parameter is declared in a function, take
+  // the substitutions from the concrete callee. Otherwise, forward the archetypes
+  // from the closure.
   SubstitutionMap subs;
   if (param->getDeclContext()->getAsDecl()) {
     subs = E->getCallee().getSubstitutions();
+  } else {
+    subs = SGF.getForwardingSubstitutionMap();
   }
 
   return SGF.emitApplyOfPropertyWrapperBackingInitializer(

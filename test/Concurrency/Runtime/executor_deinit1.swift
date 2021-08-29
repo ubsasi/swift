@@ -1,4 +1,4 @@
-// RUN: %target-run-simple-swift(-parse-as-library -Xfrontend -enable-experimental-concurrency %import-libdispatch) | %FileCheck %s
+// RUN: %target-run-simple-swift(-parse-as-library -Xfrontend -enable-experimental-concurrency -Xfrontend -disable-availability-checking %import-libdispatch) | %FileCheck %s
 
 // REQUIRES: executable_test
 // REQUIRES: concurrency
@@ -10,7 +10,12 @@
 // UNSUPPORTED: linux
 // rdar://76611676
 // UNSUPPORTED: CPU=x86_64 && OS=ios
+// rdar://78039465
+// UNSUPPORTED: CPU=x86_64 && OS=watchos
+// rdar://78193017
+// UNSUPPORTED: CPU=x86_64 && OS=tvos
 
+// REQUIRES: rdar78325660
 
 // doesn't matter that it's bool identity function or not
 func boolIdentityFn(_ x : Bool) -> Bool { return x }

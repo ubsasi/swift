@@ -29,6 +29,204 @@ CHANGELOG
 Swift 5.5
 ---------
 
+* [SE-0313][]:
+
+  Parameters of actor type can be declared as `isolated`, which means that they
+  represent the actor on which that code will be executed. `isolated` parameters
+  extend the actor-isolated semantics of the `self` parameter of actor methods
+  to arbitrary parameters. For example:
+
+  ```swift
+  actor MyActor {
+    func f() { }
+  }
+
+  func g(actor: isolated MyActor) {
+    actor.f()   // okay, this code is always executing on "actor"
+  }
+
+  func h(actor: MyActor) async {
+    g(actor: actor)        // error, call must be asynchronous
+    await g(actor: actor)  // okay, hops to "actor" before calling g
+  }
+  ```
+
+  The `self` parameter of actor methods are implicitly `isolated`. The
+  `nonisolated` keyword makes the `self` parameter no longer `isolated`.
+
+* [SR-14731][]:
+
+  The compiler now correctly rejects the application of generic arguments to the
+  special `Self` type:
+
+  ```swift
+  struct Box<T> {
+    // previously interpreted as a return type of Box<T>, ignoring the <Int> part;
+    // now we diagnose an error with a fix-it suggesting replacing `Self` with `Box`
+    static func makeBox() -> Self<Int> {...}
+  }```
+
+* [SR-14878][]:
+
+  The compiler now correctly rejects `@available` annotations on enum cases with
+  associated values with an OS version newer than the current deployment target:
+
+  ```swift
+  @available(macOS 12, *)
+  public struct Crayon {}
+
+  public enum Pen {
+    case pencil
+
+    @available(macOS 12, *)
+    case crayon(Crayon)
+  }
+  ```
+
+  While this worked with some examples, there is no way for the Swift runtime to
+  perform the requisite dynamic layout needed to support this in general, which
+  could cause crashes at runtime.
+
+  Note that conditional availability on stored properties in structs and classes
+  is not supported for similar reasons; it was already correctly detected and
+  diagnosed.
+
+* [SE-0316][]:
+
+  A type can be defined as a global actor. Global actors extend the notion
+  of actor isolation outside of a single actor type, so that global state
+  (and the functions that access it) can benefit from actor isolation,
+  even if the state and functions are scattered across many different
+  types, functions and modules. Global actors make it possible to safely
+  work with global variables in a concurrent program, as well as modeling
+  other global program constraints such as code that must only execute on
+  the "main thread" or "UI thread". A new global actor can be defined with
+  the `globalActor` attribute:
+
+  ```swift
+  @globalActor
+  struct DatabaseActor {
+    actor ActorType { }
+
+    static let shared: ActorType = ActorType()
+  }
+  ```
+
+  Global actor types can be used as custom attributes on various declarations,
+  which ensures that those declarations are only accessed on the actor described
+  by the global actor's `shared` instance. For example:
+
+  ```swift
+  @DatabaseActor func queryDB(query: Query) throws -> QueryResult
+
+  func runQuery(queryString: String) async throws -> QueryResult {
+    let query = try Query(parsing: queryString)
+    return try await queryDB(query: query) // 'await' because this implicitly hops to DatabaseActor.shared
+  }
+  ```
+
+  The concurrency library defines one global actor, `MainActor`, which
+  represents the main thread of execution. It should be used for any code that
+  must execute on the main thread, e.g., for updating UI.
+
+* [SE-0313][]:
+
+  Declarations inside an actor that would normally be actor-isolated can
+  explicitly become non-isolated using the `nonisolated` keyword. Non-isolated
+  declarations can be used to conform to synchronous protocol requirements:
+
+  ```swift
+  actor Account: Hashable {
+    let idNumber: Int
+    let balance: Double
+
+    nonisolated func hash(into hasher: inout Hasher) { // okay, non-isolated satisfies synchronous requirement
+      hasher.combine(idNumber) // okay, can reference idNumber from outside the let
+      hasher.combine(balance) // error: cannot synchronously access actor-isolated property
+    }
+  }
+  ```
+
+* Type names are no longer allowed as an argument to a subscript parameter that expects a metatype type
+
+```swift
+struct MyValue {
+}
+
+struct MyStruct {
+  subscript(a: MyValue.Type) -> Int { get { ... } }
+}
+
+func test(obj: MyStruct) {
+  let _ = obj[MyValue]
+}
+```
+
+Accepting subscripts with `MyValue` as an argument was an oversight because `MyValue` requires explicit `.self`
+to reference its metatype, so correct syntax would be to use `obj[MyValue.self]`.
+
+* [SE-0310][]:
+  
+  Read-only computed properties and subscripts can now define their `get` accessor to be `async` and/or `throws`, by writing one or both of those keywords between the `get` and `{`.  Thus, these members can now make asynchronous calls or throw errors in the process of producing a value:
+  ```swift
+  class BankAccount: FinancialAccount {
+    var manager: AccountManager?
+
+    var lastTransaction: Transaction {
+      get async throws {
+        guard manager != nil else { throw BankError.notInYourFavor }
+        return await manager!.getLastTransaction()
+      }
+    }
+
+    subscript(_ day: Date) -> [Transaction] {
+      get async {
+        return await manager?.getTransactions(onDay: day) ?? []
+      }
+    }
+  }
+
+  protocol FinancialAccount {
+    associatedtype T
+    var lastTransaction: T { get async throws }
+    subscript(_ day: Date) -> [T] { get async }
+  }
+  ```
+  Accesses to such members, like `lastTransaction` above, will require appropriate marking with `await` and/or `try`:
+  ```swift
+  extension BankAccount {
+    func meetsTransactionLimit(_ limit: Amount) async -> Bool {
+      return try! await self.lastTransaction.amount < limit
+      //                    ^~~~~~~~~~~~~~~~ this access is async & throws
+    }                
+  }
+
+    
+  func hadWithdrawlOn(_ day: Date, from acct: BankAccount) async -> Bool {
+    return await !acct[day].allSatisfy { $0.amount >= Amount.zero }
+    //            ^~~~~~~~~ this access is async
+  }
+  ```
+
+* [SE-0306][]:
+
+	Swift 5.5 includes support for actors, a new kind of type that isolates its instance data to protect it from concurrent access. Accesses to an actor's instance declarations from outside the must be asynchronous:
+
+	```swift
+  actor Counter {
+    var value = 0
+
+    func increment() {
+      value = value + 1
+    }
+  }
+
+  func useCounter(counter: Counter) async {
+    print(await counter.value) // interaction must be async
+    await counter.increment()  // interaction must be async
+  }
+	```
+
 * The determination of whether a call to a `rethrows` function can throw now considers default arguments of `Optional` type.
 
   In Swift 5.4, such default arguments were ignored entirely by `rethrows` checking. This meant that the following example was accepted:
@@ -8434,6 +8632,10 @@ Swift 1.0
 [SE-0297]: <https://github.com/apple/swift-evolution/blob/main/proposals/0297-concurrency-objc.md>
 [SE-0298]: <https://github.com/apple/swift-evolution/blob/main/proposals/0298-asyncsequence.md>
 [SE-0299]: <https://github.com/apple/swift-evolution/blob/main/proposals/0299-extend-generic-static-member-lookup.md>
+[SE-0306]: <https://github.com/apple/swift-evolution/blob/main/proposals/0306-actors.md>
+[SE-0310]: <https://github.com/apple/swift-evolution/blob/main/proposals/0310-effectful-readonly-properties.md>
+[SE-0313]: <https://github.com/apple/swift-evolution/blob/main/proposals/0313-actor-isolation-control.md>
+[SE-0316]: <https://github.com/apple/swift-evolution/blob/main/proposals/0316-global-actors.md>
 
 [SR-75]: <https://bugs.swift.org/browse/SR-75>
 [SR-106]: <https://bugs.swift.org/browse/SR-106>
@@ -8472,3 +8674,5 @@ Swift 1.0
 [SR-11429]: <https://bugs.swift.org/browse/SR-11429>
 [SR-11700]: <https://bugs.swift.org/browse/SR-11700>
 [SR-11841]: <https://bugs.swift.org/browse/SR-11841>
+[SR-14731]: <https://bugs.swift.org/browse/SR-14731>
+[SR-14878]: <https://bugs.swift.org/browse/SR-14878>

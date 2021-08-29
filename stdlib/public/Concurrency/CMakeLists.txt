@@ -10,9 +10,6 @@
 #
 #===----------------------------------------------------------------------===#
 
-set(swift_concurrency_objc_sources
-  SwiftNativeNSObject.mm)
-
 set(LLVM_OPTIONAL_SOURCES
   ${swift_concurrency_objc_sources})
 
@@ -32,11 +29,21 @@ if(SWIFT_CONCURRENCY_USES_DISPATCH)
   endif()
 endif()
 
+# Linux requires us to link an atomic library to use atomics.
+# Frustratingly, in many cases this isn't necessary because the
+# sequence is inlined, but we have some code that's just subtle
+# enough to turn into runtime calls.
+if(SWIFT_HOST_VARIANT STREQUAL "android")
+  list(APPEND SWIFT_RUNTIME_CONCURRENCY_SWIFT_LINK_FLAGS
+    -latomic)
+endif()
 
 add_swift_target_library(swift_Concurrency ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} IS_STDLIB
   ../CompatibilityOverride/CompatibilityOverride.cpp
   Actor.cpp
   Actor.swift
+  AsyncLet.cpp
+  AsyncLet.swift
   CheckedContinuation.swift
   GlobalExecutor.cpp
   Errors.swift
@@ -57,7 +64,11 @@ add_swift_target_library(swift_Concurrency ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} I
   AsyncThrowingFlatMapSequence.swift
   AsyncThrowingMapSequence.swift
   AsyncThrowingPrefixWhileSequence.swift
+  GlobalActor.swift
+  LinkCompatibilityShims.cpp
+  MainActor.swift
   PartialAsyncTask.swift
+  SourceCompatibilityShims.swift
   Task.cpp
   Task.swift
   TaskCancellation.swift
@@ -67,8 +78,14 @@ add_swift_target_library(swift_Concurrency ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} I
   TaskGroup.swift
   TaskLocal.cpp
   TaskLocal.swift
+  TaskSleep.swift
   ThreadSanitizer.cpp
   Mutex.cpp
+  AsyncStreamBuffer.swift
+  AsyncStream.swift
+  AsyncThrowingStream.swift
+  AsyncStream.cpp
+  Deque.swift
   YieldingContinuation.swift
   ${swift_concurrency_objc_sources}
 
@@ -87,6 +104,8 @@ add_swift_target_library(swift_Concurrency ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES} I
     ${SWIFT_STANDARD_LIBRARY_SWIFT_FLAGS}
     -parse-stdlib
     -Xfrontend -enable-experimental-concurrency
-  LINK_FLAGS "${SWIFT_RUNTIME_SWIFT_LINK_FLAGS}"
+    -Xfrontend -define-availability
+    -Xfrontend \"SwiftStdlib 5.5:macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0\"
+  LINK_FLAGS "${SWIFT_RUNTIME_CONCURRENCY_SWIFT_LINK_FLAGS}"
   INSTALL_IN_COMPONENT stdlib
 )

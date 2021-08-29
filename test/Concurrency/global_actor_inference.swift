@@ -1,4 +1,4 @@
-// RUN: %target-typecheck-verify-swift -enable-experimental-concurrency -enable-experimental-async-handler
+// RUN: %target-typecheck-verify-swift -enable-experimental-concurrency -enable-experimental-async-handler -disable-availability-checking
 // REQUIRES: concurrency
 
 actor SomeActor { }
@@ -165,7 +165,7 @@ class C6: P2, P3 {
 // Global actor checking for overrides
 // ----------------------------------------------------------------------
 actor GenericSuper<T> {
-  @GenericGlobalActor<T> func method() { }
+  @GenericGlobalActor<T> func method() { } // expected-note {{overridden declaration is here}}
 
   @GenericGlobalActor<T> func method2() { } // expected-note {{overridden declaration is here}}
   @GenericGlobalActor<T> func method3() { } // expected-note {{overridden declaration is here}}
@@ -173,15 +173,16 @@ actor GenericSuper<T> {
   @GenericGlobalActor<T> func method5() { }
 }
 
-actor GenericSub<T> : GenericSuper<[T]> {
+actor GenericSub<T> : GenericSuper<[T]> { // expected-error{{actor types do not support inheritance}}
   override func method() { }  // expected-note {{calls to instance method 'method()' from outside of its actor context are implicitly asynchronous}}
+  // expected-error@-1{{instance method overrides a 'final' instance method}}
 
-  @GenericGlobalActor<T> override func method2() { } // expected-error{{global actor 'GenericGlobalActor<T>'-isolated instance method 'method2()' has different actor isolation from global actor 'GenericGlobalActor<[T]>'-isolated overridden declaration}}
-  nonisolated override func method3() { } // expected-error{{nonisolated instance method 'method3()' has different actor isolation from global actor 'GenericGlobalActor<[T]>'-isolated overridden declaration}}
+  @GenericGlobalActor<T> override func method2() { } // expected-error{{instance method overrides a 'final' instance method}}
+  nonisolated override func method3() { } // expected-error{{instance method overrides a 'final' instance method}}
 
   @OtherGlobalActor func testMethod() {
-    method() // expected-error{{call to global actor 'GenericGlobalActor<[T]>'-isolated instance method 'method()' in a synchronous global actor 'OtherGlobalActor'-isolated context}}
-    _ = method
+    method() // expected-error{{actor-isolated instance method 'method()' can not be referenced from global actor 'OtherGlobalActor'}}
+    _ = method // expected-error{{actor-isolated instance method 'method()' can not be partially applied}}
   }
 }
 
@@ -194,9 +195,10 @@ struct Container<T> {
 }
 
 struct OtherContainer<U> {
-  // Okay to change the global actor in a subclass.
+  // NOT Okay to change the global actor in a subclass.
   @GenericGlobalActor<[U]> class Subclass1 : Container<[U]>.Superclass { }
   @GenericGlobalActor<U> class Subclass2 : Container<[U]>.Superclass { }
+  // expected-error@-1{{global actor 'GenericGlobalActor<U>'-isolated class 'Subclass2' has different actor isolation from global actor 'GenericGlobalActor<T>'-isolated superclass 'Superclass'}}
 
   // Ensure that substitutions work properly when inheriting.
   class Subclass3<V> : Container<(U, V)>.Superclass2 {
@@ -217,7 +219,7 @@ class SuperclassWithGlobalActors {
   func j() { }
 }
 
-@GenericGlobalActor<String>
+@GenericGlobalActor<String> // it's okay to add a global actor to nonisolated
 class SubclassWithGlobalActors : SuperclassWithGlobalActors {
   override func f() { } // okay: inferred to @GenericGlobalActor<Int>
 
@@ -238,7 +240,7 @@ class SubclassWithGlobalActors : SuperclassWithGlobalActors {
     onGenericGlobalActorString() // okay
 
     // expected-error@+1{{expression is 'async' but is not marked with 'await'}}{{5-5=await }}
-    onGenericGlobalActorInt() // expected-note{{call is 'async'}}
+    onGenericGlobalActorInt() // expected-note{{calls to instance method 'onGenericGlobalActorInt()' from outside of its actor context are implicitly asynchronous}}
   }
 }
 
@@ -253,7 +255,7 @@ class SubclassWithGlobalActors : SuperclassWithGlobalActors {
 
 func bar() async {
   // expected-error@+1{{expression is 'async' but is not marked with 'await'}}{{3-3=await }}
-  foo() // expected-note{{call is 'async'}}
+  foo() // expected-note{{calls to global function 'foo()' from outside of its actor context are implicitly asynchronous}}
 }
 
 // expected-note@+1 {{add '@SomeGlobalActor' to make global function 'barSync()' part of global actor 'SomeGlobalActor'}} {{1-1=@SomeGlobalActor }}
@@ -374,6 +376,13 @@ actor WrapperActorBad2<Wrapped> {
   }
 }
 
+@propertyWrapper
+struct WrapperWithMainActorDefaultInit {
+  var wrappedValue: Int { fatalError() }
+
+  @MainActor init() {} // expected-note {{calls to initializer 'init()' from outside of its actor context are implicitly asynchronous}}
+}
+
 actor ActorWithWrapper {
   @WrapperOnActor var synced: Int = 0
   // expected-note@-1 3{{property declared here}}
@@ -381,6 +390,8 @@ actor ActorWithWrapper {
     _ = synced // expected-error{{'synced' isolated to global actor}}
     _ = $synced // expected-error{{'$synced' isolated to global actor}}
     _ = _synced // expected-error{{'_synced' isolated to global actor}}
+
+    @WrapperWithMainActorDefaultInit var value: Int // expected-error {{call to main actor-isolated initializer 'init()' in a synchronous actor-isolated context}}
   }
 }
 
@@ -509,7 +520,7 @@ func acceptClosure<T>(_: () -> T) { }
 // ----------------------------------------------------------------------
 func takesUnsafeMainActor(@_unsafeMainActor fn: () -> Void) { }
 
-@MainActor func onlyOnMainActor() { } // expected-note{{calls to global function 'onlyOnMainActor()' from outside of its actor context are implicitly asynchronous}}
+@MainActor func onlyOnMainActor() { }
 
 func useUnsafeMainActor() {
   takesUnsafeMainActor {
@@ -525,7 +536,8 @@ func acceptAsyncSendableClosureInheriting<T>(@_inheritActorContext _: @Sendable 
 
 @MainActor func testCallFromMainActor() {
   acceptAsyncSendableClosure {
-    onlyOnMainActor() // expected-error{{call to main actor-isolated global function 'onlyOnMainActor()' in a synchronous nonisolated context}}
+    onlyOnMainActor() // expected-error{{expression is 'async' but is not marked with 'await'}}
+    // expected-note@-1 {{calls to global function 'onlyOnMainActor()' from outside of its actor context are implicitly asynchronous}}
   }
 
   acceptAsyncSendableClosure {
@@ -539,4 +551,18 @@ func acceptAsyncSendableClosureInheriting<T>(@_inheritActorContext _: @Sendable 
   acceptAsyncSendableClosureInheriting {
     await onlyOnMainActor() // expected-warning{{no 'async' operations occur within 'await' expression}}
   }
+}
+
+
+// defer bodies inherit global actor-ness
+@MainActor
+var statefulThingy: Bool = false
+
+@MainActor
+func useFooInADefer() -> String {
+  defer {
+    statefulThingy = true
+  }
+
+  return "hello"
 }

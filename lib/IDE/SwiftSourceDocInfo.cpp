@@ -724,8 +724,11 @@ void ResolvedRangeInfo::print(llvm::raw_ostream &OS) const {
     OS << "<Entry>Multi</Entry>\n";
   }
 
-  if (ThrowingUnhandledError) {
+  if (UnhandledEffects.contains(EffectKind::Throws)) {
     OS << "<Error>Throwing</Error>\n";
+  }
+  if (UnhandledEffects.contains(EffectKind::Async)) {
+    OS << "<Effect>Async</Effect>\n";
   }
 
   if (Orphan != OrphanKind::None) {
@@ -795,83 +798,6 @@ ReturnInfo(ASTContext &Ctx, ArrayRef<ReturnInfo> Branches):
   }
   if (AllExitStates.size() == 1) {
     Exit = *AllExitStates.begin();
-  }
-}
-
-void swift::ide::getLocationInfoForClangNode(ClangNode ClangNode,
-                                             ClangImporter *Importer,
-                  llvm::Optional<std::pair<unsigned, unsigned>> &DeclarationLoc,
-                                             StringRef &Filename) {
-  clang::ASTContext &ClangCtx = Importer->getClangASTContext();
-  clang::SourceManager &ClangSM = ClangCtx.getSourceManager();
-
-  clang::SourceRange SR = ClangNode.getLocation();
-  if (auto MD = dyn_cast_or_null<clang::ObjCMethodDecl>(ClangNode.getAsDecl())) {
-    SR = clang::SourceRange(MD->getSelectorStartLoc(),
-                            MD->getDeclaratorEndLoc());
-  }
-
-  clang::CharSourceRange CharRange =
-      clang::Lexer::makeFileCharRange(clang::CharSourceRange::getTokenRange(SR),
-                                      ClangSM, ClangCtx.getLangOpts());
-  if (CharRange.isInvalid())
-    return;
-
-  std::pair<clang::FileID, unsigned>
-      Decomp = ClangSM.getDecomposedLoc(CharRange.getBegin());
-  if (!Decomp.first.isInvalid()) {
-    if (auto FE = ClangSM.getFileEntryForID(Decomp.first)) {
-      Filename = FE->getName();
-
-      std::pair<clang::FileID, unsigned>
-          EndDecomp = ClangSM.getDecomposedLoc(CharRange.getEnd());
-
-      DeclarationLoc = { Decomp.second, EndDecomp.second-Decomp.second };
-    }
-  }
-}
-
-static unsigned getCharLength(SourceManager &SM, SourceRange TokenRange) {
-  SourceLoc CharEndLoc = Lexer::getLocForEndOfToken(SM, TokenRange.End);
-  return SM.getByteDistance(TokenRange.Start, CharEndLoc);
-}
-
-void swift::ide::getLocationInfo(const ValueDecl *VD,
-                  llvm::Optional<std::pair<unsigned, unsigned>> &DeclarationLoc,
-                                 StringRef &Filename) {
-  ASTContext &Ctx = VD->getASTContext();
-  SourceManager &SM = Ctx.SourceMgr;
-
-  auto ClangNode = VD->getClangNode();
-
-  if (VD->getLoc().isValid()) {
-    auto getSignatureRange = [&](const ValueDecl *VD) -> Optional<unsigned> {
-      if (auto FD = dyn_cast<AbstractFunctionDecl>(VD)) {
-        SourceRange R = FD->getSignatureSourceRange();
-        if (R.isValid())
-          return getCharLength(SM, R);
-      }
-      return None;
-    };
-    unsigned NameLen;
-    if (auto SigLen = getSignatureRange(VD)) {
-      NameLen = SigLen.getValue();
-    } else if (VD->hasName()) {
-      NameLen = VD->getBaseName().userFacingName().size();
-    } else {
-      NameLen = getCharLength(SM, VD->getLoc());
-    }
-
-    unsigned DeclBufID = SM.findBufferContainingLoc(VD->getLoc());
-    DeclarationLoc = { SM.getLocOffsetInBuffer(VD->getLoc(), DeclBufID),
-                       NameLen };
-    Filename = SM.getIdentifierForBuffer(DeclBufID);
-
-  } else if (ClangNode) {
-    ClangImporter *Importer =
-        static_cast<ClangImporter*>(Ctx.getClangModuleLoader());
-    return getLocationInfoForClangNode(ClangNode, Importer,
-                                       DeclarationLoc, Filename);
   }
 }
 

@@ -29,6 +29,7 @@ class ActorIsolation;
 class AnyFunctionType;
 class ASTContext;
 class ClassDecl;
+class ClosureActorIsolation;
 class ClosureExpr;
 class ConcreteDeclRef;
 class CustomAttr;
@@ -38,7 +39,6 @@ class EnumElementDecl;
 class Expr;
 class FuncDecl;
 class Initializer;
-class LangOptions;
 class PatternBindingDecl;
 class ProtocolConformance;
 class TopLevelCodeDecl;
@@ -57,6 +57,16 @@ void checkEnumElementActorIsolation(EnumElementDecl *element, Expr *expr);
 void checkPropertyWrapperActorIsolation(
     PatternBindingDecl *binding, Expr *expr);
 
+/// Determine the isolation of a particular closure.
+///
+/// This forwards to \c ActorIsolationChecker::determineClosureActorIsolation
+/// and thus assumes that enclosing closures have already had their isolation
+/// checked.
+///
+/// This does not set the closure's actor isolation
+ClosureActorIsolation
+determineClosureActorIsolation(AbstractClosureExpr *closure);
+
 /// Describes the kind of operation that introduced the concurrent refernece.
 enum class ConcurrentReferenceKind {
   /// A synchronous operation that was "promoted" to an asynchronous call
@@ -68,6 +78,8 @@ enum class ConcurrentReferenceKind {
   LocalCapture,
   /// Concurrent function
   ConcurrentFunction,
+  /// Nonisolated declaration.
+  Nonisolated,
 };
 
 /// The isolation restriction in effect for a given declaration that is
@@ -174,7 +186,8 @@ public:
   /// \param fromExpression Indicates that the reference is coming from an
   /// expression.
   static ActorIsolationRestriction forDeclaration(
-      ConcreteDeclRef declRef, bool fromExpression = true);
+      ConcreteDeclRef declRef, const DeclContext *fromDC,
+      bool fromExpression = true);
 
   operator Kind() const { return kind; };
 };
@@ -214,10 +227,6 @@ bool diagnoseNonConcurrentTypesInReference(
     ConcurrentReferenceKind refKind,
     DiagnosticBehavior behavior = DiagnosticBehavior::Unspecified);
 
-/// Whether we should diagnose cases where Sendable conformances are
-/// missing.
-bool shouldDiagnoseNonSendableViolations(const LangOptions &langOpts);
-
 /// How the concurrent value check should be performed.
 enum class SendableCheck {
   /// Sendable conformance was explicitly stated and should be
@@ -228,7 +237,7 @@ enum class SendableCheck {
   /// protocols that added Sendable after-the-fact.
   ImpliedByStandardProtocol,
 
-  /// Implicit conformance to Sendable for structs and enums.
+  /// Implicit conformance to Sendable.
   Implicit,
 };
 

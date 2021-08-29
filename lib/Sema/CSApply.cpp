@@ -25,6 +25,7 @@
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/ClangModuleLoader.h"
+#include "swift/AST/Effects.h"
 #include "swift/AST/ExistentialLayout.h"
 #include "swift/AST/GenericEnvironment.h"
 #include "swift/AST/GenericSignature.h"
@@ -1065,7 +1066,7 @@ namespace {
         outerParamTypes.push_back(AnyFunctionType::Param(outerParamType,
                                                          Identifier(),
                                                          paramInfo[i].getParameterFlags()));
-        outerParam->setInterfaceType(outerParamType);
+        outerParam->setInterfaceType(outerParamType->mapTypeOutOfContext());
 
         if (fnDecl.getAbstractFunctionDecl())
           argLabels.push_back(innerParam->getArgumentName());
@@ -3416,7 +3417,21 @@ namespace {
     }
 
     Expr *visitAnyTryExpr(AnyTryExpr *expr) {
-      cs.setType(expr, cs.getType(expr->getSubExpr()));
+      auto *subExpr = expr->getSubExpr();
+      auto type = simplifyType(cs.getType(subExpr));
+
+      // Let's load the value associated with this try.
+      if (type->hasLValueType()) {
+        subExpr = coerceToType(subExpr, type->getRValueType(),
+                               cs.getConstraintLocator(subExpr));
+
+        if (!subExpr)
+          return nullptr;
+      }
+
+      cs.setType(expr, cs.getType(subExpr));
+      expr->setSubExpr(subExpr);
+
       return expr;
     }
 
@@ -7052,6 +7067,38 @@ Expr *ExprRewriter::coerceToType(Expr *expr, Type toType,
       }
     }
 
+    /// Whether the given effect should be propagated to a closure expression.
+    auto shouldApplyEffect = [&](EffectKind kind) -> bool {
+      auto last = locator.last();
+      if (!(last && last->is<LocatorPathElt::ApplyArgToParam>()))
+        return true;
+
+      // The effect should not be applied if the closure is an argument
+      // to a function where that effect is polymorphic.
+      if (auto *call = getAsExpr<ApplyExpr>(locator.getAnchor())) {
+        if (auto *declRef = dyn_cast<DeclRefExpr>(call->getFn())) {
+          if (auto *fn = dyn_cast<AbstractFunctionDecl>(declRef->getDecl()))
+            return !fn->hasPolymorphicEffect(kind);
+        }
+      }
+
+      return true;
+    };
+
+    // If we have a ClosureExpr, we can safely propagate 'async' to the closure.
+    fromEI = fromFunc->getExtInfo();
+    if (toEI.isAsync() && !fromEI.isAsync() && shouldApplyEffect(EffectKind::Async)) {
+      auto newFromFuncType = fromFunc->withExtInfo(fromEI.withAsync());
+      if (applyTypeToClosureExpr(cs, expr, newFromFuncType)) {
+        fromFunc = newFromFuncType->castTo<FunctionType>();
+
+        // Propagating 'async' might have satisfied the entire conversion.
+        // If so, we're done, otherwise keep converting.
+        if (fromFunc->isEqual(toType))
+          return expr;
+      }
+    }
+
     // If we have a ClosureExpr, then we can safely propagate the 'no escape'
     // bit to the closure without invalidating prior analysis.
     fromEI = fromFunc->getExtInfo();
@@ -8124,11 +8171,12 @@ namespace {
 
         if (auto *projectionVar = param->getPropertyWrapperProjectionVar()) {
           projectionVar->setInterfaceType(
-              solution.simplifyType(solution.getType(projectionVar)));
+              solution.simplifyType(solution.getType(projectionVar))->mapTypeOutOfContext());
         }
 
         auto *wrappedValueVar = param->getPropertyWrapperWrappedValueVar();
-        auto wrappedValueType = solution.simplifyType(solution.getType(wrappedValueVar));
+        auto wrappedValueType =
+            solution.simplifyType(solution.getType(wrappedValueVar))->mapTypeOutOfContext();
         wrappedValueVar->setInterfaceType(wrappedValueType->getWithoutSpecifierType());
 
         if (param->hasImplicitPropertyWrapper()) {

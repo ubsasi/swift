@@ -512,12 +512,12 @@ ParserStatus Parser::parseBraceItems(SmallVectorImpl<ASTNode> &Entries,
 }
 
 /// Recover from a 'case' or 'default' outside of a 'switch' by consuming up to
-/// the next ':'.
+/// the next ':' or '}'.
 static ParserResult<Stmt> recoverFromInvalidCase(Parser &P) {
   assert(P.Tok.is(tok::kw_case) || P.Tok.is(tok::kw_default)
          && "not case or default?!");
   P.diagnose(P.Tok, diag::case_outside_of_switch, P.Tok.getText());
-  P.skipUntil(tok::colon);
+  P.skipUntil(tok::colon, tok::r_brace);
   // FIXME: Return an ErrorStmt?
   return nullptr;
 }
@@ -2134,6 +2134,17 @@ ParserResult<Stmt> Parser::parseStmtForEach(LabeledStmtInfo LabelInfo) {
     if (Tok.isContextualKeyword("await")) {
       AwaitLoc = consumeToken();
     }
+  }
+
+  if (Tok.is(tok::code_complete)) {
+    if (CodeCompletion) {
+      CodeCompletion->completeForEachPatternBeginning(TryLoc.isValid(),
+                                                      AwaitLoc.isValid());
+    }
+    consumeToken(tok::code_complete);
+    // Since 'completeForeachPatternBeginning' is a keyword only completion,
+    // we don't need to parse the rest of 'for' statement.
+    return makeParserCodeCompletionStatus();
   }
 
   // Parse the pattern.  This is either 'case <refutable pattern>' or just a

@@ -20,6 +20,7 @@
 #include "swift/AST/Module.h"
 #include "swift/AST/ModuleNameLookup.h"
 #include "swift/AST/ProtocolConformance.h"
+#include "swift/AST/TypeRepr.h"
 #include "swift/Basic/STLExtras.h"
 #include "swift/Frontend/Frontend.h"
 #include "swift/Frontend/ModuleInterfaceSupport.h"
@@ -302,7 +303,7 @@ class InheritedProtocolCollector {
 
   using AvailableAttrList = TinyPtrVector<const AvailableAttr *>;
   using ProtocolAndAvailability =
-    std::pair<ProtocolDecl *, AvailableAttrList>;
+    std::tuple<ProtocolDecl *, AvailableAttrList, bool /*isUnchecked*/>;
 
   /// Protocols that will be included by the ASTPrinter without any extra work.
   SmallVector<ProtocolDecl *, 8> IncludedProtocols;
@@ -339,29 +340,23 @@ class InheritedProtocolCollector {
   }
 
   static bool canPrintProtocolTypeNormally(Type type, const Decl *D) {
-    if (!isPublicOrUsableFromInline(type))
-      return false;
-
-    // Extensions and protocols can print marker protocols.
-    if (isa<ExtensionDecl>(D) || isa<ProtocolDecl>(D))
-      return true;
-
-    ExistentialLayout layout = type->getExistentialLayout();
-    for (ProtocolType *protoTy : layout.getProtocols()) {
-      if (protoTy->getDecl()->isMarkerProtocol())
-        return false;
-    }
-
-    return true;
+    return isPublicOrUsableFromInline(type);
   }
-  
+
+  static bool isUncheckedConformance(ProtocolConformance *conformance) {
+    if (auto normal = conformance->getRootNormalConformance())
+      return normal->isUnchecked();
+    return false;
+  }
+
   /// For each type in \p directlyInherited, classify the protocols it refers to
   /// as included for printing or not, and record them in the appropriate
   /// vectors.
-  void recordProtocols(ArrayRef<TypeLoc> directlyInherited, const Decl *D) {
+  void recordProtocols(ArrayRef<InheritedEntry> directlyInherited,
+                       const Decl *D, bool skipSynthesized = false) {
     Optional<AvailableAttrList> availableAttrs;
 
-    for (TypeLoc inherited : directlyInherited) {
+    for (InheritedEntry inherited : directlyInherited) {
       Type inheritedTy = inherited.getType();
       if (!inheritedTy || !inheritedTy->isExistentialType())
         continue;
@@ -372,12 +367,17 @@ class InheritedProtocolCollector {
         if (canPrintNormally)
           IncludedProtocols.push_back(protoTy->getDecl());
         else
-          ExtraProtocols.push_back({protoTy->getDecl(),
-                                    getAvailabilityAttrs(D, availableAttrs)});
+          ExtraProtocols.push_back(
+            ProtocolAndAvailability(protoTy->getDecl(),
+                                    getAvailabilityAttrs(D, availableAttrs),
+                                    inherited.isUnchecked));
       }
       // FIXME: This ignores layout constraints, but currently we don't support
       // any of those besides 'AnyObject'.
     }
+
+    if (skipSynthesized)
+      return;
 
     // Check for synthesized protocols, like Hashable on enums.
     if (auto *nominal = dyn_cast<NominalTypeDecl>(D)) {
@@ -387,8 +387,10 @@ class InheritedProtocolCollector {
       for (auto *conf : localConformances) {
         if (conf->getSourceKind() != ConformanceEntryKind::Synthesized)
           continue;
-        ExtraProtocols.push_back({conf->getProtocol(),
-                                  getAvailabilityAttrs(D, availableAttrs)});
+        ExtraProtocols.push_back(
+          ProtocolAndAvailability(conf->getProtocol(),
+                                  getAvailabilityAttrs(D, availableAttrs),
+                                  isUncheckedConformance(conf)));
       }
     }
   }
@@ -420,7 +422,7 @@ public:
   ///
   /// \sa recordProtocols
   static void collectProtocols(PerTypeMap &map, const Decl *D) {
-    ArrayRef<TypeLoc> directlyInherited;
+    ArrayRef<InheritedEntry> directlyInherited;
     const NominalTypeDecl *nominal;
     const IterableDeclContext *memberContext;
 
@@ -456,7 +458,8 @@ public:
     if (auto *CD = dyn_cast<ClassDecl>(D)) {
       for (auto *SD = CD->getSuperclassDecl(); SD;
            SD = SD->getSuperclassDecl()) {
-        map[nominal].recordProtocols(SD->getInherited(), SD);
+        map[nominal].recordProtocols(
+            SD->getInherited(), SD, /*skipSynthesized=*/true);
         for (auto *Ext: SD->getExtensions()) {
           if (shouldInclude(Ext)) {
             map[nominal].recordProtocols(Ext->getInherited(), Ext);
@@ -545,7 +548,10 @@ public:
     // of a protocol rather than the maximally available case.
     SmallVector<ProtocolAndAvailability, 16> protocolsToPrint;
     for (const auto &protoAndAvailability : ExtraProtocols) {
-      protoAndAvailability.first->walkInheritedProtocols(
+      auto proto = std::get<0>(protoAndAvailability);
+      auto availability = std::get<1>(protoAndAvailability);
+      auto isUnchecked = std::get<2>(protoAndAvailability);
+      proto->walkInheritedProtocols(
           [&](ProtocolDecl *inherited) -> TypeWalker::Action {
         if (!handledProtocols.insert(inherited).second)
           return TypeWalker::Action::SkipChildren;
@@ -564,7 +570,8 @@ public:
 
         if (isPublicOrUsableFromInline(inherited) &&
             conformanceDeclaredInModule(M, nominal, inherited)) {
-          protocolsToPrint.push_back({inherited, protoAndAvailability.second});
+          protocolsToPrint.push_back(
+            ProtocolAndAvailability(inherited, availability, isUnchecked));
           return TypeWalker::Action::SkipChildren;
         }
 
@@ -576,25 +583,35 @@ public:
 
     for (const auto &protoAndAvailability : protocolsToPrint) {
       StreamPrinter printer(out);
-      ProtocolDecl *proto = protoAndAvailability.first;
+      auto proto = std::get<0>(protoAndAvailability);
+      auto availability = std::get<1>(protoAndAvailability);
+      auto isUnchecked = std::get<2>(protoAndAvailability);
 
       bool haveFeatureChecks = printOptions.PrintCompatibilityFeatureChecks &&
         printCompatibilityFeatureChecksPre(printer, proto);
 
       // FIXME: Shouldn't this be an implicit conversion?
       TinyPtrVector<const DeclAttribute *> attrs;
-      attrs.insert(attrs.end(), protoAndAvailability.second.begin(),
-                   protoAndAvailability.second.end());
+      attrs.insert(attrs.end(), availability.begin(), availability.end());
       auto spiAttributes = proto->getAttrs().getAttributes<SPIAccessControlAttr>();
       attrs.insert(attrs.end(), spiAttributes.begin(), spiAttributes.end());
       DeclAttributes::print(printer, printOptions, attrs);
 
       printer << "extension ";
-      PrintOptions typePrintOptions = printOptions;
-      typePrintOptions.FullyQualifiedTypes = false;
-      typePrintOptions.FullyQualifiedTypesIfAmbiguous = false;
-      nominal->getDeclaredType().print(printer, typePrintOptions);
+      {
+        PrintOptions typePrintOptions = printOptions;
+        bool oldFullyQualifiedTypesIfAmbiguous =
+          typePrintOptions.FullyQualifiedTypesIfAmbiguous;
+        typePrintOptions.FullyQualifiedTypesIfAmbiguous =
+          typePrintOptions.FullyQualifiedExtendedTypesIfAmbiguous;
+        nominal->getDeclaredType().print(printer, typePrintOptions);
+        typePrintOptions.FullyQualifiedTypesIfAmbiguous =
+          oldFullyQualifiedTypesIfAmbiguous;
+      }
       printer << " : ";
+
+      if (isUnchecked)
+        printer << "@unchecked ";
 
       proto->getDeclaredInterfaceType()->print(printer, printOptions);
 

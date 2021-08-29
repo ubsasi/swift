@@ -2856,10 +2856,11 @@ bool Parser::canParseCustomAttribute() {
 
 ParserResult<CustomAttr> Parser::parseCustomAttribute(
     SourceLoc atLoc, PatternBindingInitializer *&initContext) {
+  assert(Tok.is(tok::identifier));
   SyntaxContext->setCreateSyntax(SyntaxKind::CustomAttribute);
 
   // Parse a custom attribute.
-  auto type = parseType(diag::expected_type);
+  auto type = parseType(diag::expected_type, ParseTypeReason::CustomAttribute);
   if (type.hasCodeCompletion() || type.isNull()) {
     if (Tok.is(tok::l_paren) && isCustomAttributeArgument())
       skipSingle();
@@ -3093,7 +3094,7 @@ bool Parser::canParseTypeAttribute() {
   TypeAttributes attrs; // ignored
   PatternBindingInitializer *initContext = nullptr;
   return !parseTypeAttribute(attrs, /*atLoc=*/SourceLoc(), initContext,
-                             /*justChecking*/ true);
+                             /*justChecking*/ true).isError();
 }
 
 /// Parses the '@differentiable' type attribute argument (no argument list,
@@ -3252,16 +3253,28 @@ bool Parser::parseConventionAttributeInternal(
 /// \param justChecking - if true, we're just checking whether we
 ///   canParseTypeAttribute; don't emit any diagnostics, and there's
 ///   no need to actually record the attribute
-bool Parser::parseTypeAttribute(TypeAttributes &Attributes, SourceLoc AtLoc,
-                                PatternBindingInitializer *&initContext,
-                                bool justChecking) {
+ParserStatus Parser::parseTypeAttribute(TypeAttributes &Attributes,
+                                        SourceLoc AtLoc,
+                                        PatternBindingInitializer *&initContext,
+                                        bool justChecking) {
   // If this not an identifier, the attribute is malformed.
   if (Tok.isNot(tok::identifier) &&
       // These are keywords that we accept as attribute names.
       Tok.isNot(tok::kw_in) && Tok.isNot(tok::kw_inout)) {
+
+    if (Tok.is(tok::code_complete)) {
+      if (!justChecking) {
+        if (CodeCompletion) {
+          CodeCompletion->completeTypeAttrBeginning();
+        }
+      }
+      consumeToken(tok::code_complete);
+      return makeParserCodeCompletionStatus();
+    }
+
     if (!justChecking)
       diagnose(Tok, diag::expected_attribute_name);
-    return true;
+    return makeParserError();
   }
   
   // Determine which attribute it is, and diagnose it if unknown.
@@ -3289,7 +3302,7 @@ bool Parser::parseTypeAttribute(TypeAttributes &Attributes, SourceLoc AtLoc,
     if (declAttrID != DAK_Count) {
       // This is a valid decl attribute so they should have put it on the decl
       // instead of the type.
-      if (justChecking) return true;
+      if (justChecking) return makeParserError();
 
       // If this is the first attribute, and if we are on a simple decl, emit a
       // fixit to move the attribute.  Otherwise, we don't have the location of
@@ -3324,21 +3337,22 @@ bool Parser::parseTypeAttribute(TypeAttributes &Attributes, SourceLoc AtLoc,
           backtrack.cancelBacktrack();
       }
 
-      return true;
+      return makeParserError();
     }
 
     // If we're just checking, try to parse now.
     if (justChecking)
-      return !canParseCustomAttribute();
+      return canParseCustomAttribute() ? makeParserSuccess()
+                                       : makeParserError();
 
     // Parse as a custom attribute.
     auto customAttrResult = parseCustomAttribute(AtLoc, initContext);
     if (customAttrResult.isParseErrorOrHasCompletion())
-      return true;
+      return customAttrResult;
 
     if (auto attr = customAttrResult.get())
       Attributes.addCustomAttr(attr);
-    return false;
+    return makeParserSuccess();
   }
   
   // Ok, it is a valid attribute, eat it, and then process it.
@@ -3352,19 +3366,19 @@ bool Parser::parseTypeAttribute(TypeAttributes &Attributes, SourceLoc AtLoc,
     if (failedToParse) {
       if (Tok.is(tok::r_paren))
         consumeToken();
-      return true;
+      return makeParserError();
     }
   }
 
   // In just-checking mode, we only need to consume the tokens, and we don't
   // want to do any other analysis.
   if (justChecking)
-    return false;
+    return makeParserSuccess();
 
   // Diagnose duplicated attributes.
   if (Attributes.has(attr)) {
     diagnose(AtLoc, diag::duplicate_attribute, /*isModifier=*/false);
-    return false;
+    return makeParserSuccess();
   }
 
   // Handle any attribute-specific processing logic.
@@ -3386,7 +3400,7 @@ bool Parser::parseTypeAttribute(TypeAttributes &Attributes, SourceLoc AtLoc,
   case TAK_objc_metatype:
     if (!isInSILMode()) {
       diagnose(AtLoc, diag::only_allowed_in_sil, Text);
-      return false;
+      return makeParserSuccess();
     }
     break;
     
@@ -3395,12 +3409,12 @@ bool Parser::parseTypeAttribute(TypeAttributes &Attributes, SourceLoc AtLoc,
   case TAK_sil_unowned:
     if (!isInSILMode()) {
       diagnose(AtLoc, diag::only_allowed_in_sil, Text);
-      return false;
+      return makeParserSuccess();
     }
       
     if (Attributes.hasOwnership()) {
       diagnose(AtLoc, diag::duplicate_attribute, /*isModifier*/false);
-      return false;
+      return makeParserSuccess();
     }
     break;
 
@@ -3408,14 +3422,14 @@ bool Parser::parseTypeAttribute(TypeAttributes &Attributes, SourceLoc AtLoc,
   case TAK_inout:
     if (!isInSILMode()) {
       diagnose(AtLoc, diag::inout_not_attribute);
-      return false;
+      return makeParserSuccess();
     }
     break;
       
   case TAK_opened: {
     if (!isInSILMode()) {
       diagnose(AtLoc, diag::only_allowed_in_sil, "opened");
-      return false;
+      return makeParserSuccess();
     }
 
     // Parse the opened existential ID string in parens
@@ -3449,7 +3463,7 @@ bool Parser::parseTypeAttribute(TypeAttributes &Attributes, SourceLoc AtLoc,
     Attributes.differentiabilityKind = DifferentiabilityKind::Normal;
     if (parseDifferentiableTypeAttributeArgument(
             *this, Attributes, /*emitDiagnostics=*/!justChecking))
-      return true;
+      return makeParserError();
     // Only 'reverse' is supported today.
     // TODO: Change this to an error once clients have migrated to 'reverse'.
     if (Attributes.differentiabilityKind == DifferentiabilityKind::Normal) {
@@ -3471,31 +3485,31 @@ bool Parser::parseTypeAttribute(TypeAttributes &Attributes, SourceLoc AtLoc,
     auto beginLoc = Tok.getLoc();
     if (!consumeIfNotAtStartOfLine(tok::l_paren)) {
       diagnose(Tok, diag::attr_expected_lparen, "_opaqueReturnTypeOf", false);
-      return true;
+      return makeParserError();
     }
     
     if (!Tok.is(tok::string_literal)) {
       diagnose(Tok, diag::opened_attribute_id_value);
-      return true;
+      return makeParserError();
     }
     auto mangling = Tok.getText().slice(1, Tok.getText().size() - 1);
     consumeToken(tok::string_literal);
     
     if (!Tok.is(tok::comma)) {
       diagnose(Tok, diag::attr_expected_comma, "_opaqueReturnTypeOf", false);
-      return true;
+      return makeParserError();
     }
     consumeToken(tok::comma);
     
     if (!Tok.is(tok::integer_literal)) {
       diagnose(Tok, diag::attr_expected_string_literal, "_opaqueReturnTypeOf");
-      return true;
+      return makeParserError();
     }
     
     unsigned index;
     if (Tok.getText().getAsInteger(10, index)) {
       diagnose(Tok, diag::attr_expected_string_literal, "_opaqueReturnTypeOf");
-      return true;
+      return makeParserError();
     }
     consumeToken(tok::integer_literal);
     
@@ -3510,7 +3524,7 @@ bool Parser::parseTypeAttribute(TypeAttributes &Attributes, SourceLoc AtLoc,
   }
 
   Attributes.setAttr(attr, AtLoc);
-  return false;
+  return makeParserSuccess();
 }
 
 /// \verbatim
@@ -3568,7 +3582,8 @@ ParserStatus Parser::parseDeclAttributeList(DeclAttributes &Attributes) {
 //      'actor'
 bool Parser::parseDeclModifierList(DeclAttributes &Attributes,
                                    SourceLoc &StaticLoc,
-                                   StaticSpellingKind &StaticSpelling) {
+                                   StaticSpellingKind &StaticSpelling,
+                                   bool isFromClangAttribute) {
   SyntaxParsingContext ListContext(SyntaxContext, SyntaxKind::ModifierList);
   bool isError = false;
   bool hasModifier = false;
@@ -3604,7 +3619,7 @@ bool Parser::parseDeclModifierList(DeclAttributes &Attributes,
       if (Kind == DAK_Count)
         break;
 
-      if (Kind == DAK_Actor && shouldParseExperimentalConcurrency()) {
+      if (Kind == DAK_Actor) {
         // If the next token is a startOfSwiftDecl, we are part of the modifier
         // list and should consume the actor token (e.g, actor public class Foo)
         // otherwise, it's the decl keyword (e.g. actor Foo) and shouldn't be.
@@ -3612,47 +3627,32 @@ bool Parser::parseDeclModifierList(DeclAttributes &Attributes,
         // that scope, so we have to store enough state to emit the diagnostics
         // outside of the scope.
         bool isActorModifier = false;
-        bool isClassNext = false;
         SourceLoc actorLoc = Tok.getLoc();
-        SourceLoc classLoc;
+
         {
           BacktrackingScope Scope(*this);
 
-          // Is this the class token before the identifier?
-          auto atClassDecl = [this]() -> bool {
-            return peekToken().is(tok::identifier) ||
-              Tok.is(tok::kw_class) ||
-              Tok.is(tok::kw_enum) ||
-              Tok.is(tok::kw_struct);
-          };
           consumeToken(); // consume actor
           isActorModifier = isStartOfSwiftDecl();
-          if (isActorModifier) {
-            isClassNext = atClassDecl();
-            while (!atClassDecl())
-              consumeToken();
-            classLoc = Tok.getLoc();
-          }
         }
 
         if (!isActorModifier)
           break;
 
-        auto diag = diagnose(actorLoc,
-            diag::renamed_platform_condition_argument, "actor class", "actor");
-        if (isClassNext)
-          diag.fixItRemove(classLoc);
-        else
-          diag.fixItReplace(classLoc, "actor")
-              .fixItRemove(actorLoc);
-        Attributes.add(new (Context) ActorAttr({}, Tok.getLoc()));
-        consumeToken();
+        // Actor is a standalone keyword now, so it can't be used
+        // as a modifier. Let's diagnose and recover.
+        isError = true;
+
+        consumeToken(); // consume 'actor'
+
+        diagnose(actorLoc, diag::keyword_cant_be_identifier, Tok.getText());
         continue;
       }
 
       SyntaxParsingContext ModContext(SyntaxContext,
                                       SyntaxKind::DeclModifier);
-      isError |= parseNewDeclAttribute(Attributes, /*AtLoc=*/{}, Kind);
+      isError |= parseNewDeclAttribute(
+          Attributes, /*AtLoc=*/{}, Kind, isFromClangAttribute);
       hasModifier = true;
       continue;
     }
@@ -3744,15 +3744,27 @@ bool Parser::parseDeclModifierList(DeclAttributes &Attributes,
 ///     '@' attribute
 ///     '@' attribute attribute-list-clause
 /// \endverbatim
-bool Parser::parseTypeAttributeListPresent(ParamDecl::Specifier &Specifier,
-                                           SourceLoc &SpecifierLoc,
-                                           TypeAttributes &Attributes) {
+ParserStatus
+Parser::parseTypeAttributeListPresent(ParamDecl::Specifier &Specifier,
+                                      SourceLoc &SpecifierLoc,
+                                      SourceLoc &IsolatedLoc,
+                                      TypeAttributes &Attributes) {
   PatternBindingInitializer *initContext = nullptr;
   Specifier = ParamDecl::Specifier::Default;
   while (Tok.is(tok::kw_inout) ||
-         (Tok.is(tok::identifier) &&
-          (Tok.getRawText().equals("__shared") ||
-           Tok.getRawText().equals("__owned")))) {
+         Tok.isContextualKeyword("__shared") ||
+         Tok.isContextualKeyword("__owned") ||
+         Tok.isContextualKeyword("isolated")) {
+
+    if (Tok.isContextualKeyword("isolated")) {
+      if (IsolatedLoc.isValid()) {
+        diagnose(Tok, diag::parameter_specifier_repeated)
+          .fixItRemove(SpecifierLoc);
+      }
+      IsolatedLoc = consumeToken();
+      continue;
+    }
+
     if (SpecifierLoc.isValid()) {
       diagnose(Tok, diag::parameter_specifier_repeated)
         .fixItRemove(SpecifierLoc);
@@ -3770,21 +3782,23 @@ bool Parser::parseTypeAttributeListPresent(ParamDecl::Specifier &Specifier,
     SpecifierLoc = consumeToken();
   }
 
+  ParserStatus status;
   SyntaxParsingContext AttrListCtx(SyntaxContext, SyntaxKind::AttributeList);
   while (Tok.is(tok::at_sign)) {
     // Ignore @substituted in SIL mode and leave it for the type parser.
     if (isInSILMode() && peekToken().getText() == "substituted")
-      return false;
+      return status;
 
     if (Attributes.AtLoc.isInvalid())
       Attributes.AtLoc = Tok.getLoc();
     SyntaxParsingContext AttrCtx(SyntaxContext, SyntaxKind::Attribute);
     SourceLoc AtLoc = consumeToken();
-    if (parseTypeAttribute(Attributes, AtLoc, initContext))
-      return true;
+    status |= parseTypeAttribute(Attributes, AtLoc, initContext);
+    if (status.isError())
+      return status;
   }
   
-  return false;
+  return status;
 }
 
 static bool isStartOfOperatorDecl(const Token &Tok, const Token &Tok2) {
@@ -4075,8 +4089,7 @@ bool Parser::isStartOfSwiftDecl() {
     return isStartOfSwiftDecl();
   }
 
-  if (shouldParseExperimentalConcurrency() &&
-      Tok.isContextualKeyword("actor")) {
+  if (Tok.isContextualKeyword("actor")) {
     if (Tok2.is(tok::identifier)) // actor Foo {}
       return true;
     BacktrackingScope Scope(*this);
@@ -4428,8 +4441,7 @@ Parser::parseDecl(ParseDeclOptions Flags,
   // Obvious nonsense.
   default:
 
-    if (shouldParseExperimentalConcurrency() &&
-        Tok.isContextualKeyword("actor") && peekToken().is(tok::identifier)) {
+    if (Tok.isContextualKeyword("actor") && peekToken().is(tok::identifier)) {
       Tok.setKind(tok::contextual_keyword);
       DeclParsingContext.setCreateSyntax(SyntaxKind::ClassDecl);
       DeclResult = parseDeclClass(Flags, Attributes);
@@ -4814,9 +4826,9 @@ ParserResult<ImportDecl> Parser::parseDeclImport(ParseDeclOptions Flags,
 ///     'class'
 ///     type-identifier
 /// \endverbatim
-ParserStatus Parser::parseInheritance(SmallVectorImpl<TypeLoc> &Inherited,
-                                      bool allowClassRequirement,
-                                      bool allowAnyObject) {
+ParserStatus Parser::parseInheritance(
+    SmallVectorImpl<InheritedEntry> &Inherited,
+    bool allowClassRequirement, bool allowAnyObject) {
   SyntaxParsingContext InheritanceContext(SyntaxContext,
                                           SyntaxKind::TypeInheritanceClause);
 
@@ -4876,8 +4888,10 @@ ParserStatus Parser::parseInheritance(SmallVectorImpl<TypeLoc> &Inherited,
 
       // Add 'AnyObject' to the inherited list.
       Inherited.push_back(
-        new (Context) SimpleIdentTypeRepr(DeclNameLoc(classLoc), DeclNameRef(
-                                          Context.getIdentifier("AnyObject"))));
+        InheritedEntry(
+            new (Context) SimpleIdentTypeRepr(
+                DeclNameLoc(classLoc),
+                DeclNameRef(Context.getIdentifier("AnyObject")))));
       continue;
     }
 
@@ -4886,7 +4900,7 @@ ParserStatus Parser::parseInheritance(SmallVectorImpl<TypeLoc> &Inherited,
 
     // Record the type if its a single type.
     if (ParsedTypeResult.isNonNull())
-      Inherited.push_back(ParsedTypeResult.get());
+      Inherited.push_back(InheritedEntry(ParsedTypeResult.get()));
   } while (HasNextType);
 
   return Status;
@@ -5174,7 +5188,9 @@ bool Parser::delayParsingDeclList(SourceLoc LBLoc, SourceLoc &RBLoc,
   if (Tok.is(tok::r_brace)) {
     RBLoc = consumeToken();
   } else {
-    RBLoc = Tok.getLoc();
+    // Non-delayed parsing would set the RB location to the LB if it is missing,
+    // match that behaviour here
+    RBLoc = LBLoc;
     error = true;
   }
   return error;
@@ -5199,7 +5215,7 @@ Parser::parseDeclExtension(ParseDeclOptions Flags, DeclAttributes &Attributes) {
   status |= extendedType;
 
   // Parse optional inheritance clause.
-  SmallVector<TypeLoc, 2> Inherited;
+  SmallVector<InheritedEntry, 2> Inherited;
   if (Tok.is(tok::colon))
     status |= parseInheritance(Inherited,
                                /*allowClassRequirement=*/false,
@@ -5637,7 +5653,7 @@ ParserResult<TypeDecl> Parser::parseDeclAssociatedType(Parser::ParseDeclOptions 
   
   // Parse optional inheritance clause.
   // FIXME: Allow class requirements here.
-  SmallVector<TypeLoc, 2> Inherited;
+  SmallVector<InheritedEntry, 2> Inherited;
   if (Tok.is(tok::colon))
     Status |= parseInheritance(Inherited,
                                /*allowClassRequirement=*/false,
@@ -6068,9 +6084,6 @@ ParserStatus Parser::parseGetEffectSpecifier(ParsedAccessors &accessors,
                                              AccessorKind currentKind,
                                              SourceLoc const& currentLoc) {
   ParserStatus Status;
-
-  if (!shouldParseExperimentalConcurrency())
-    return Status;
 
   if (isEffectsSpecifier(Tok)) {
     if (currentKind == AccessorKind::Get) {
@@ -7080,8 +7093,10 @@ BraceStmt *Parser::parseAbstractFunctionBodyImpl(AbstractFunctionDecl *AFD) {
     return nullptr;
 
   BraceStmt *BS = Body.get();
+  // Reset the single expression body status.
+  AFD->setHasSingleExpressionBody(false);
   AFD->setBodyParsed(BS);
-  
+
   if (Parser::shouldReturnSingleExpressionElement(BS->getElements())) {
     auto Element = BS->getLastElement();
     if (auto *stmt = Element.dyn_cast<Stmt *>()) {
@@ -7224,7 +7239,7 @@ ParserResult<EnumDecl> Parser::parseDeclEnum(ParseDeclOptions Flags,
 
   // Parse optional inheritance clause within the context of the enum.
   if (Tok.is(tok::colon)) {
-    SmallVector<TypeLoc, 2> Inherited;
+    SmallVector<InheritedEntry, 2> Inherited;
     Status |= parseInheritance(Inherited,
                                /*allowClassRequirement=*/false,
                                /*allowAnyObject=*/false);
@@ -7499,7 +7514,7 @@ ParserResult<StructDecl> Parser::parseDeclStruct(ParseDeclOptions Flags,
 
   // Parse optional inheritance clause within the context of the struct.
   if (Tok.is(tok::colon)) {
-    SmallVector<TypeLoc, 2> Inherited;
+    SmallVector<InheritedEntry, 2> Inherited;
     Status |= parseInheritance(Inherited,
                                /*allowClassRequirement=*/false,
                                /*allowAnyObject=*/false);
@@ -7593,7 +7608,7 @@ ParserResult<ClassDecl> Parser::parseDeclClass(ParseDeclOptions Flags,
 
   // Parse optional inheritance clause within the context of the class.
   if (Tok.is(tok::colon)) {
-    SmallVector<TypeLoc, 2> Inherited;
+    SmallVector<InheritedEntry, 2> Inherited;
     Status |= parseInheritance(Inherited,
                                /*allowClassRequirement=*/false,
                                /*allowAnyObject=*/false);
@@ -7690,7 +7705,7 @@ parseDeclProtocol(ParseDeclOptions Flags, DeclAttributes &Attributes) {
   DebuggerContextChange DCC (*this);
   
   // Parse optional inheritance clause.
-  SmallVector<TypeLoc, 4> InheritedProtocols;
+  SmallVector<InheritedEntry, 4> InheritedProtocols;
   SourceLoc colonLoc;
   if (Tok.is(tok::colon)) {
     colonLoc = Tok.getLoc();

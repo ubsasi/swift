@@ -135,6 +135,10 @@ public:
   SourceLoc getEndLoc() const;
   SourceRange getSourceRange() const;
 
+  /// Find an @unchecked attribute and return its source location, or return
+  /// an invalid source location if there is no such attribute.
+  SourceLoc findUncheckedAttrLoc() const;
+
   /// Is this type grammatically a type-simple?
   inline bool isSimple() const; // bottom of this file
 
@@ -939,7 +943,8 @@ public:
   static bool classof(const TypeRepr *T) {
     return T->getKind() == TypeReprKind::InOut ||
            T->getKind() == TypeReprKind::Shared ||
-           T->getKind() == TypeReprKind::Owned;
+           T->getKind() == TypeReprKind::Owned ||
+           T->getKind() == TypeReprKind::Isolated;
   }
   static bool classof(const SpecifierTypeRepr *T) { return true; }
   
@@ -993,6 +998,21 @@ public:
     return T->getKind() == TypeReprKind::Owned;
   }
   static bool classof(const OwnedTypeRepr *T) { return true; }
+};
+
+/// An 'isolated' type.
+/// \code
+///   x : isolated Actor
+/// \endcode
+class IsolatedTypeRepr : public SpecifierTypeRepr {
+public:
+  IsolatedTypeRepr(TypeRepr *Base, SourceLoc InOutLoc)
+    : SpecifierTypeRepr(TypeReprKind::Isolated, Base, InOutLoc) {}
+
+  static bool classof(const TypeRepr *T) {
+    return T->getKind() == TypeReprKind::Isolated;
+  }
+  static bool classof(const IsolatedTypeRepr *T) { return true; }
 };
 
 /// A TypeRepr for a known, fixed type.
@@ -1226,6 +1246,7 @@ inline bool TypeRepr::isSimple() const {
   case TypeReprKind::SILBox:
   case TypeReprKind::Shared:
   case TypeReprKind::Owned:
+  case TypeReprKind::Isolated:
   case TypeReprKind::Placeholder:
     return true;
   }

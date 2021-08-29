@@ -1315,9 +1315,11 @@ void Driver::buildInputs(const ToolChain &TC,
       if (Ty == file_types::TY_Swift) {
         StringRef Basename = llvm::sys::path::filename(Value);
         if (!SourceFileNames.insert({Basename, Value}).second) {
-          Diags.diagnose(SourceLoc(), diag::error_two_files_same_name,
-                         Basename, SourceFileNames[Basename], Value);
-          Diags.diagnose(SourceLoc(), diag::note_explain_two_files_same_name);
+          if (!SuppressSameFileNameError) {
+            Diags.diagnose(SourceLoc(), diag::error_two_files_same_name,
+                           Basename, SourceFileNames[Basename], Value);
+            Diags.diagnose(SourceLoc(), diag::note_explain_two_files_same_name);
+          }
         }
       }
     }
@@ -2052,7 +2054,6 @@ void Driver::buildActions(SmallVectorImpl<const Action *> &TopLevelActions,
       case file_types::TY_RawSIL:
       case file_types::TY_Nothing:
       case file_types::TY_IndexUnitOutputPath:
-      case file_types::TY_SymbolGraphOutputPath:
       case file_types::TY_INVALID:
         llvm_unreachable("these types should never be inferred");
       }
@@ -2232,13 +2233,25 @@ void Driver::buildActions(SmallVectorImpl<const Action *> &TopLevelActions,
     }
     TopLevelActions.push_back(LinkAction);
 
-    if (TC.getTriple().isOSDarwin() &&
-        OI.DebugInfoLevel > IRGenDebugInfoLevel::None) {
-      auto *dSYMAction = C.createAction<GenerateDSYMJobAction>(LinkAction);
-      TopLevelActions.push_back(dSYMAction);
-      if (Args.hasArg(options::OPT_verify_debug_info)) {
-        TopLevelActions.push_back(
-            C.createAction<VerifyDebugInfoJobAction>(dSYMAction));
+    if (TC.getTriple().isOSDarwin()) {
+      switch (OI.LinkAction) {
+      case LinkKind::Executable:
+      case LinkKind::DynamicLibrary:
+        if (OI.DebugInfoLevel > IRGenDebugInfoLevel::None) {
+          auto *dSYMAction = C.createAction<GenerateDSYMJobAction>(LinkAction);
+          TopLevelActions.push_back(dSYMAction);
+          if (Args.hasArg(options::OPT_verify_debug_info)) {
+            TopLevelActions.push_back(
+                C.createAction<VerifyDebugInfoJobAction>(dSYMAction));
+          }
+        }
+        break;
+
+      case LinkKind::None:
+        LLVM_FALLTHROUGH;
+      case LinkKind::StaticLibrary:
+        // Cannot build the DSYM bundle for non-image targets.
+        break;
       }
     }
   } else {
@@ -2955,9 +2968,6 @@ Job *Driver::buildJobsForAction(Compilation &C, const JobAction *JA,
                          options::OPT_emit_objc_header_path))
     chooseObjectiveCHeaderOutputPath(C, OutputMap, workingDirectory,
                                      Output.get());
-  
-  if (C.getArgs().hasArg(options::OPT_emit_symbol_graph))
-    chooseSymbolGraphOutputPath(C, OutputMap, workingDirectory, Output.get());
 
   // 4. Construct a Job which produces the right CommandOutput.
   std::unique_ptr<Job> ownedJob = TC.constructJob(*JA, C, std::move(InputJobs),
@@ -3426,31 +3436,6 @@ void Driver::chooseOptimizationRecordPath(Compilation &C,
   } else
     // FIXME: We should use the OutputMap in this case.
     Diags.diagnose({}, diag::warn_opt_remark_disabled);
-}
-
-void Driver::chooseSymbolGraphOutputPath(Compilation &C,
-                                         const TypeToPathMap *OutputMap,
-                                         StringRef workingDirectory,
-                                         CommandOutput *Output) const {
-  StringRef optionOutput = C.getArgs().getLastArgValue(options::OPT_emit_symbol_graph_dir);
-  if (hasExistingAdditionalOutput(*Output, file_types::TY_SymbolGraphOutputPath, optionOutput)) {
-    return;
-  }
-  
-  StringRef SymbolGraphDir;
-  if (OutputMap) {
-    auto iter = OutputMap->find(file_types::TY_SymbolGraphOutputPath);
-    if (iter != OutputMap->end())
-      SymbolGraphDir = iter->second;
-  }
-  
-  if (SymbolGraphDir.empty() && !optionOutput.empty()) {
-    SymbolGraphDir = optionOutput;
-  }
-  
-  if (!SymbolGraphDir.empty()) {
-    Output->setAdditionalOutputForType(file_types::TY_SymbolGraphOutputPath, SymbolGraphDir);
-  }
 }
 
 void Driver::chooseObjectiveCHeaderOutputPath(Compilation &C,

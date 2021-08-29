@@ -1,4 +1,4 @@
-// RUN: %target-typecheck-verify-swift -enable-experimental-concurrency -enable-experimental-async-handler
+// RUN: %target-typecheck-verify-swift -enable-experimental-concurrency -enable-experimental-async-handler -disable-availability-checking
 
 // REQUIRES: concurrency
 
@@ -59,4 +59,30 @@ actor OtherActor: SyncProtocol {
   // Static methods and properties are okay.
   static func staticMethod() { }
   static var staticProperty: Int = 17
+}
+
+protocol Initializers {
+  init()
+  init(string: String)
+  init(int: Int) async
+}
+
+protocol SelfReqs {
+  func withBells() async -> Self
+}
+
+actor A1: Initializers, SelfReqs {
+  init() { }
+  init(string: String) { }
+  init(int: Int) async { }
+
+  func withBells() async -> A1 { self }
+}
+
+actor A2: Initializers {
+  init() { }
+  init(string: String) { }
+  init(int: Int) { }
+
+  func withBells() async -> A2 { self }
 }

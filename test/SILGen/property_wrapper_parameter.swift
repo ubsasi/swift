@@ -1,4 +1,7 @@
-// RUN: %target-swift-emit-silgen %s | %FileCheck %s
+// RUN: %empty-directory(%t)
+// RUN: %target-swift-frontend -emit-module -o %t -enable-library-evolution %S/Inputs/def_structA.swift
+// RUN: %target-swift-emit-silgen %s -I %t | %FileCheck %s
+import def_structA
 
 public struct Projection<T> {
   public var wrappedValue: T
@@ -123,28 +126,28 @@ class ClassWrapper<Value> {
 
 // CHECK-LABEL: sil hidden [ossa] @$s26property_wrapper_parameter21testNonMutatingSetter6value16value2ySS_SitF : $@convention(thin) (@guaranteed String, Int) -> ()
 func testNonMutatingSetter(@NonMutatingSetterWrapper value1: String, @ClassWrapper value2: Int) {
-  // CHECK: alloc_box ${ var NonMutatingSetterWrapper<String> }, var, name "_value1"
   // CHECK: function_ref @$s26property_wrapper_parameter24NonMutatingSetterWrapperV12wrappedValueACyxGx_tcfC : $@convention(method) <τ_0_0> (@in τ_0_0, @thin NonMutatingSetterWrapper<τ_0_0>.Type) -> @out NonMutatingSetterWrapper<τ_0_0>
-  // CHECK: alloc_box ${ var ClassWrapper<Int> }, var, name "_value2"
+  // CHECK: debug_value {{.*}} : $NonMutatingSetterWrapper<String>, let, name "_value1"
   // CHECK: function_ref @$s26property_wrapper_parameter12ClassWrapperC12wrappedValueACyxGx_tcfC : $@convention(method) <τ_0_0> (@in τ_0_0, @thick ClassWrapper<τ_0_0>.Type) -> @owned ClassWrapper<τ_0_0>
+  // CHECK: debug_value {{.*}} : $ClassWrapper<Int>, let, name "_value2"
 
   _ = value1
   value1 = "hello!"
 
   // getter of value1 #1 in testNonMutatingSetter(value1:value2:)
-  // CHECK: sil private [ossa] @$s26property_wrapper_parameter21testNonMutatingSetter6value16value2ySS_SitFACL_SSvg : $@convention(thin) (@guaranteed { var NonMutatingSetterWrapper<String> }) -> @owned String
+  // CHECK: sil private [ossa] @$s26property_wrapper_parameter21testNonMutatingSetter6value16value2ySS_SitFACL_SSvg : $@convention(thin) (@guaranteed NonMutatingSetterWrapper<String>) -> @owned String
 
   // setter of value1 #1 in testNonMutatingSetter(value1:value2:)
-  // CHECK: sil private [ossa] @$s26property_wrapper_parameter21testNonMutatingSetter6value16value2ySS_SitFACL_SSvs : $@convention(thin) (@owned String, @guaranteed { var NonMutatingSetterWrapper<String> }) -> ()
+  // CHECK: sil private [ossa] @$s26property_wrapper_parameter21testNonMutatingSetter6value16value2ySS_SitFACL_SSvs : $@convention(thin) (@owned String, @guaranteed NonMutatingSetterWrapper<String>) -> ()
 
   _ = value2
   value2 = 10
 
   // getter of value2 #1 in testNonMutatingSetter(value1:value2:)
-  // CHECK: sil private [ossa] @$s26property_wrapper_parameter21testNonMutatingSetter6value16value2ySS_SitFADL_Sivg : $@convention(thin) (@guaranteed { var ClassWrapper<Int> }) -> Int
+  // CHECK: sil private [ossa] @$s26property_wrapper_parameter21testNonMutatingSetter6value16value2ySS_SitFADL_Sivg : $@convention(thin) (@guaranteed ClassWrapper<Int>) -> Int
 
   // setter of value2 #1 in testNonMutatingSetter(value1:value2:)
-  // CHECK: sil private [ossa] @$s26property_wrapper_parameter21testNonMutatingSetter6value16value2ySS_SitFADL_Sivs : $@convention(thin) (Int, @guaranteed { var ClassWrapper<Int> }) -> ()
+  // CHECK: sil private [ossa] @$s26property_wrapper_parameter21testNonMutatingSetter6value16value2ySS_SitFADL_Sivs : $@convention(thin) (Int, @guaranteed ClassWrapper<Int>) -> ()
 }
 
 @propertyWrapper
@@ -203,6 +206,56 @@ func testImplicitPropertyWrapper(projection: ProjectionWrapper<Int>) {
 
   // getter of value #1 in closure #2 in implicit closure #2 in testImplicitPropertyWrapper(projection:)
   // CHECK: sil private [ossa] @$s26property_wrapper_parameter27testImplicitPropertyWrapper10projectionyAA010ProjectionG0VySiG_tFSi_AFtAFcfu0_Si_AFtAFcfU0_5valueL_Sivg : $@convention(thin) (ProjectionWrapper<Int>) -> Int
+}
+
+protocol P {}
+
+// CHECK-LABEL: sil hidden [ossa] @$s26property_wrapper_parameter14genericContextyyxAA1PRzlF : $@convention(thin) <T where T : P> (@in_guaranteed T) -> ()
+func genericContext<T>(_: T) where T: P {
+  let _: (ProjectionWrapper<Int>) -> Void = { $value in }
+
+  // implicit closure #1 in genericContext<A>(_:)
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter14genericContextyyxAA1PRzlFyAA17ProjectionWrapperVySiGcfu_ : $@convention(thin) (ProjectionWrapper<Int>) -> ()
+
+  // This property wrapper generator function should _not_ have a generic signature,
+  // because the closure doesn't have one.
+
+  // property wrapper init from projected value of $value #1 in closure #1 in implicit closure #1 in genericContext<A>(_:)
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter14genericContextyyxAA1PRzlFyAA17ProjectionWrapperVySiGcfu_yAFcfU_6$valueL_AFvpfW : $@convention(thin) (ProjectionWrapper<Int>) -> ProjectionWrapper<Int>
+
+  let _: (ProjectionWrapper<Int>) -> T = { $value in
+    fatalError()
+  }
+
+  // implicit closure #2 in genericContext<A>(_:)
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter14genericContextyyxAA1PRzlFxAA17ProjectionWrapperVySiGcfu0_ : $@convention(thin) <T where T : P> (ProjectionWrapper<Int>) -> @out T
+
+  // This property wrapper generator function _should_ have a generic signature, because
+  // the closure does have one.
+
+  // property wrapper init from projected value of $value #1 in closure #2 in implicit closure #2 in genericContext<A>(_:)
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter14genericContextyyxAA1PRzlFxAA17ProjectionWrapperVySiGcfu0_xAFcfU0_6$valueL_AFvpfW : $@convention(thin) <T where T : P> (ProjectionWrapper<Int>) -> ProjectionWrapper<Int>
+
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter14genericContextyyxAA1PRzlF5innerL_1ayAA7WrapperVySiG_tAaCRzlF : $@convention(thin) (Wrapper<Int>) -> ()
+  func inner(@Wrapper a: Int) {}
+
+  // property wrapper backing initializer of a #1 in inner #1 <A>(a:) in genericContext<A>(_:)
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter14genericContextyyxAA1PRzlF5innerL_1ayAA7WrapperVySiG_tAaCRzlFAEL_SivpfP : $@convention(thin) (Int) -> Wrapper<Int>
+
+  inner(a: 1)
+
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter14genericContextyyxAA1PRzlF5innerL0_yyAaCRzlF : $@convention(thin) <T where T : P> () -> ()
+  func inner() { _ = T.self }
+
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter14genericContextyyxAA1PRzlF5innerL1_1byAA7WrapperVySiG_tAaCRzlF : $@convention(thin) <T where T : P> (Wrapper<Int>) -> ()
+  func inner(@Wrapper b: Int) {
+    inner()
+  }
+
+  // property wrapper backing initializer of b #1 in inner #3 <A>(b:) in genericContext<A>(_:)
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter14genericContextyyxAA1PRzlF5innerL1_1byAA7WrapperVySiG_tAaCRzlFAEL_SivpfP : $@convention(thin) <T where T : P> (Int) -> Wrapper<Int>
+
+  inner(b: 1)
 }
 
 @propertyWrapper
@@ -282,4 +335,57 @@ func testNonmutatingSetterSynthesis(@NonmutatingSetter value: Int) {
   // setter of value #1 in closure #1 in implicit closure #1 in testNonmutatingSetterSynthesis(value:)
   // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter30testNonmutatingSetterSynthesis5valueyAA0eF0VySiG_tFSiAFcfu_SiAFcfU_ACL_Sivs : $@convention(thin) (Int, NonmutatingSetter<Int>) -> ()
   // CHECK: function_ref @$s26property_wrapper_parameter17NonmutatingSetterV12wrappedValuexvs : $@convention(method) <τ_0_0> (@in τ_0_0, NonmutatingSetter<τ_0_0>) -> ()
+}
+
+// CHECK-LABEL: sil hidden [ossa] @$s26property_wrapper_parameter38testImplicitWrapperWithResilientStructyyF : $@convention(thin) () -> ()
+func testImplicitWrapperWithResilientStruct() {
+  let _: (ProjectionWrapper<A>) -> Void = { $value in }
+
+  // implicit closure #1 in testImplicitWrapperWithResilientStruct()
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter38testImplicitWrapperWithResilientStructyyFyAA010ProjectionF0Vy11def_structA1AVGcfu_ : $@convention(thin) (@in_guaranteed ProjectionWrapper<A>) -> ()
+  // CHECK: [[P:%.*]] = alloc_stack $ProjectionWrapper<A>
+  // CHECK: copy_addr %0 to [initialization] [[P]]
+  // CHECK: [[I:%.*]] = function_ref @$s26property_wrapper_parameter38testImplicitWrapperWithResilientStructyyFyAA010ProjectionF0Vy11def_structA1AVGcfu_yAHcfU_6$valueL_AHvpfW : $@convention(thin) (@in ProjectionWrapper<A>) -> @out ProjectionWrapper<A>
+  // CHECK: apply [[I]]({{.*}}, [[P]]) : $@convention(thin) (@in ProjectionWrapper<A>) -> @out ProjectionWrapper<A>
+
+  // property wrapper init from projected value of $value #1 in closure #1 in implicit closure #1 in testImplicitWrapperWithResilientStruct()
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter38testImplicitWrapperWithResilientStructyyFyAA010ProjectionF0Vy11def_structA1AVGcfu_yAHcfU_6$valueL_AHvpfW : $@convention(thin) (@in ProjectionWrapper<A>) -> @out ProjectionWrapper<A>
+}
+
+func takesAutoclosure(_: @autoclosure () -> Int) {}
+
+// CHECK-LABEL: sil hidden [ossa] @$s26property_wrapper_parameter12testCaptures3ref5valueySi_AA7WrapperVySiGtF : $@convention(thin) (Int, Wrapper<Int>) -> ()
+func testCaptures(@ClassWrapper ref: Int, @Wrapper value: Int) {
+  takesAutoclosure(ref)
+  // implicit closure #1 in testCaptures(ref:value:)
+  // CHECK-LABEL: sil private [transparent] [ossa] @$s26property_wrapper_parameter12testCaptures3ref5valueySi_AA7WrapperVySiGtFSiyXEfu_ : $@convention(thin) (@guaranteed ClassWrapper<Int>) -> Int
+
+  let _: () -> Void = {
+    _ = ref
+    ref = 100
+  }
+  // closure #1 in testCaptures(ref:value:)
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter12testCaptures3ref5valueySi_AA7WrapperVySiGtFyycfU_ : $@convention(thin) (@guaranteed ClassWrapper<Int>) -> ()
+
+  let _: () -> Projection<Int> = { $value }
+  // closure #2 in testCaptures(ref:value:)
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter12testCaptures3ref5valueySi_AA7WrapperVySiGtFAA10ProjectionVySiGycfU0_ : $@convention(thin) (Wrapper<Int>) -> Projection<Int>
+
+  let _: (ProjectionWrapper<Int>) -> Void = { $x in
+    _ = { x }
+    _ = { $x }
+  }
+  // Make sure there are 4 closures here with the right arguments
+
+  // implicit closure #2 in testCaptures(ref:value:)
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter12testCaptures3ref5valueySi_AA7WrapperVySiGtFyAA010ProjectionH0VySiGcfu0_ : $@convention(thin) (ProjectionWrapper<Int>) -> ()
+
+  // closure #3 in implicit closure #2 in testCaptures(ref:value:)
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter12testCaptures3ref5valueySi_AA7WrapperVySiGtFyAA010ProjectionH0VySiGcfu0_yAJcfU1_ : $@convention(thin) (ProjectionWrapper<Int>) -> ()
+
+  // closure #1 in closure #2 in implicit closure #2 in testCaptures(ref:value:)
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter12testCaptures3ref5valueySi_AA7WrapperVySiGtFyAA010ProjectionH0VySiGcfu0_yAJcfU1_SiycfU_ : $@convention(thin) (ProjectionWrapper<Int>) -> Int
+
+  // closure #2 in closure #2 in implicit closure #2 in testCaptures(ref:value:)
+  // CHECK-LABEL: sil private [ossa] @$s26property_wrapper_parameter12testCaptures3ref5valueySi_AA7WrapperVySiGtFyAA010ProjectionH0VySiGcfu0_yAJcfU1_AJycfU0_ : $@convention(thin) (ProjectionWrapper<Int>) -> ProjectionWrapper<Int>
 }
