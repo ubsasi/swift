@@ -1009,6 +1009,11 @@ else()
     add_subdirectory(stdlib/toolchain)
   endif()
 
+  if (BUILD_SWIFT_CONCURRENCY_BACK_DEPLOYMENT_LIBRARIES)
+    # Build the back-deployed concurrency library.
+    add_subdirectory(stdlib/public/BackDeployConcurrency)
+  endif()
+
   # Some tools (e.g. swift-reflection-dump) rely on a host swiftReflection, so
   # ensure we build that when building tools.
   if(SWIFT_INCLUDE_TOOLS)

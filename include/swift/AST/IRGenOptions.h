@@ -384,6 +384,8 @@ public:
   /// Pull in runtime compatibility shim libraries by autolinking.
   Optional<llvm::VersionTuple> AutolinkRuntimeCompatibilityLibraryVersion;
   Optional<llvm::VersionTuple> AutolinkRuntimeCompatibilityDynamicReplacementLibraryVersion;
+  Optional<llvm::VersionTuple>
+      AutolinkRuntimeCompatibilityConcurrencyLibraryVersion;
 
   JITDebugArtifact DumpJIT = JITDebugArtifact::None;
 
