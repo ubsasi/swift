@@ -259,7 +259,7 @@ AvailabilityContext ASTContext::getSwift50Availability() {
     return AvailabilityContext(
                             VersionRange::allGTE(llvm::VersionTuple(12,2)));
   } else if (target.isWatchOS()) {
-    if (target.getArch() == llvm::Triple::ArchType::x86_64)
+    if (target.isArch64Bit())
       return AvailabilityContext::alwaysAvailable();
 
     return AvailabilityContext(
@@ -297,6 +297,9 @@ AvailabilityContext ASTContext::getSwift51Availability() {
     return AvailabilityContext(
                             VersionRange::allGTE(llvm::VersionTuple(13,0,0)));
   } else if (target.isWatchOS()) {
+    if (target.isArch64Bit())
+      return AvailabilityContext::alwaysAvailable();
+
     return AvailabilityContext(
                             VersionRange::allGTE(llvm::VersionTuple(6,0,0)));
   } else {
@@ -328,6 +331,10 @@ ASTContext::getIntermodulePrespecializedGenericMetadataAvailability() {
 
 AvailabilityContext ASTContext::getConcurrencyAvailability() {
   return getSwift55Availability();
+}
+
+AvailabilityContext ASTContext::getBackDeployedConcurrencyAvailability() {
+  return getSwift51Availability();
 }
 
 AvailabilityContext ASTContext::getDifferentiationAvailability() {
@@ -445,4 +452,21 @@ AvailabilityContext ASTContext::getSwiftFutureAvailability() {
   } else {
     return AvailabilityContext::alwaysAvailable();
   }
+}
+
+AvailabilityContext
+ASTContext::getSwift5PlusAvailability(llvm::VersionTuple swiftVersion) {
+  if (swiftVersion.getMajor() == 5) {
+    switch (*swiftVersion.getMinor()) {
+    case 0: return getSwift50Availability();
+    case 1: return getSwift51Availability();
+    case 2: return getSwift52Availability();
+    case 3: return getSwift53Availability();
+    case 4: return getSwift54Availability();
+    case 5: return getSwift55Availability();
+    default: break;
+    }
+  }
+  llvm::report_fatal_error("Missing call to getSwiftXYAvailability for Swift " +
+                           swiftVersion.getAsString());
 }
