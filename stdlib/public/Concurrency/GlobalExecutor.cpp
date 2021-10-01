@@ -57,6 +57,7 @@
 #include "swift/Runtime/Concurrency.h"
 #include "swift/Runtime/EnvironmentVariables.h"
 #include "TaskPrivate.h"
+#include "Error.h"
 
 #if !SWIFT_CONCURRENCY_COOPERATIVE_GLOBAL_EXECUTOR
 #include <dispatch/dispatch.h>
@@ -275,7 +276,7 @@ extern "C" void dispatch_queue_set_width(dispatch_queue_t dq, long width);
 static dispatch_queue_t getGlobalQueue(JobPriority priority) {
   size_t numericPriority = static_cast<size_t>(priority);
   if (numericPriority >= globalQueueCacheCount)
-    fatalError(0, "invalid job priority %#zx");
+    swift_Concurrency_fatalError(0, "invalid job priority %#zx");
 
 #ifdef SWIFT_CONCURRENCY_BACK_DEPLOYMENT
   std::memory_order loadOrder = std::memory_order_acquire;
