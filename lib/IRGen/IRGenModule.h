@@ -320,6 +320,8 @@ private:
 
   llvm::SmallVector<ClassDecl *, 4> ClassesForEagerInitialization;
 
+  llvm::SmallVector<ClassDecl *, 4> ObjCActorsNeedingSuperclassSwizzle;
+
   /// The order in which all the SIL function definitions should
   /// appear in the translation unit.
   llvm::DenseMap<SILFunction*, unsigned> FunctionOrder;
@@ -408,6 +410,7 @@ public:
   void emitReflectionMetadataVersion();
 
   void emitEagerClassInitialization();
+  void emitObjCActorsNeedingSuperclassSwizzle();
 
   // Emit the code to replace dynamicReplacement(for:) functions.
   void emitDynamicReplacements();
@@ -500,6 +503,7 @@ public:
 
 
   void addClassForEagerInitialization(ClassDecl *ClassDecl);
+  void addBackDeployedObjCActorInitialization(ClassDecl *ClassDecl);
 
   unsigned getFunctionOrder(SILFunction *F) {
     auto it = FunctionOrder.find(F);
