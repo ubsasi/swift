@@ -1,15 +1,16 @@
 // RUN: %target-run-simple-swift(-Xfrontend -enable-experimental-concurrency -Xfrontend -disable-availability-checking %import-libdispatch -parse-as-library) | %FileCheck %s --dump-input always
 // REQUIRES: executable_test
 // REQUIRES: concurrency
-// REQUIRES: libdispatch
 
 // rdar://76038845
 // REQUIRES: concurrency_runtime
 // UNSUPPORTED: back_deployment_runtime
 
 import _Concurrency
+#if canImport(Dispatch)
 // FIXME: should not depend on Dispatch
 import Dispatch
+#endif
 
 @available(SwiftStdlib 5.5, *)
 @main struct Main {
@@ -21,6 +22,7 @@ import Dispatch
   }
 
   static func testSleepDuration() async {
+#if canImport(Dispatch)
     let start = DispatchTime.now()
 
     await Task.sleep(UInt64(pause))
@@ -29,6 +31,7 @@ import Dispatch
 
     // assert that at least the specified time passed since calling `sleep`
     assert(stop >= (start + .nanoseconds(pause)))
+#endif
   }
 
   static func testSleepDoesNotBlock() async {
