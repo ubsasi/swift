@@ -7,6 +7,7 @@
 // UNSUPPORTED: back_deployment_runtime
 // UNSUPPORTED: OS=windows-msvc
 // UNSUPPORTED: use_os_stdlib
+// UNSUPPORTED: OS=wasi
 
 // This test makes sure that:
 //

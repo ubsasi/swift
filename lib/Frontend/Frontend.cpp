@@ -764,6 +764,8 @@ static bool shouldImportConcurrencyByDefault(const llvm::Triple &target) {
     return true;
   if (target.isOSLinux())
     return true;
+  if (target.isOSWASI())
+    return true;
   return false;
 }
 
@@ -1247,6 +1249,11 @@ static void countStatsPostSILOpt(UnifiedStatsReporter &Stats,
 }
 
 bool CompilerInstance::performSILProcessing(SILModule *silModule) {
+
+  if (!silModule->getOptions().ModuleSummaryPath.empty()) {
+    return runSILCrossModuleEliminatorPass(*silModule);
+  }
+
   if (performMandatorySILPasses(Invocation, silModule) &&
       !Invocation.getFrontendOptions().AllowModuleWithCompilerErrors)
     return true;

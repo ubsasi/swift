@@ -61,6 +61,8 @@ def SwiftAPIExtractOption : OptionFlag;
 // The option should be accepted by swift-symbolgraph-extract.
 def SwiftSymbolGraphExtractOption : OptionFlag;
 
+def SwiftMergeModuleSummaryOption : OptionFlag;
+
 /////////
 // Options
 
@@ -177,6 +179,7 @@ def driver_mode : Joined<["--"], "driver-mode=">, Flags<[HelpHidden]>,
 def help : Flag<["-", "--"], "help">,
   Flags<[FrontendOption, AutolinkExtractOption, ModuleWrapOption,
          SwiftIndentOption, SwiftAPIExtractOption,
+         SwiftMergeModuleSummaryOption,
          SwiftSymbolGraphExtractOption]>,
   HelpText<"Display available options">;
 def h : Flag<["-"], "h">, Alias<help>;
@@ -201,6 +204,7 @@ def _DASH_DASH : Option<["--"], "", KIND_REMAINING_ARGS>,
 def o : JoinedOrSeparate<["-"], "o">,
   Flags<[FrontendOption, AutolinkExtractOption, ModuleWrapOption,
          NoInteractiveOption, SwiftIndentOption, ArgumentIsPath,
+         SwiftMergeModuleSummaryOption,
          SwiftAPIExtractOption]>,
   HelpText<"Write output to <file>">, MetaVarName<"<file>">;
 
@@ -444,6 +448,9 @@ def emit_module_summary_path :
   Flags<[FrontendOption, NoInteractiveOption, ArgumentIsPath,
          SupplementaryOutput]>,
   MetaVarName<"<path>">, HelpText<"Output module summary file to <path>">;
+def module_summary_path : Separate<["-"], "module-summary-path">,
+    Flags<[FrontendOption, ArgumentIsPath]>, MetaVarName<"<path>">,
+    HelpText<"Combined module summary file <path>">;
 
 def emit_module_interface :
   Flag<["-"], "emit-module-interface">,
@@ -719,6 +726,10 @@ def no_toolchain_stdlib_rpath: Flag<["-"], "no-toolchain-stdlib-rpath">,
 def no_stdlib_rpath: Flag<["-"], "no-stdlib-rpath">,
   Flags<[HelpHidden,DoesNotAffectIncrementalBuild]>,
   HelpText<"Don't add any rpath entries.">;
+
+def no_stdlib_link: Flag<["-"], "no-stdlib-link">,
+  Flags<[FrontendOption, DoesNotAffectIncrementalBuild]>,
+  HelpText<"Don't link stdlib.">;
 
 def static_executable : Flag<["-"], "static-executable">,
   HelpText<"Statically link the executable">;
@@ -1050,7 +1061,7 @@ def Xclang_linker : Separate<["-"], "Xclang-linker">, Flags<[HelpHidden]>,
   MetaVarName<"<arg>">, HelpText<"Pass <arg> to Clang when it is use for linking.">;
 
 def Xllvm : Separate<["-"], "Xllvm">,
-  Flags<[FrontendOption, HelpHidden]>,
+  Flags<[FrontendOption, HelpHidden, SwiftMergeModuleSummaryOption]>,
   MetaVarName<"<arg>">, HelpText<"Pass <arg> to LLVM.">;
 
 def resource_dir : Separate<["-"], "resource-dir">,

@@ -36,18 +36,19 @@ add_swift_target_library(swiftStdlibUnittest ${SWIFT_STDLIB_LIBRARY_BUILD_TYPES}
   TestHelpers.swift
   TypeIndexed.swift
 
-  SWIFT_MODULE_DEPENDS SwiftPrivate SwiftPrivateThreadExtras SwiftPrivateLibcExtras
-  SWIFT_MODULE_DEPENDS_IOS Darwin _Concurrency
-  SWIFT_MODULE_DEPENDS_OSX Darwin _Concurrency
-  SWIFT_MODULE_DEPENDS_TVOS Darwin _Concurrency
-  SWIFT_MODULE_DEPENDS_WATCHOS Darwin _Concurrency
-  SWIFT_MODULE_DEPENDS_FREESTANDING Darwin _Concurrency
-  SWIFT_MODULE_DEPENDS_LINUX Glibc _Concurrency
-  SWIFT_MODULE_DEPENDS_FREEBSD Glibc _Concurrency
-  SWIFT_MODULE_DEPENDS_OPENBSD Glibc _Concurrency
-  SWIFT_MODULE_DEPENDS_CYGWIN Glibc _Concurrency
-  SWIFT_MODULE_DEPENDS_HAIKU Glibc _Concurrency
-  SWIFT_MODULE_DEPENDS_WINDOWS CRT WinSDK _Concurrency
+  SWIFT_MODULE_DEPENDS SwiftPrivate SwiftPrivateLibcExtras
+  SWIFT_MODULE_DEPENDS_IOS Darwin _Concurrency SwiftPrivateThreadExtras
+  SWIFT_MODULE_DEPENDS_OSX Darwin _Concurrency SwiftPrivateThreadExtras
+  SWIFT_MODULE_DEPENDS_TVOS Darwin _Concurrency SwiftPrivateThreadExtras
+  SWIFT_MODULE_DEPENDS_WATCHOS Darwin _Concurrency SwiftPrivateThreadExtras
+  SWIFT_MODULE_DEPENDS_FREESTANDING Darwin _Concurrency SwiftPrivateThreadExtras
+  SWIFT_MODULE_DEPENDS_LINUX Glibc _Concurrency SwiftPrivateThreadExtras
+  SWIFT_MODULE_DEPENDS_FREEBSD Glibc _Concurrency SwiftPrivateThreadExtras
+  SWIFT_MODULE_DEPENDS_OPENBSD Glibc _Concurrency SwiftPrivateThreadExtras
+  SWIFT_MODULE_DEPENDS_CYGWIN Glibc _Concurrency SwiftPrivateThreadExtras
+  SWIFT_MODULE_DEPENDS_HAIKU Glibc _Concurrency SwiftPrivateThreadExtras
+  SWIFT_MODULE_DEPENDS_WASI WASILibc _Concurrency
+  SWIFT_MODULE_DEPENDS_WINDOWS CRT WinSDK _Concurrency SwiftPrivateThreadExtras
   SWIFT_COMPILE_FLAGS ${swift_stdlib_unittest_compile_flags} ${SWIFT_STANDARD_LIBRARY_SWIFT_FLAGS}
     -Xfrontend -define-availability
     -Xfrontend "SwiftStdlib 5.5:macOS 10.15, iOS 13.0, watchOS 6.0, tvOS 13.0"

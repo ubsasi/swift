@@ -12,7 +12,9 @@
 
 
 import SwiftPrivate
+#if !os(WASI)
 import SwiftPrivateThreadExtras
+#endif
 import SwiftPrivateLibcExtras
 
 #if canImport(Darwin)
@@ -22,6 +24,8 @@ import Foundation
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif os(WASI)
+import WASILibc
 #elseif os(Windows)
 import CRT
 import WinSDK
@@ -29,6 +33,12 @@ import WinSDK
 
 #if _runtime(_ObjC)
 import ObjectiveC
+#endif
+
+#if os(WASI)
+let platformSupportSpawnChild = false
+#else
+let platformSupportSpawnChild = true
 #endif
 
 extension String {
@@ -811,8 +821,10 @@ var _testSuiteNameToIndex: [String : Int] = [:]
 let _stdlibUnittestStreamPrefix = "__STDLIB_UNITTEST__"
 let _crashedPrefix = "CRASHED:"
 
+#if !os(WASI)
 @_silgen_name("installTrapInterceptor")
 func _installTrapInterceptor()
+#endif
 
 #if _runtime(_ObjC)
 @objc protocol _StdlibUnittestNSException {
@@ -823,7 +835,9 @@ func _installTrapInterceptor()
 // Avoid serializing references to objc_setUncaughtExceptionHandler in SIL.
 @inline(never)
 func _childProcess() {
+#if !os(WASI)
   _installTrapInterceptor()
+#endif
 
 #if _runtime(_ObjC)
   objc_setUncaughtExceptionHandler {
@@ -879,7 +893,9 @@ func _childProcess() {
 @available(SwiftStdlib 5.5, *)
 @inline(never)
 func _childProcessAsync() async {
+#if !os(WASI)
   _installTrapInterceptor()
+#endif
 
 #if _runtime(_ObjC)
   objc_setUncaughtExceptionHandler {
@@ -1561,7 +1577,7 @@ class _ParentProcess {
             continue
           }
 
-          switch runOneTest(
+          switch await runOneTestAsync(
             fullTestName: fullTestName,
             testSuite: testSuite,
             test: t,
@@ -1680,7 +1696,7 @@ public func runAllTests() {
   if _isChildProcess {
     _childProcess()
   } else {
-    var runTestsInProcess: Bool = false
+    var runTestsInProcess: Bool = !platformSupportSpawnChild
     var filter: String?
     var args = [String]()
     var i = 0
@@ -1750,7 +1766,7 @@ public func runAllTestsAsync() async {
   if _isChildProcess {
     await _childProcessAsync()
   } else {
-    var runTestsInProcess: Bool = false
+    var runTestsInProcess: Bool = !platformSupportSpawnChild
     var filter: String?
     var args = [String]()
     var i = 0

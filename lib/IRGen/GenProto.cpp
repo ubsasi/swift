@@ -1922,7 +1922,7 @@ namespace {
         }
 
         // Add the witness.
-        B.addRelativeAddress(witnesses.front());
+        B.addRelativeAddressOrNull(witnesses.front());
         witnesses = witnesses.drop_front();
       }
       assert(witnesses.empty() && "Wrong # of resilient witnesses");

@@ -84,12 +84,17 @@ if(("${SWIFT_HOST_VARIANT_SDK}" STREQUAL "${SWIFT_PRIMARY_VARIANT_SDK}") AND
     endif()
   endif()
 
+  if(NOT SWIFT_STDLIB_SINGLE_THREADED_RUNTIME)
+    list(APPEND PLATFORM_SOURCES Mutex.cpp)
+  endif()
+
   # Don't complain about these files not being in the sources list.
   set(LLVM_OPTIONAL_SOURCES
     weak.mm
     Refcounting.mm
     Actor.cpp
-    TaskStatus.cpp)
+    TaskStatus.cpp
+    Mutex.cpp)
 
   add_swift_unittest(SwiftRuntimeTests
     Array.cpp
@@ -97,7 +102,6 @@ if(("${SWIFT_HOST_VARIANT_SDK}" STREQUAL "${SWIFT_PRIMARY_VARIANT_SDK}") AND
     CompatibilityOverrideConcurrency.cpp
     Concurrent.cpp
     Metadata.cpp
-    Mutex.cpp
     Enum.cpp
     Refcounting.cpp
     Stdlib.cpp

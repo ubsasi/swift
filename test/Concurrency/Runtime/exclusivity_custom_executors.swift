@@ -9,6 +9,7 @@
 
 // Disabled until test hang can be looked at.
 // UNSUPPORTED: OS=windows-msvc
+// UNSUPPORTED: OS=wasi
 
 // UNSUPPORTED: use_os_stdlib
 

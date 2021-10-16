@@ -200,6 +200,7 @@ func checkPtr(
   }
 }
 
+#if !os(WASI)
 UnsafeMutableRawPointerExtraTestSuite.test("initializeMemory:as:from:count:") {
   let check = checkPtr(UnsafeMutableRawPointer.initializeMemory(as:from:count:))
   check(Check.Disjoint)
@@ -220,6 +221,7 @@ UnsafeMutableRawPointerExtraTestSuite.test("initializeMemory:as:from:count:.Righ
     check(Check.RightOverlap)
   }
 }
+#endif
 
 UnsafeMutableRawPointerExtraTestSuite.test("moveInitialize:from:") {
   let check =
@@ -229,6 +231,7 @@ UnsafeMutableRawPointerExtraTestSuite.test("moveInitialize:from:") {
   check(Check.RightOverlap)
 }
 
+#if !os(WASI)
 UnsafeMutableRawPointerExtraTestSuite.test("absurd.allocation.misaligned") {
   expectCrashLater()
   let mustFail = UnsafeMutableRawPointer.allocate(byteCount: 1024,
@@ -242,5 +245,6 @@ UnsafeMutableRawPointerExtraTestSuite.test("absurd.allocation.gargantuan") {
                                                   alignment: 0)
   expectUnreachable()
 }
+#endif
 
 runAllTests()

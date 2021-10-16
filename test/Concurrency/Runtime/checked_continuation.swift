@@ -6,6 +6,7 @@
 // UNSUPPORTED: back_deployment_runtime
 
 // UNSUPPORTED: OS=windows-msvc
+// UNSUPPORTED: OS=wasi
 
 import _Concurrency
 import StdlibUnittest

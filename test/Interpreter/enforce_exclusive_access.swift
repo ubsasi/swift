@@ -4,6 +4,7 @@
 // RUN: %target-codesign %t/a.out
 // RUN: %target-run %t/a.out
 // REQUIRES: executable_test
+// UNSUPPORTED: single_threaded_runtime
 
 // UNSUPPORTED: use_os_stdlib
 

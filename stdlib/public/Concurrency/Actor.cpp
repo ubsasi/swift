@@ -45,7 +45,10 @@
 #include "llvm/ADT/PointerIntPair.h"
 #include "TaskPrivate.h"
 #include "VoucherSupport.h"
+
+#if !SWIFT_CONCURRENCY_COOPERATIVE_GLOBAL_EXECUTOR
 #include <dispatch/dispatch.h>
+#endif
 
 #if defined(__APPLE__)
 #include <asl.h>
@@ -294,6 +297,8 @@ static bool isExecutingOnMainThread() {
   }
 
   return __initialPthread == GetCurrentThread();
+#elif defined(__wasi__)
+  return true;
 #else
   return pthread_main_np() == 1;
 #endif
