@@ -15,7 +15,7 @@ jobs:
   build_toolchain:
     env:
       TOOLCHAIN_CHANNEL: 5.5
-      DEVELOPER_DIR: /Applications/Xcode_12.5.app/Contents/Developer/
+      DEVELOPER_DIR: /Applications/Xcode_13.0.app/Contents/Developer/
     strategy:
       matrix:
         include:
