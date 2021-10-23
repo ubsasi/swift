@@ -405,7 +405,7 @@ public:
         DisableAutolinkStdlib(false),
         PrintInlineTree(false), EmbedMode(IRGenEmbedMode::None),
         LLVMLTOKind(IRGenLLVMLTOKind::None),
-        SwiftAsyncFramePointer(SwiftAsyncFramePointerKind::Always),
+        SwiftAsyncFramePointer(SwiftAsyncFramePointerKind::Auto),
         HasValueNamesSetting(false),
         ValueNames(false), EnableReflectionMetadata(true),
         EnableReflectionNames(true), EnableAnonymousContextMangledNames(false),
