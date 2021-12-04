@@ -690,7 +690,7 @@ public:
 
   /// Properly construct an actor, except for the heap header.
   void initialize() {
-    new (&CurrentState) std::atomic<State>(State{JobRef(), Flags()});
+    new (&CurrentState) swift::atomic<State>(State{JobRef(), Flags()});
     JobStorageHeapObject.metadata = nullptr;
   }
 
