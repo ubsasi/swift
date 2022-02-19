@@ -141,7 +141,7 @@ using JobInvokeFunction =
 
 using TaskContinuationFunction =
   SWIFT_CC(swiftasync)
-  void (SWIFT_ASYNC_CONTEXT AsyncContext *);
+  void (SWIFT_ASYNC_CONTEXT AsyncContext *, swift::SwiftError *);
 
 using ThrowingTaskFutureWaitContinuationFunction =
   SWIFT_CC(swiftasync)

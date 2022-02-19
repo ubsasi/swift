@@ -233,7 +233,7 @@ static void swift_asyncLet_getImpl(SWIFT_ASYNC_CONTEXT AsyncContext *callerConte
                                    AsyncContext *callContext) {
   // Don't need to do anything if the result buffer is already populated.
   if (asImpl(alet)->hasResultInBuffer()) {
-    return resumeFunction(callerContext);
+    return resumeFunction(callerContext, nullptr);
   }
 
   // Mark the async let as having its result populated.
@@ -433,7 +433,7 @@ static void swift_asyncLet_finishImpl(SWIFT_ASYNC_CONTEXT AsyncContext *callerCo
 
 SWIFT_CC(swiftasync)
 static void _asyncLet_consume_continuation(
-                                SWIFT_ASYNC_CONTEXT AsyncContext *callContext) {
+                                SWIFT_ASYNC_CONTEXT AsyncContext *callContext, swift::SwiftError *error) {
   // Retrieve the async let pointer from the context.
   auto continuationContext
     = reinterpret_cast<AsyncLetContinuationContext*>(callContext);

@@ -426,7 +426,7 @@ static void completeTaskWithClosure(SWIFT_ASYNC_CONTEXT AsyncContext *context,
 }
 
 SWIFT_CC(swiftasync)
-static void non_future_adapter(SWIFT_ASYNC_CONTEXT AsyncContext *_context) {
+static void non_future_adapter(SWIFT_ASYNC_CONTEXT AsyncContext *_context, swift::SwiftError *error) {
   auto asyncContextPrefix = reinterpret_cast<AsyncContextPrefix *>(
       reinterpret_cast<char *>(_context) - sizeof(AsyncContextPrefix));
   return asyncContextPrefix->asyncEntryPoint(
@@ -434,7 +434,7 @@ static void non_future_adapter(SWIFT_ASYNC_CONTEXT AsyncContext *_context) {
 }
 
 SWIFT_CC(swiftasync)
-static void future_adapter(SWIFT_ASYNC_CONTEXT AsyncContext *_context) {
+static void future_adapter(SWIFT_ASYNC_CONTEXT AsyncContext *_context, swift::SwiftError *error) {
   auto asyncContextPrefix = reinterpret_cast<FutureAsyncContextPrefix *>(
       reinterpret_cast<char *>(_context) - sizeof(FutureAsyncContextPrefix));
   return asyncContextPrefix->asyncEntryPoint(
@@ -443,7 +443,7 @@ static void future_adapter(SWIFT_ASYNC_CONTEXT AsyncContext *_context) {
 }
 
 SWIFT_CC(swiftasync)
-static void task_wait_throwing_resume_adapter(SWIFT_ASYNC_CONTEXT AsyncContext *_context) {
+static void task_wait_throwing_resume_adapter(SWIFT_ASYNC_CONTEXT AsyncContext *_context, swift::SwiftError *error) {
 
   auto context = static_cast<TaskFutureWaitAsyncContext *>(_context);
   auto resumeWithError =
@@ -453,8 +453,8 @@ static void task_wait_throwing_resume_adapter(SWIFT_ASYNC_CONTEXT AsyncContext *
 
 SWIFT_CC(swiftasync)
 static void
-task_future_wait_resume_adapter(SWIFT_ASYNC_CONTEXT AsyncContext *_context) {
-  return _context->ResumeParent(_context->Parent);
+task_future_wait_resume_adapter(SWIFT_ASYNC_CONTEXT AsyncContext *_context, swift::SwiftError *error) {
+  return _context->ResumeParent(_context->Parent, error);
 }
 
 const void *const swift::_swift_concurrency_debug_non_future_adapter =
@@ -937,7 +937,7 @@ static void swift_task_future_waitImpl(
     auto future = task->futureFragment();
     future->getResultType()->vw_initializeWithCopy(result,
                                                    future->getStoragePtr());
-    return resumeFn(callerContext);
+    return resumeFn(callerContext, nullptr);
   }
 
   case FutureFragment::Status::Error:
@@ -1084,7 +1084,7 @@ static void swift_continuation_awaitImpl(ContinuationAsyncContext *context) {
     if (context->isExecutorSwitchForced())
       return swift_task_switch(context, context->ResumeParent,
                                context->ResumeToExecutor);
-    return context->ResumeParent(context);
+    return context->ResumeParent(context, nullptr);
   }
 
   // Load the current task (we alreaady did this in assertions builds).
@@ -1117,7 +1117,7 @@ static void swift_continuation_awaitImpl(ContinuationAsyncContext *context) {
   if (context->isExecutorSwitchForced())
     return swift_task_switch(context, context->ResumeParent,
                              context->ResumeToExecutor);
-  return context->ResumeParent(context);
+  return context->ResumeParent(context, nullptr);
 }
 
 static void resumeTaskAfterContinuation(AsyncTask *task,

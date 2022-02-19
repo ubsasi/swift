@@ -287,7 +287,7 @@ public:
   /// runInExecutorContext.
   SWIFT_CC(swiftasync)
   void runInFullyEstablishedContext() {
-    return ResumeTask(ResumeContext); // 'return' forces tail call
+    return ResumeTask(ResumeContext, nullptr); // 'return' forces tail call
   }
 
   /// A task can have the following states:
@@ -655,7 +655,7 @@ public:
   void resumeParent() {
     // TODO: destroy context before returning?
     // FIXME: force tail call
-    return ResumeParent(Parent);
+    return ResumeParent(Parent, nullptr);
   }
 };
 

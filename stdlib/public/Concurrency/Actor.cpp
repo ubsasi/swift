@@ -1732,7 +1732,7 @@ static void swift_task_switchImpl(SWIFT_ASYNC_CONTEXT AsyncContext *resumeContex
   // we can just immediately continue running with the resume function
   // we were passed in.
   if (!currentExecutor.mustSwitchToRun(newExecutor)) {
-    return resumeFunction(resumeContext); // 'return' forces tail call
+    return resumeFunction(resumeContext, nullptr); // 'return' forces tail call
   }
 
   // Park the task for simplicity instead of trying to thread the

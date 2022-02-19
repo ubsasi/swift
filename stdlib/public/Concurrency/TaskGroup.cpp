@@ -656,7 +656,7 @@ void TaskGroupImpl::offer(AsyncTask *completedTask, AsyncContext *context) {
 
 SWIFT_CC(swiftasync)
 static void
-task_group_wait_resume_adapter(SWIFT_ASYNC_CONTEXT AsyncContext *_context) {
+task_group_wait_resume_adapter(SWIFT_ASYNC_CONTEXT AsyncContext *_context, swift::SwiftError *error) {
 
   auto context = static_cast<TaskFutureWaitAsyncContext *>(_context);
   auto resumeWithError =
