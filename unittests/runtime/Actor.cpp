@@ -282,7 +282,7 @@ TEST(ActorTest, actorSwitch) {
         std::get<0>(context->values) = swift_task_getCurrent();
 
         auto continuation = prepareContinuation<Context>(
-          [](Context *context) SWIFT_CC(swiftasync) {
+          [](Context *context, swift::SwiftError *error) SWIFT_CC(swiftasync) {
             EXPECT_PROGRESS(2);
             auto executor = swift_task_getCurrentExecutor();
             EXPECT_FALSE(executor.isGeneric());
@@ -290,7 +290,7 @@ TEST(ActorTest, actorSwitch) {
                       executor);
             EXPECT_EQ(swift_task_getCurrent(), context->get<0>());
             auto continuation = prepareContinuation<Context>(
-              [](Context *context) SWIFT_CC(swiftasync) {
+              [](Context *context, swift::SwiftError *error) SWIFT_CC(swiftasync) {
                 EXPECT_PROGRESS(3);
                 EXPECT_TRUE(swift_task_getCurrentExecutor().isGeneric());
                 EXPECT_EQ(swift_task_getCurrent(), context->get<0>());
