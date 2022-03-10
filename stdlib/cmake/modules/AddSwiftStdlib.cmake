@@ -284,7 +284,7 @@ function(_add_target_variant_c_compile_flags)
   endif()
 
   if("${CFLAGS_SDK}" STREQUAL "WASI")
-    list(APPEND result "-D_WASI_EMULATED_MMAN")
+    list(APPEND result "-D_WASI_EMULATED_MMAN" "-D_WASI_EMULATED_SIGNAL" "-D_WASI_EMULATED_PROCESS_CLOCKS")
   endif()
 
   if("${CFLAGS_SDK}" STREQUAL "LINUX")
@@ -294,11 +294,7 @@ function(_add_target_variant_c_compile_flags)
     endif()
   endif()
 
-  if("${CFLAGS_SDK}" STREQUAL "WASI")
-    list(APPEND result "-D_WASI_EMULATED_MMAN")
-  endif()
-
-  if(SWIFT_DISABLE_OBJC_INTEROP)
+  if(NOT SWIFT_STDLIB_ENABLE_OBJC_INTEROP)
     list(APPEND result "-DSWIFT_OBJC_INTEROP=0")
   endif()
 
