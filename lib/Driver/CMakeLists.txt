@@ -2,6 +2,7 @@
 
 set(swiftDriver_sources
   Action.cpp
+  BareMetalToolchains.cpp
   Compilation.cpp
   DarwinToolChains.cpp
   Driver.cpp

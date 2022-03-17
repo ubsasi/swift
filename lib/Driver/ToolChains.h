@@ -133,6 +133,38 @@ public:
                                       bool shared = true) const override;
 };
 
+class LLVM_LIBRARY_VISIBILITY BareMetal : public ToolChain {
+protected:
+  InvocationInfo constructInvocation(const InterpretJobAction &job,
+                                     const JobContext &context) const override;
+  InvocationInfo constructInvocation(const AutolinkExtractJobAction &job,
+                                     const JobContext &context) const override;
+
+  /// If provided, and if the user has not already explicitly specified a
+  /// linker to use via the "-fuse-ld=" option, this linker will be passed to
+  /// the compiler invocation via "-fuse-ld=". Return an empty string to not
+  /// specify any specific linker (the "-fuse-ld=" option will not be
+  /// specified).
+  ///
+  /// The default behavior is to use the gold linker on ARM architectures,
+  /// and to not provide a specific linker otherwise.
+  virtual std::string getDefaultLinker() const;
+
+  bool addRuntimeRPath(const llvm::Triple &T,
+                       const llvm::opt::ArgList &Args) const;
+
+  InvocationInfo constructInvocation(const DynamicLinkJobAction &job,
+                                     const JobContext &context) const override;
+  InvocationInfo constructInvocation(const StaticLinkJobAction &job,
+                                     const JobContext &context) const override;
+
+public:
+  BareMetal(const Driver &D, const llvm::Triple &Triple)
+      : ToolChain(D, Triple) {}
+  ~BareMetal() = default;
+  std::string sanitizerRuntimeLibName(StringRef Sanitizer,
+                                      bool shared = true) const override;
+};
 
 class LLVM_LIBRARY_VISIBILITY GenericUnix : public ToolChain {
 protected:
