@@ -294,7 +294,7 @@ function(_add_target_variant_c_compile_flags)
     endif()
   endif()
 
-  if(NOT SWIFT_STDLIB_ENABLE_OBJC_INTEROP)
+  if(SWIFT_DISABLE_OBJC_INTEROP)
     list(APPEND result "-DSWIFT_OBJC_INTEROP=0")
   endif()
 
