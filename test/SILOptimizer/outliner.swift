@@ -1,5 +1,5 @@
-// RUN: %target-swift-frontend -Osize -import-objc-header %S/Inputs/Outliner.h %s -emit-sil -enforce-exclusivity=unchecked -enable-copy-propagation -disable-lexical-lifetimes | %FileCheck %s
-// RUN: %target-swift-frontend -Osize -g -import-objc-header %S/Inputs/Outliner.h %s -emit-sil -enforce-exclusivity=unchecked -enable-copy-propagation -disable-lexical-lifetimes | %FileCheck %s
+// RUN: %target-swift-frontend -Osize -import-objc-header %S/Inputs/Outliner.h %s -emit-sil -enforce-exclusivity=unchecked -enable-copy-propagation -enable-lexical-borrow-scopes=false | %FileCheck %s
+// RUN: %target-swift-frontend -Osize -g -import-objc-header %S/Inputs/Outliner.h %s -emit-sil -enforce-exclusivity=unchecked -enable-copy-propagation -enable-lexical-borrow-scopes=false | %FileCheck %s
 
 // REQUIRES: objc_interop
 // REQUIRES: optimized_stdlib
@@ -60,8 +60,8 @@ public func testOutlining() {
 }
 
 // CHECK-LABEL: sil @$s8outliner9dontCrash1ayyp_tF : $@convention(thin) (@in_guaranteed Any) -> () {
-// CHECK:  [[OBJ:%.*]] = open_existential_ref {{.*}} : $AnyObject to $@opened("{{.*}}") (AnyObject)
-// CHECK:  [[METH:%.*]] = objc_method [[OBJ]] : $@opened("{{.*}}") (AnyObject), #Treeish.treeishChildren!foreign : <Self where Self : Treeish> (Self) -> () -> [Any]?
+// CHECK:  [[OBJ:%.*]] = open_existential_ref {{.*}} : $AnyObject to $@opened("{{.*}}") AnyObject
+// CHECK:  [[METH:%.*]] = objc_method [[OBJ]] : $@opened("{{.*}}") AnyObject, #Treeish.treeishChildren!foreign : <Self where Self : Treeish> (Self) -> () -> [Any]?
 // CHECK:  [[RES:%.*]] = apply [[METH]]([[OBJ]]) : $@convention(objc_method)
 // CHECK:  switch_enum [[RES]]
 // CHECK: } // end sil function '$s8outliner9dontCrash1ayyp_tF'

@@ -449,6 +449,10 @@ static TaskGroup *asAbstract(TaskGroupImpl *group) {
   return reinterpret_cast<TaskGroup*>(group);
 }
 
+TaskGroupTaskStatusRecord * TaskGroup::getTaskRecord() {
+    return asImpl(this)->getTaskRecord();
+}
+
 // =============================================================================
 // ==== initialize -------------------------------------------------------------
 
@@ -472,15 +476,13 @@ static void swift_taskGroup_initializeImpl(TaskGroup *group, const Metadata *T) 
 // =============================================================================
 // ==== add / attachChild ------------------------------------------------------
 
-SWIFT_CC(swift)
-static void swift_taskGroup_attachChildImpl(TaskGroup *group,
-                                            AsyncTask *child) {
+void TaskGroup::addChildTask(AsyncTask *child) {
   SWIFT_TASK_DEBUG_LOG("attach child task = %p to group = %p", child, group);
 
   // The counterpart of this (detachChild) is performed by the group itself,
   // when it offers the completed (child) task's value to a waiting task -
   // during the implementation of `await group.next()`.
-  auto groupRecord = asImpl(group)->getTaskRecord();
+  auto groupRecord = asImpl(this)->getTaskRecord();
   groupRecord->attachChild(child);
 }
 

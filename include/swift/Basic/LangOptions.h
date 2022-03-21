@@ -283,6 +283,9 @@ namespace swift {
     /// Whether to dump debug info for request evaluator cycles.
     bool DebugDumpCycles = false;
 
+    /// Disable SIL substituted function types.
+    bool DisableSubstSILFunctionTypes = false;
+
     /// Whether to diagnose an ephemeral to non-ephemeral conversion as an
     /// error.
     bool DiagnoseInvalidEphemeralnessAsError = false;
@@ -309,6 +312,14 @@ namespace swift {
     /// Enable experimental support for named opaque result types, e.g.
     /// `func f() -> <T> T`.
     bool EnableExperimentalNamedOpaqueTypes = false;
+
+    /// Enable support for explicit existential types via the \c any
+    /// keyword.
+    bool EnableExplicitExistentialTypes = true;
+
+    /// Enable experimental support for universal existential types
+    /// as proposed in SE-0309.
+    bool EnableExperimentalUniversalExistentials = false;
 
     /// Enable experimental flow-sensitive concurrent captures.
     bool EnableExperimentalFlowSensitiveConcurrentCaptures = false;

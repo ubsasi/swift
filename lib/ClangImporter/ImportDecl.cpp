@@ -2473,11 +2473,6 @@ namespace {
       for (auto redecl : decl->redecls())
         Impl.ImportedDecls[{redecl, getVersion()}] = enumDecl;
 
-      // Because a namespaces's decl context is the bridging header, make sure
-      // we add them to the bridging header lookup table.
-      addEntryToLookupTable(*Impl.BridgingHeaderLookupTable,
-                            const_cast<clang::NamespaceDecl *>(decl),
-                            Impl.getNameImporter());
       return enumDecl;
     }
 
@@ -4206,6 +4201,13 @@ namespace {
       if (!importedName) {
         return nullptr;
       }
+      if (correctSwiftName) {
+        // FIXME: We should import this as a variant, but to do that, we'll also
+        // need to make this a computed variable or otherwise fix how the rest
+        // of the compiler thinks about stored properties in imported structs.
+        // For now, just don't import it at all. (rdar://86069786)
+        return nullptr;
+      }
 
       auto name = importedName.getDeclName().getBaseIdentifier();
 
@@ -4248,6 +4250,7 @@ namespace {
 
       // If this is a compatibility stub, handle it as such.
       if (correctSwiftName)
+        // FIXME: Temporarily unreachable because of check above.
         markAsVariant(result, *correctSwiftName);
 
       return result;
@@ -6155,6 +6158,9 @@ SwiftDeclConverter::importSwiftNewtype(const clang::TypedefNameDecl *decl,
   // Local function to add a known protocol only when the
   // underlying type conforms to it.
   auto computedNominal = computedPropertyUnderlyingType->getAnyNominal();
+  if (auto existential =
+          computedPropertyUnderlyingType->getAs<ExistentialType>())
+    computedNominal = existential->getConstraintType()->getAnyNominal();
   auto transferKnown = [&](KnownProtocolKind kind) {
     if (!computedNominal)
       return false;
@@ -9766,13 +9772,21 @@ void ClangImporter::Implementation::loadAllMembersOfRecordDecl(
   llvm::SmallVector<Decl *, 16> members;
   for (const clang::Decl *m : clangRecord->decls()) {
     auto nd = dyn_cast<clang::NamedDecl>(m);
+    if (!nd)
+      continue;
+
     // Currently, we don't import unnamed bitfields.
     if (isa<clang::FieldDecl>(m) &&
         cast<clang::FieldDecl>(m)->isUnnamedBitfield())
       continue;
 
-    if (nd && nd == nd->getCanonicalDecl() &&
-        nd->getDeclContext() == clangRecord &&
+    // Make sure we always pull in record fields. Everything else had better
+    // be canonical. Note that this check mostly catches nested C++ types since
+    // we import nested C struct types by C's usual convention of chucking them
+    // into the global namespace.
+    const bool isCanonicalInContext =
+        (isa<clang::FieldDecl>(nd) || nd == nd->getCanonicalDecl());
+    if (isCanonicalInContext && nd->getDeclContext() == clangRecord &&
         isVisibleClangEntry(nd))
       insertMembersAndAlternates(nd, members);
   }

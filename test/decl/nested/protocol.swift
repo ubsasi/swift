@@ -1,4 +1,4 @@
-// RUN: %target-typecheck-verify-swift -parse-as-library
+// RUN: %target-typecheck-verify-swift -parse-as-library -enable-experimental-universal-existentials
 
 // Protocols cannot be nested inside other types, and types cannot
 // be nested inside protocols
@@ -31,7 +31,7 @@ protocol OuterProtocol {
 struct ConformsToOuterProtocol : OuterProtocol {
   typealias Hen = Int
 
-  func f() { let _ = InnerProtocol.self } // Ok
+  func f() { let _ = InnerProtocol.self } // expected-warning {{protocol 'InnerProtocol' as a type must be explicitly marked as 'any'}}
 }
 
 protocol Racoon {

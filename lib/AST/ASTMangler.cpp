@@ -831,9 +831,11 @@ std::string ASTMangler::mangleOpaqueTypeDecl(const OpaqueTypeDecl *decl) {
 }
 
 std::string ASTMangler::mangleOpaqueTypeDecl(const ValueDecl *decl) {
-  DWARFMangling = true;
   OptimizeProtocolNames = false;
-  return mangleDeclAsUSR(decl, MANGLING_PREFIX_STR);
+
+  beginMangling();
+  appendEntity(decl);
+  return finalize();
 }
 
 std::string ASTMangler::mangleGenericSignature(const GenericSignature sig) {
@@ -1249,6 +1251,11 @@ void ASTMangler::appendType(Type type, GenericSignature sig,
       // same production:
       auto layout = type->getExistentialLayout();
       return appendExistentialLayout(layout, sig, forDecl);
+    }
+
+    case TypeKind::Existential: {
+      auto constraint = cast<ExistentialType>(tybase)->getConstraintType();
+      return appendType(constraint, sig, forDecl);
     }
 
     case TypeKind::UnboundGeneric:
@@ -2647,6 +2654,9 @@ void ASTMangler::appendTypeListElement(Identifier name, Type elementType,
   if (flags.isIsolated())
     appendOperator("Yi");
 
+  if (flags.isCompileTimeConst())
+    appendOperator("Yt");
+
   if (!name.empty())
     appendIdentifier(name.str());
   if (flags.isVariadic())
@@ -2972,7 +2982,7 @@ CanType ASTMangler::getDeclTypeForMangling(
   // If this declaration predates concurrency, adjust its type to not
   // contain type features that were not available pre-concurrency. This
   // cannot alter the ABI in any way.
-  if (decl->predatesConcurrency()) {
+  if (decl->preconcurrency()) {
     ty = ty->stripConcurrency(/*recurse=*/true, /*dropGlobalActor=*/true);
   }
 

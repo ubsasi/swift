@@ -4028,6 +4028,9 @@ public:
   SILValue getSrc() const { return Operands[Src].get(); }
   SILValue getDest() const { return Operands[Dest].get(); }
 
+  void setSrc(SILValue V) { Operands[Src].set(V); }
+  void setDest(SILValue V) { Operands[Dest].set(V); }
+
   ArrayRef<Operand> getAllOperands() const { return Operands.asArray(); }
   MutableArrayRef<Operand> getAllOperands() { return Operands.asArray(); }
 
@@ -6836,6 +6839,11 @@ class OpenExistentialAddrInst
                           SILType SelfTy, OpenedExistentialAccess AccessKind);
 
 public:
+  static bool isRead(SILInstruction *inst) {
+    auto *open = dyn_cast<OpenExistentialAddrInst>(inst);
+    return open && open->getAccessKind() == OpenedExistentialAccess::Immutable;
+  }
+
   OpenedExistentialAccess getAccessKind() const { return ForAccess; }
 };
 
@@ -7053,7 +7061,7 @@ public:
     auto exType = getType().getASTType();
     auto concreteType = getOperand()->getType().getASTType();
     while (auto exMetatype = dyn_cast<ExistentialMetatypeType>(exType)) {
-      exType = exMetatype.getInstanceType();
+      exType = exMetatype->getExistentialInstanceType()->getCanonicalType();
       concreteType = cast<MetatypeType>(concreteType).getInstanceType();
     }
     assert(exType.isExistentialType());

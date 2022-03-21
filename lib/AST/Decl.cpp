@@ -20,6 +20,7 @@
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/ASTMangler.h"
+#include "swift/AST/CaptureInfo.h"
 #include "swift/AST/DiagnosticEngine.h"
 #include "swift/AST/DiagnosticsSema.h"
 #include "swift/AST/ExistentialLayout.h"
@@ -724,8 +725,8 @@ Optional<CustomAttrNominalPair> Decl::getGlobalActorAttr() const {
                            None);
 }
 
-bool Decl::predatesConcurrency() const {
-  if (getAttrs().hasAttribute<PredatesConcurrencyAttr>())
+bool Decl::preconcurrency() const {
+  if (getAttrs().hasAttribute<PreconcurrencyAttr>())
     return true;
 
   // Imported C declarations always predate concurrency.
@@ -2938,7 +2939,9 @@ TypeRepr *ValueDecl::getOpaqueResultTypeRepr() const {
 
 OpaqueTypeDecl *ValueDecl::getOpaqueResultTypeDecl() const {
   if (getOpaqueResultTypeRepr() == nullptr) {
-    if (isa<ModuleDecl>(this))
+    if (!isa<VarDecl>(this) &&
+        !isa<FuncDecl>(this) &&
+        !isa<SubscriptDecl>(this))
       return nullptr;
     auto file = cast<FileUnit>(getDeclContext()->getModuleScopeContext());
     // Don't look up when the decl is from source, otherwise a cycle will happen.
@@ -5150,7 +5153,10 @@ findProtocolSelfReferences(const ProtocolDecl *proto, Type type,
     return SelfReferenceInfo::forSelfRef(SelfReferencePosition::Invariant);
 
   // Protocol compositions preserve variance.
-  if (auto *comp = type->getAs<ProtocolCompositionType>()) {
+  auto constraint = type;
+  if (auto existential = constraint->getAs<ExistentialType>())
+    constraint = existential->getConstraintType();
+  if (auto *comp = constraint->getAs<ProtocolCompositionType>()) {
     // 'Self' may be referenced only in a superclass component.
     if (const auto superclass = comp->getSuperclass()) {
       return findProtocolSelfReferences(proto, superclass, position);
@@ -5256,6 +5262,11 @@ bool ProtocolDecl::isAvailableInExistential(const ValueDecl *decl) const {
   }
 
   return true;
+}
+
+bool ProtocolDecl::existentialRequiresAny() const {
+  return evaluateOrDefault(getASTContext().evaluator,
+    ExistentialRequiresAnyRequest{const_cast<ProtocolDecl *>(this)}, true);
 }
 
 StringRef ProtocolDecl::getObjCRuntimeName(
@@ -6532,7 +6543,7 @@ ParamDecl::ParamDecl(SourceLoc specifierLoc,
               /*IsStatic*/ false,
               VarDecl::Introducer::Let, parameterNameLoc, parameterName, dc,
               StorageIsNotMutable),
-      ArgumentNameAndDestructured(argumentName, false),
+      ArgumentNameAndFlags(argumentName, None),
       ParameterNameLoc(parameterNameLoc),
       ArgumentNameLoc(argumentNameLoc), SpecifierLoc(specifierLoc) {
   Bits.ParamDecl.SpecifierComputed = false;
@@ -8583,7 +8594,8 @@ bool ClassDecl::isNSObject() const {
   if (!getName().is("NSObject")) return false;
   ASTContext &ctx = getASTContext();
   return (getModuleContext()->getName() == ctx.Id_Foundation ||
-          getModuleContext()->getName() == ctx.Id_ObjectiveC);
+          getModuleContext()->getName() == ctx.Id_ObjectiveC ||
+          getModuleContext()->getName().is("SwiftFoundation"));
 }
 
 Type ClassDecl::getSuperclass() const {
@@ -8609,6 +8621,41 @@ void ClassDecl::setSuperclass(Type superclass) {
     true);
 }
 
+bool VarDecl::isSelfParamCaptureIsolated() const {
+  assert(isSelfParamCapture());
+
+  // Find the "self" parameter that we captured and determine whether
+  // it is potentially isolated.
+  for (auto dc = getDeclContext(); dc; dc = dc->getParent()) {
+    if (auto func = dyn_cast<AbstractFunctionDecl>(dc)) {
+      if (auto selfDecl = func->getImplicitSelfDecl()) {
+        return selfDecl->isIsolated();
+      }
+
+      if (auto capture = func->getCaptureInfo().getIsolatedParamCapture())
+        return capture->isSelfParameter() || capture->isSelfParamCapture();
+    }
+
+    if (auto closure = dyn_cast<AbstractClosureExpr>(dc)) {
+      switch (auto isolation = closure->getActorIsolation()) {
+      case ClosureActorIsolation::Independent:
+      case ClosureActorIsolation::GlobalActor:
+        return false;
+
+      case ClosureActorIsolation::ActorInstance:
+        auto isolatedVar = isolation.getActorInstance();
+        return isolatedVar->isSelfParameter() ||
+            isolatedVar-isSelfParamCapture();
+      }
+    }
+
+    if (dc->isModuleScopeContext() || dc->isTypeContext())
+      break;
+  }
+
+  return false;
+}
+
 ActorIsolation swift::getActorIsolation(ValueDecl *value) {
   auto &ctx = value->getASTContext();
   return evaluateOrDefault(
@@ -8620,10 +8667,23 @@ ActorIsolation swift::getActorIsolationOfContext(DeclContext *dc) {
   if (auto *vd = dyn_cast_or_null<ValueDecl>(dc->getAsDecl()))
     return getActorIsolation(vd);
 
-  if (auto *init = dyn_cast<PatternBindingInitializer>(dc)) {
-    if (auto *var = init->getBinding()->getAnchoringVarDecl(
-            init->getBindingIndex()))
-      return getActorIsolation(var);
+  // In the context of the initializing or default-value expression of a
+  // stored property, the isolation varies between global and type members:
+  //   - For a static stored property, the isolation matches the VarDecl.
+  //   - For a field of a nominal type, the expression is not isolated.
+  // Without this distinction, a nominal can have non-async initializers
+  // with various kinds of isolation, so an impossible constraint can be
+  // created. See SE-0327 for details.
+  if (auto *var = dc->getNonLocalVarDecl()) {
+
+    // Isolation officially changes, as described above, in Swift 6+
+    if (dc->getASTContext().isSwiftVersionAtLeast(6) &&
+        var->isInstanceMember() &&
+        !var->getAttrs().hasAttribute<LazyAttr>()) {
+      return ActorIsolation::forUnspecified();
+    }
+
+     return getActorIsolation(var);
   }
 
   if (auto *closure = dyn_cast<AbstractClosureExpr>(dc)) {
@@ -8638,7 +8698,7 @@ ActorIsolation swift::getActorIsolationOfContext(DeclContext *dc) {
 
     case ClosureActorIsolation::ActorInstance: {
       auto selfDecl = isolation.getActorInstance();
-      auto actorClass = selfDecl->getType()->getRValueType()
+      auto actorClass = selfDecl->getType()->getReferenceStorageReferent()
           ->getClassOrBoundGenericClass();
       // FIXME: Doesn't work properly with generics
       assert(actorClass && "Bad closure actor isolation?");

@@ -104,6 +104,8 @@ NominalTypeDecl *CanType::getAnyNominal() const {
 }
 
 GenericTypeDecl *CanType::getAnyGeneric() const {
+  if (auto existential = dyn_cast<ExistentialType>(*this))
+    return existential->getConstraintType()->getAnyGeneric();
   if (auto Ty = dyn_cast<AnyGenericType>(*this))
     return Ty->getDecl();
   return nullptr;
@@ -190,6 +192,9 @@ bool CanType::isReferenceTypeImpl(CanType type, const GenericSignatureImpl *sig,
     return cast<ProtocolType>(type)->requiresClass();
   case TypeKind::ProtocolComposition:
     return cast<ProtocolCompositionType>(type)->requiresClass();
+  case TypeKind::Existential:
+    return isReferenceTypeImpl(cast<ExistentialType>(type).getConstraintType(),
+                               sig, functionsCount);
 
   case TypeKind::UnboundGeneric:
     return isa<ClassDecl>(cast<UnboundGenericType>(type)->getDecl());
@@ -293,6 +298,12 @@ ExistentialLayout TypeBase::getExistentialLayout() {
 }
 
 ExistentialLayout CanType::getExistentialLayout() {
+  if (auto existential = dyn_cast<ExistentialType>(*this))
+    return existential->getConstraintType()->getExistentialLayout();
+
+  if (auto metatype = dyn_cast<ExistentialMetatypeType>(*this))
+    return metatype->getInstanceType()->getExistentialLayout();
+
   if (auto proto = dyn_cast<ProtocolType>(*this))
     return ExistentialLayout(proto);
 
@@ -451,6 +462,8 @@ Type TypeBase::eraseOpenedExistential(OpenedArchetypeType *opened) {
       auto instanceType = metatypeType->getInstanceType();
       if (instanceType->hasOpenedExistential()) {
         instanceType = instanceType->eraseOpenedExistential(opened);
+        if (auto existential = instanceType->getAs<ExistentialType>())
+          instanceType = existential->getConstraintType();
         return ExistentialMetatypeType::get(instanceType);
       }
     }
@@ -1173,6 +1186,9 @@ Type TypeBase::replaceSelfParameterType(Type newSelf) {
 /// Look through a metatype, or just return the original type if it is
 /// not a metatype.
 Type TypeBase::getMetatypeInstanceType() {
+  if (auto existentialMetaType = getAs<ExistentialMetatypeType>())
+    return existentialMetaType->getExistentialInstanceType();
+
   if (auto metaTy = getAs<AnyMetatypeType>())
     return metaTy->getInstanceType();
 
@@ -1441,6 +1457,12 @@ CanType TypeBase::computeCanonicalType() {
     Type Composition = ProtocolCompositionType::get(C, CanProtos,
                                                     PCT->hasExplicitAnyObject());
     Result = Composition.getPointer();
+    break;
+  }
+  case TypeKind::Existential: {
+    auto *existential = cast<ExistentialType>(this);
+    auto constraint = existential->getConstraintType()->getCanonicalType();
+    Result = ExistentialType::get(constraint).getPointer();
     break;
   }
   case TypeKind::ExistentialMetatype: {
@@ -2584,13 +2606,16 @@ getForeignRepresentable(Type type, ForeignLanguage language,
   // If type has an error let's fail early.
   if (type->hasError())
     return failure();
-  
+
   // Look through one level of optional type, but remember that we did.
   bool wasOptional = false;
   if (auto valueType = type->getOptionalObjectType()) {
     type = valueType;
     wasOptional = true;
   }
+
+  if (auto existential = type->getAs<ExistentialType>())
+    type = existential->getConstraintType();
 
   // Objective-C object types, including metatypes.
   if (language == ForeignLanguage::ObjectiveC) {
@@ -2937,10 +2962,15 @@ static bool matchesFunctionType(CanAnyFunctionType fn1, CanAnyFunctionType fn2,
   auto ext1 = fn1->getExtInfo();
   auto ext2 = fn2->getExtInfo();
   if (matchMode.contains(TypeMatchFlags::AllowOverride)) {
-    if (ext2.isThrowing()) {
+    // Removing 'throwing' is ABI-compatible for synchronous functions, but
+    // not for async ones.
+    if (ext2.isThrowing() &&
+        !(ext2.isAsync() &&
+          matchMode.contains(TypeMatchFlags::AllowABICompatible))) {
       ext1 = ext1.withThrows(true);
     }
   }
+
   // If specified, allow an escaping function parameter to override a
   // non-escaping function parameter when the parameter is optional.
   // Note that this is checking 'ext2' rather than 'ext1' because parameters
@@ -3179,9 +3209,11 @@ Type ArchetypeType::getExistentialType() const {
   for (auto proto : getConformsTo()) {
     constraintTypes.push_back(proto->getDeclaredInterfaceType());
   }
-  return ProtocolCompositionType::get(
-     const_cast<ArchetypeType*>(this)->getASTContext(), constraintTypes,
-                                      requiresClass());
+  auto &ctx = const_cast<ArchetypeType*>(this)->getASTContext();
+  auto constraint = ProtocolCompositionType::get(
+     ctx, constraintTypes, requiresClass());
+
+  return ExistentialType::get(constraint);
 }
 
 PrimaryArchetypeType::PrimaryArchetypeType(const ASTContext &Ctx,
@@ -4707,14 +4739,29 @@ case TypeKind::Id:
   case TypeKind::SILBox: {
     bool changed = false;
     auto boxTy = cast<SILBoxType>(base);
-#ifndef NDEBUG
-    // This interface isn't suitable for updating the substitution map in a
-    // generic SILBox.
-    for (Type type : boxTy->getSubstitutions().getReplacementTypes()) {
-      assert(type->isEqual(type.transformRec(fn))
+
+    SmallVector<Type, 4> newReplacements;
+    auto subs = boxTy->getSubstitutions();
+    for (Type type : subs.getReplacementTypes()) {
+      auto transformed = type.transformRec(fn);
+      // This interface isn't suitable for updating the substitution map in a
+      // generic SILBox, with the exception of stripping off ExistentialType.
+      assert((type->isEqual(transformed) ||
+              type.findIf([](Type type) {
+                 return type->is<ExistentialType>();
+               }))
              && "SILBoxType substitutions can't be transformed");
+      newReplacements.push_back(transformed->getCanonicalType());
+      if (!type->isEqual(transformed))
+        changed = true;
     }
-#endif
+
+    if (changed) {
+      subs = SubstitutionMap::get(subs.getGenericSignature(),
+                                  newReplacements,
+                                  subs.getConformances());
+    }
+
     SmallVector<SILField, 4> newFields;
     auto *l = boxTy->getLayout();
     for (auto f : l->getFields()) {
@@ -4726,7 +4773,7 @@ case TypeKind::Id:
     boxTy = SILBoxType::get(Ptr->getASTContext(),
                             SILLayout::get(Ptr->getASTContext(),
                                            l->getGenericSignature(), newFields),
-                            boxTy->getSubstitutions());
+                            subs);
     return boxTy;
   }
   
@@ -5236,6 +5283,19 @@ case TypeKind::Id:
       *this : InOutType::get(objectTy);
   }
 
+  case TypeKind::Existential: {
+    auto *existential = cast<ExistentialType>(base);
+    auto constraint = existential->getConstraintType().transformRec(fn);
+    if (!constraint || constraint->hasError())
+      return constraint;
+
+    if (constraint.getPointer() ==
+        existential->getConstraintType().getPointer())
+      return *this;
+
+    return ExistentialType::get(constraint);
+  }
+
   case TypeKind::ProtocolComposition: {
     auto pc = cast<ProtocolCompositionType>(base);
     SmallVector<Type, 4> substMembers;
@@ -5322,6 +5382,10 @@ bool Type::isPrivateStdlibType(bool treatNonBuiltinProtocolsAsPublic) const {
   Type Ty = *this;
   if (!Ty)
     return false;
+
+  if (auto existential = dyn_cast<ExistentialType>(Ty.getPointer()))
+    return existential->getConstraintType()
+        .isPrivateStdlibType(treatNonBuiltinProtocolsAsPublic);
 
   // A 'public' typealias can have an 'internal' type.
   if (auto *NAT = dyn_cast<TypeAliasType>(Ty.getPointer())) {
@@ -5429,6 +5493,10 @@ ReferenceCounting TypeBase::getReferenceCounting() {
     return ReferenceCounting::Unknown;
   }
 
+  case TypeKind::Existential:
+    return cast<ExistentialType>(type)->getConstraintType()
+        ->getReferenceCounting();
+
   case TypeKind::Function:
   case TypeKind::GenericFunction:
   case TypeKind::SILFunction:
@@ -5505,13 +5573,14 @@ SILBoxType::SILBoxType(ASTContext &C,
 Type TypeBase::openAnyExistentialType(OpenedArchetypeType *&opened) {
   assert(isAnyExistentialType());
   if (auto metaty = getAs<ExistentialMetatypeType>()) {
-    opened = OpenedArchetypeType::get(metaty->getInstanceType());
+    opened = OpenedArchetypeType::get(
+        metaty->getExistentialInstanceType()->getCanonicalType());
     if (metaty->hasRepresentation())
       return MetatypeType::get(opened, metaty->getRepresentation());
     else
       return MetatypeType::get(opened);
   }
-  opened = OpenedArchetypeType::get(this);
+  opened = OpenedArchetypeType::get(getCanonicalType());
   return opened;
 }
 

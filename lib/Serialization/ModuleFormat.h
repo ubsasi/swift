@@ -56,7 +56,7 @@ const uint16_t SWIFTMODULE_VERSION_MAJOR = 0;
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
 /// Don't worry about adhering to the 80-column limit for this line.
-const uint16_t SWIFTMODULE_VERSION_MINOR = 648; // mark_unresolved_move_addr
+const uint16_t SWIFTMODULE_VERSION_MINOR = 653; // enable explicit existentials
 
 /// A standard hash seed used for all string hashes in a serialized module.
 ///
@@ -1184,6 +1184,8 @@ namespace decls_block {
   using ArraySliceTypeLayout = SyntaxSugarTypeLayout<ARRAY_SLICE_TYPE>;
   using OptionalTypeLayout = SyntaxSugarTypeLayout<OPTIONAL_TYPE>;
   using VariadicSequenceTypeLayout = SyntaxSugarTypeLayout<VARIADIC_SEQUENCE_TYPE>;
+  using ExistentialTypeLayout =
+      SyntaxSugarTypeLayout<EXISTENTIAL_TYPE>;
 
   using DictionaryTypeLayout = BCRecordLayout<
     DICTIONARY_TYPE,
@@ -1290,6 +1292,7 @@ namespace decls_block {
     BCFixed<1>,             // implicit flag
     BCFixed<1>,             // class-bounded?
     BCFixed<1>,             // objc?
+    BCFixed<1>,             // existential-type-supported?
     AccessLevelField,       // access level
     BCVBR<4>,               // number of inherited types
     BCArray<TypeIDField>    // inherited types, followed by dependency types
@@ -1827,6 +1830,11 @@ namespace decls_block {
     IdentifierIDField // name
   >;
 
+  using MainTypeDeclAttrLayout = BCRecordLayout<
+    MainType_DECL_ATTR,
+    BCFixed<1> // implicit flag
+  >;
+
   using SemanticsDeclAttrLayout = BCRecordLayout<
     Semantics_DECL_ATTR,
     BCFixed<1>, // implicit flag
@@ -2021,6 +2029,12 @@ namespace decls_block {
     BCFixed<1>,  // implicit flag
     TypeIDField, // type referenced by this custom attribute
     BCFixed<1>   // is the argument (unsafe)
+  >;
+
+  using UnavailableFromAsyncDeclAttrLayout = BCRecordLayout<
+    UnavailableFromAsync_DECL_ATTR,
+    BCFixed<1>, // Implicit flag
+    BCBlob      // Message
   >;
 }
 

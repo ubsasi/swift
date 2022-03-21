@@ -1852,6 +1852,8 @@ namespace {
                                    TypeResolutionOptions options);
     NeverNullType resolveCompositionType(CompositionTypeRepr *repr,
                                          TypeResolutionOptions options);
+    NeverNullType resolveExistentialType(ExistentialTypeRepr *repr,
+                                         TypeResolutionOptions options);
     NeverNullType resolveMetatypeType(MetatypeTypeRepr *repr,
                                       TypeResolutionOptions options);
     NeverNullType resolveProtocolType(ProtocolTypeRepr *repr,
@@ -1947,7 +1949,8 @@ NeverNullType TypeResolver::resolveType(TypeRepr *repr,
 
   // Strip the "is function input" bits unless this is a type that knows about
   // them.
-  if (!isa<SpecifierTypeRepr>(repr) && !isa<TupleTypeRepr>(repr) &&
+  if (options.is(TypeResolverContext::FunctionInput) &&
+      !isa<SpecifierTypeRepr>(repr) && !isa<TupleTypeRepr>(repr) &&
       !isa<AttributedTypeRepr>(repr) && !isa<FunctionTypeRepr>(repr) &&
       !isa<IdentTypeRepr>(repr) &&
       !isa<ImplicitlyUnwrappedOptionalTypeRepr>(repr)) {
@@ -2056,6 +2059,16 @@ NeverNullType TypeResolver::resolveType(TypeRepr *repr,
 
     return !constraintType->hasError() ? ErrorType::get(constraintType)
                                        : ErrorType::get(getASTContext());
+  }
+
+  case TypeReprKind::Existential: {
+    if (!getASTContext().LangOpts.EnableExplicitExistentialTypes &&
+        !(options & TypeResolutionFlags::SilenceErrors)) {
+      diagnose(repr->getLoc(), diag::explicit_existential_not_supported);
+    }
+
+    auto *existential = cast<ExistentialTypeRepr>(repr);
+    return resolveExistentialType(existential, options);
   }
 
   case TypeReprKind::NamedOpaqueReturn:
@@ -2194,7 +2207,13 @@ TypeResolver::resolveAttributedType(TypeAttributes &attrs, TypeRepr *repr,
           Optional<MetatypeRepresentation> storedRepr;
           // The instance type is not a SIL type.
           auto instanceOptions = options;
-          instanceOptions.setContext(None);
+          TypeResolverContext context = TypeResolverContext::None;
+          if (isa<MetatypeTypeRepr>(repr)) {
+            context = TypeResolverContext::MetatypeBase;
+          } else if (isa<ProtocolTypeRepr>(repr)) {
+            context = TypeResolverContext::ProtocolMetatypeBase;
+          }
+          instanceOptions.setContext(context);
           instanceOptions -= TypeResolutionFlags::SILType;
 
           auto instanceTy = resolveType(base, instanceOptions);
@@ -2597,7 +2616,7 @@ TypeResolver::resolveAttributedType(TypeAttributes &attrs, TypeRepr *repr,
       diagnoseInvalid(repr, attrs.getLoc(TAK_opened), diag::opened_non_protocol,
                       ty);
     } else {
-      ty = OpenedArchetypeType::get(ty, attrs.OpenedID);
+      ty = OpenedArchetypeType::get(ty->getCanonicalType(), attrs.OpenedID);
     }
     attrs.clearAttribute(TAK_opened);
   }
@@ -3093,7 +3112,8 @@ NeverNullType TypeResolver::resolveSILFunctionType(
 
   ProtocolConformanceRef witnessMethodConformance;
   if (witnessMethodProtocol) {
-    auto resolved = resolveType(witnessMethodProtocol, options);
+    auto resolved = resolveType(witnessMethodProtocol,
+        options.withContext(TypeResolverContext::GenericRequirement));
     if (resolved->hasError())
       return resolved;
 
@@ -3369,6 +3389,11 @@ TypeResolver::resolveIdentifierType(IdentTypeRepr *IdType,
     return ErrorType::get(getASTContext());
   }
 
+  if (result->isConstraintType() &&
+      options.isConstraintImplicitExistential()) {
+    return ExistentialType::get(result);
+  }
+
   // Hack to apply context-specific @escaping to a typealias with an underlying
   // function type.
   if (result->is<FunctionType>())
@@ -3548,6 +3573,9 @@ NeverNullType TypeResolver::resolveImplicitlyUnwrappedOptionalType(
   case TypeResolverContext::TypeAliasDecl:
   case TypeResolverContext::GenericTypeAliasDecl:
   case TypeResolverContext::GenericRequirement:
+  case TypeResolverContext::SameTypeRequirement:
+  case TypeResolverContext::ProtocolMetatypeBase:
+  case TypeResolverContext::MetatypeBase:
   case TypeResolverContext::ImmediateOptionalTypeArgument:
   case TypeResolverContext::InExpression:
   case TypeResolverContext::EditorPlaceholderExpr:
@@ -3690,7 +3718,8 @@ TypeResolver::resolveCompositionType(CompositionTypeRepr *repr,
   };
 
   for (auto tyR : repr->getTypes()) {
-    auto ty = resolveType(tyR, options.withoutContext());
+    auto ty = resolveType(tyR,
+        options.withContext(TypeResolverContext::GenericRequirement));
     if (ty->hasError()) return ty;
 
     auto nominalDecl = ty->getAnyNominal();
@@ -3702,7 +3731,7 @@ TypeResolver::resolveCompositionType(CompositionTypeRepr *repr,
       continue;
     }
 
-    if (ty->isExistentialType()) {
+    if (ty->isConstraintType()) {
       auto layout = ty->getExistentialLayout();
       if (auto superclass = layout.explicitSuperclass)
         if (checkSuperclass(tyR->getStartLoc(), superclass))
@@ -3727,14 +3756,41 @@ TypeResolver::resolveCompositionType(CompositionTypeRepr *repr,
 
   // In user-written types, AnyObject constraints always refer to the
   // AnyObject type in the standard library.
-  return ProtocolCompositionType::get(getASTContext(), Members,
-                                      /*HasExplicitAnyObject=*/false);
+  auto composition =
+      ProtocolCompositionType::get(getASTContext(), Members,
+                                   /*HasExplicitAnyObject=*/false);
+  if (options.isConstraintImplicitExistential()) {
+    return ExistentialType::get(composition);
+  }
+  return composition;
+}
+
+NeverNullType
+TypeResolver::resolveExistentialType(ExistentialTypeRepr *repr,
+                                     TypeResolutionOptions options) {
+  auto constraintType = resolveType(repr->getConstraint(),
+      options.withContext(TypeResolverContext::GenericRequirement));
+  if (constraintType->is<ExistentialMetatypeType>())
+    return constraintType;
+
+  auto anyStart = repr->getAnyLoc();
+  auto anyEnd = Lexer::getLocForEndOfToken(getASTContext().SourceMgr, anyStart);
+  if (!constraintType->isExistentialType()) {
+    diagnose(repr->getLoc(), diag::any_not_existential,
+             constraintType->isTypeParameter(),
+             constraintType)
+      .fixItRemove({anyStart, anyEnd});
+    return constraintType;
+  }
+
+  return ExistentialType::get(constraintType);
 }
 
 NeverNullType TypeResolver::resolveMetatypeType(MetatypeTypeRepr *repr,
                                                 TypeResolutionOptions options) {
   // The instance type of a metatype is always abstract, not SIL-lowered.
-  auto ty = resolveType(repr->getBase(), options.withoutContext());
+  auto ty = resolveType(repr->getBase(),
+      options.withContext(TypeResolverContext::MetatypeBase));
   if (ty->hasError()) {
     return ErrorType::get(getASTContext());
   }
@@ -3755,7 +3811,8 @@ NeverNullType TypeResolver::resolveMetatypeType(MetatypeTypeRepr *repr,
 NeverNullType
 TypeResolver::buildMetatypeType(MetatypeTypeRepr *repr, Type instanceType,
                                 Optional<MetatypeRepresentation> storedRepr) {
-  if (instanceType->isAnyExistentialType()) {
+  if (instanceType->isAnyExistentialType() &&
+      !instanceType->is<ExistentialType>()) {
     // TODO: diagnose invalid representations?
     return ExistentialMetatypeType::get(instanceType, storedRepr);
   } else {
@@ -3766,7 +3823,8 @@ TypeResolver::buildMetatypeType(MetatypeTypeRepr *repr, Type instanceType,
 NeverNullType TypeResolver::resolveProtocolType(ProtocolTypeRepr *repr,
                                                 TypeResolutionOptions options) {
   // The instance type of a metatype is always abstract, not SIL-lowered.
-  auto ty = resolveType(repr->getBase(), options.withoutContext());
+  auto ty = resolveType(repr->getBase(),
+      options.withContext(TypeResolverContext::ProtocolMetatypeBase));
   if (ty->hasError()) {
     return ErrorType::get(getASTContext());
   }
@@ -3879,6 +3937,178 @@ Type TypeChecker::substMemberTypeWithBase(ModuleDecl *module,
   }
 
   return resultType;
+}
+
+namespace {
+
+class ExistentialTypeVisitor
+  : public TypeReprVisitor<ExistentialTypeVisitor>, public ASTWalker
+{
+  ASTContext &Ctx;
+  bool checkStatements;
+  bool hitTopStmt;
+    
+public:
+  ExistentialTypeVisitor(ASTContext &ctx, bool checkStatements)
+    : Ctx(ctx), checkStatements(checkStatements), hitTopStmt(false) { }
+
+  bool walkToTypeReprPre(TypeRepr *T) override {
+    if (T->isInvalid())
+      return false;
+    if (auto compound = dyn_cast<CompoundIdentTypeRepr>(T)) {
+      // Only visit the last component to check, because nested typealiases in
+      // existentials are okay.
+      visit(compound->getComponentRange().back());
+      return false;
+    }
+    // Arbitrary protocol constraints are OK on opaque types.
+    if (isa<OpaqueReturnTypeRepr>(T))
+      return false;
+
+    // Arbitrary protocol constraints are okay for 'any' types.
+    if (Ctx.LangOpts.EnableExperimentalUniversalExistentials &&
+        isa<ExistentialTypeRepr>(T))
+      return false;
+
+    visit(T);
+    return true;
+  }
+
+  std::pair<bool, Stmt*> walkToStmtPre(Stmt *S) override {
+    if (checkStatements && !hitTopStmt) {
+      hitTopStmt = true;
+      return { true, S };
+    }
+
+    return { false, S };
+  }
+
+  bool walkToDeclPre(Decl *D) override {
+    return !checkStatements;
+  }
+
+  void visitTypeRepr(TypeRepr *T) {
+    // Do nothing for all TypeReprs except the ones listed below.
+  }
+
+  void visitIdentTypeRepr(IdentTypeRepr *T) {
+    if (T->isInvalid())
+      return;
+
+    auto comp = T->getComponentRange().back();
+    if (auto *proto = dyn_cast_or_null<ProtocolDecl>(comp->getBoundDecl())) {
+      if (proto->existentialRequiresAny()) {
+        if (!Ctx.LangOpts.EnableExperimentalUniversalExistentials) {
+          Ctx.Diags.diagnose(comp->getNameLoc(),
+                             diag::unsupported_existential_type,
+                             proto->getName());
+          T->setInvalid();
+        } else if (Ctx.LangOpts.EnableExplicitExistentialTypes) {
+          Ctx.Diags.diagnose(comp->getNameLoc(),
+                             diag::existential_requires_any,
+                             proto->getName())
+              .limitBehavior(DiagnosticBehavior::Warning);
+        }
+      }
+    } else if (auto *alias = dyn_cast_or_null<TypeAliasDecl>(comp->getBoundDecl())) {
+      auto type = Type(alias->getDeclaredInterfaceType()->getDesugaredType());
+      type.findIf([&](Type type) -> bool {
+        if (T->isInvalid())
+          return false;
+        if (type->isExistentialType()) {
+          auto layout = type->getExistentialLayout();
+          for (auto *proto : layout.getProtocols()) {
+            auto *protoDecl = proto->getDecl();
+            if (!protoDecl->existentialRequiresAny())
+              continue;
+
+            if (!Ctx.LangOpts.EnableExperimentalUniversalExistentials) {
+              Ctx.Diags.diagnose(comp->getNameLoc(),
+                                 diag::unsupported_existential_type,
+                                 protoDecl->getName());
+              T->setInvalid();
+            } else if (Ctx.LangOpts.EnableExplicitExistentialTypes) {
+              Ctx.Diags.diagnose(comp->getNameLoc(),
+                                 diag::existential_requires_any,
+                                 protoDecl->getName())
+                  .limitBehavior(DiagnosticBehavior::Warning);
+            }
+          }
+        }
+        return false;
+      });
+    }
+  }
+
+  void visitRequirements(ArrayRef<RequirementRepr> reqts) {
+    for (auto reqt : reqts) {
+      if (reqt.getKind() == RequirementReprKind::SameType) {
+        if (auto *repr = reqt.getFirstTypeRepr())
+          repr->walk(*this);
+        if (auto *repr = reqt.getSecondTypeRepr())
+          repr->walk(*this);
+      }
+    }
+  }
+};
+
+} // end anonymous namespace
+
+void TypeChecker::checkExistentialTypes(Decl *decl) {
+  if (!decl || decl->isInvalid())
+    return;
+
+  auto &ctx = decl->getASTContext();
+  if (auto *protocolDecl = dyn_cast<ProtocolDecl>(decl)) {
+    checkExistentialTypes(ctx, protocolDecl->getTrailingWhereClause());
+  } else if (auto *genericDecl = dyn_cast<GenericTypeDecl>(decl)) {
+    checkExistentialTypes(ctx, genericDecl->getGenericParams());
+    checkExistentialTypes(ctx, genericDecl->getTrailingWhereClause());
+  } else if (auto *assocType = dyn_cast<AssociatedTypeDecl>(decl)) {
+    checkExistentialTypes(ctx, assocType->getTrailingWhereClause());
+  } else if (auto *extDecl = dyn_cast<ExtensionDecl>(decl)) {
+    checkExistentialTypes(ctx, extDecl->getTrailingWhereClause());
+  } else if (auto *subscriptDecl = dyn_cast<SubscriptDecl>(decl)) {
+    checkExistentialTypes(ctx, subscriptDecl->getGenericParams());
+    checkExistentialTypes(ctx, subscriptDecl->getTrailingWhereClause());
+  } else if (auto *funcDecl = dyn_cast<AbstractFunctionDecl>(decl)) {
+    if (!isa<AccessorDecl>(funcDecl)) {
+      checkExistentialTypes(ctx, funcDecl->getGenericParams());
+      checkExistentialTypes(ctx, funcDecl->getTrailingWhereClause());
+    }
+  }
+
+  if (isa<TypeDecl>(decl) || isa<ExtensionDecl>(decl))
+    return;
+
+  ExistentialTypeVisitor visitor(ctx, /*checkStatements=*/false);
+  decl->walk(visitor);
+}
+
+void TypeChecker::checkExistentialTypes(ASTContext &ctx, Stmt *stmt) {
+  if (!stmt)
+    return;
+
+  ExistentialTypeVisitor visitor(ctx, /*checkStatements=*/true);
+  stmt->walk(visitor);
+}
+
+void TypeChecker::checkExistentialTypes(
+    ASTContext &ctx, TrailingWhereClause *whereClause) {
+  if (whereClause == nullptr)
+    return;
+
+  ExistentialTypeVisitor visitor(ctx, /*checkStatements=*/false);
+  visitor.visitRequirements(whereClause->getRequirements());
+}
+
+void TypeChecker::checkExistentialTypes(
+    ASTContext &ctx, GenericParamList *genericParams) {
+  if (genericParams  == nullptr)
+    return;
+
+  ExistentialTypeVisitor visitor(ctx, /*checkStatements=*/false);
+  visitor.visitRequirements(genericParams->getRequirements());
 }
 
 Type CustomAttrTypeRequest::evaluate(Evaluator &eval, CustomAttr *attr,

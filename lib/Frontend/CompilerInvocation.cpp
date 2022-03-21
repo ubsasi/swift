@@ -438,6 +438,12 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
   Opts.EnableExperimentalNamedOpaqueTypes |=
       Args.hasArg(OPT_enable_experimental_named_opaque_types);
 
+  Opts.EnableExplicitExistentialTypes |=
+      Args.hasArg(OPT_enable_explicit_existential_types);
+
+  Opts.EnableExperimentalUniversalExistentials |=
+      Args.hasArg(OPT_enable_experimental_universal_existentials);
+
   Opts.EnableExperimentalDistributed |=
     Args.hasArg(OPT_enable_experimental_distributed);
 
@@ -834,6 +840,9 @@ static bool ParseLangArgs(LangOptions &Opts, ArgList &Args,
           "Should have found one of enable/disable ast verifier?!");
     }
   }
+
+  Opts.DisableSubstSILFunctionTypes =
+      Args.hasArg(OPT_disable_subst_sil_function_types);
 
   if (auto A = Args.getLastArg(OPT_requirement_machine_EQ)) {
     auto value = llvm::StringSwitch<Optional<RequirementMachineMode>>(A->getValue())
@@ -1449,25 +1458,131 @@ static bool ParseSILArgs(SILOptions &Opts, ArgList &Args,
   // -Ounchecked might also set removal of runtime asserts (cond_fail).
   Opts.RemoveRuntimeAsserts |= Args.hasArg(OPT_RemoveRuntimeAsserts);
 
-  // If experimental move only is enabled, always enable lexical lifetime as
-  // well. Move only depends on lexical lifetimes.
-  bool enableExperimentalLexicalLifetimes =
-      Args.hasArg(OPT_enable_lexical_lifetimes) ||
-      Args.hasArg(OPT_enable_experimental_move_only);
-  // Error if both experimental lexical lifetimes and disable lexical lifetimes
-  // are both set.
-  if (enableExperimentalLexicalLifetimes &&
-      Args.hasArg(OPT_disable_lexical_lifetimes)) {
-    return true;
-  } else {
-    if (enableExperimentalLexicalLifetimes)
-      Opts.LexicalLifetimes = LexicalLifetimesOption::ExperimentalLate;
-    if (Args.hasArg(OPT_disable_lexical_lifetimes))
-      Opts.LexicalLifetimes = LexicalLifetimesOption::Off;
+  Optional<CopyPropagationOption> specifiedCopyPropagationOption;
+  if (Arg *A = Args.getLastArg(OPT_copy_propagation_state_EQ)) {
+    specifiedCopyPropagationOption =
+        llvm::StringSwitch<Optional<CopyPropagationOption>>(A->getValue())
+            .Case("true", CopyPropagationOption::On)
+            .Case("false", CopyPropagationOption::Off)
+            .Case("requested-passes-only",
+                  CopyPropagationOption::RequestedPassesOnly)
+            .Default(None);
+  }
+  if (Args.hasArg(OPT_enable_copy_propagation)) {
+    if (specifiedCopyPropagationOption) {
+      if (*specifiedCopyPropagationOption == CopyPropagationOption::Off) {
+        // Error if copy propagation has been set to ::Off via the meta-var form
+        // and enabled via the flag.
+        Diags.diagnose(SourceLoc(), diag::error_invalid_arg_combination,
+                       "enable-copy-propagation",
+                       "enable-copy-propagation=false");
+        return true;
+      } else if (*specifiedCopyPropagationOption ==
+                 CopyPropagationOption::RequestedPassesOnly) {
+        // Error if copy propagation has been set to ::RequestedPassesOnly via
+        // the meta-var form and enabled via the flag.
+        Diags.diagnose(SourceLoc(), diag::error_invalid_arg_combination,
+                       "enable-copy-propagation",
+                       "enable-copy-propagation=requested-passes-only");
+        return true;
+      }
+    } else {
+      specifiedCopyPropagationOption = CopyPropagationOption::On;
+    }
+  }
+  if (specifiedCopyPropagationOption) {
+    Opts.CopyPropagation = *specifiedCopyPropagationOption;
   }
 
-  Opts.EnableCopyPropagation |= Args.hasArg(OPT_enable_copy_propagation);
-  Opts.DisableCopyPropagation |= Args.hasArg(OPT_disable_copy_propagation);
+  Optional<bool> enableLexicalBorrowScopesFlag;
+  if (Arg *A = Args.getLastArg(OPT_enable_lexical_borrow_scopes)) {
+    enableLexicalBorrowScopesFlag =
+        llvm::StringSwitch<Optional<bool>>(A->getValue())
+            .Case("true", true)
+            .Case("false", false)
+            .Default(None);
+  }
+  Optional<bool> enableLexicalLifetimesFlag;
+  if (Arg *A = Args.getLastArg(OPT_enable_lexical_lifetimes)) {
+    enableLexicalLifetimesFlag =
+        llvm::StringSwitch<Optional<bool>>(A->getValue())
+            .Case("true", true)
+            .Case("false", false)
+            .Default(None);
+  }
+  if (Args.getLastArg(OPT_enable_lexical_lifetimes_noArg)) {
+    if (!enableLexicalLifetimesFlag.getValueOr(true)) {
+      // Error if lexical lifetimes have been disabled via the meta-var form
+      // and enabled via the flag.
+      Diags.diagnose(SourceLoc(), diag::error_invalid_arg_combination,
+                     "enable-lexical-lifetimes",
+                     "enable-lexical-lifetimes=false");
+      return true;
+    } else {
+      enableLexicalLifetimesFlag = true;
+    }
+  }
+
+  if (enableLexicalLifetimesFlag.getValueOr(false) &&
+      !enableLexicalBorrowScopesFlag.getValueOr(true)) {
+    // Error if lexical lifetimes have been enabled but lexical borrow scopes--
+    // on which they are dependent--have been disabled.
+    Diags.diagnose(SourceLoc(), diag::error_invalid_arg_combination,
+                   "enable-lexical-lifetimes=true",
+                   "enable-lexical-borrow-scopes=false");
+    return true;
+  }
+
+  if (Args.hasArg(OPT_enable_experimental_move_only) &&
+      !enableLexicalBorrowScopesFlag.getValueOr(true)) {
+    // Error if move-only is enabled and lexical borrow scopes--on which it
+    // depends--has been disabled.
+    Diags.diagnose(SourceLoc(), diag::error_invalid_arg_combination,
+                   "enable-experimental-move-only",
+                   "enable-lexical-borrow-scopes=false");
+    return true;
+  }
+
+  if (Args.hasArg(OPT_enable_experimental_move_only) &&
+      !enableLexicalLifetimesFlag.getValueOr(true)) {
+    // Error if move-only is enabled and lexical lifetimes--on which it
+    // depends--has been disabled.
+    Diags.diagnose(SourceLoc(), diag::error_invalid_arg_combination,
+                   "enable-experimental-move-only",
+                   "enable-lexical-lifetimes=false");
+    return true;
+  }
+
+  // Unless overridden below, enabling copy propagation means enabling lexical
+  // lifetimes.
+  if (Opts.CopyPropagation == CopyPropagationOption::On)
+    Opts.LexicalLifetimes = LexicalLifetimesOption::On;
+
+  // Unless overridden below, disable copy propagation means disabling lexical
+  // lifetimes.
+  if (Opts.CopyPropagation == CopyPropagationOption::Off)
+    Opts.LexicalLifetimes = LexicalLifetimesOption::DiagnosticMarkersOnly;
+
+  // If move-only is enabled, always enable lexical lifetime as well.  Move-only
+  // depends on lexical lifetimes.
+  if (Args.hasArg(OPT_enable_experimental_move_only))
+    Opts.LexicalLifetimes = LexicalLifetimesOption::On;
+
+  if (enableLexicalLifetimesFlag) {
+    if (*enableLexicalLifetimesFlag) {
+      Opts.LexicalLifetimes = LexicalLifetimesOption::On;
+    } else {
+      Opts.LexicalLifetimes = LexicalLifetimesOption::DiagnosticMarkersOnly;
+    }
+  }
+  if (enableLexicalBorrowScopesFlag) {
+    if (*enableLexicalBorrowScopesFlag) {
+      Opts.LexicalLifetimes = LexicalLifetimesOption::DiagnosticMarkersOnly;
+    } else {
+      Opts.LexicalLifetimes = LexicalLifetimesOption::Off;
+    }
+  }
+
   Opts.EnableARCOptimizations &= !Args.hasArg(OPT_disable_arc_opts);
   Opts.EnableOSSAModules |= Args.hasArg(OPT_enable_ossa_modules);
   Opts.EnableOSSAOptimizations &= !Args.hasArg(OPT_disable_ossa_opts);
@@ -1685,10 +1800,14 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
                                           RenderedArgs, SDKPath,
                                           ResourceDir);
     }
-    // TODO: Should we support -fdebug-compilation-dir?
-    llvm::SmallString<256> cwd;
-    llvm::sys::fs::current_path(cwd);
-    Opts.DebugCompilationDir = std::string(cwd.str());
+
+    if (const Arg *A = Args.getLastArg(OPT_file_compilation_dir))
+      Opts.DebugCompilationDir = A->getValue();
+    else {
+      llvm::SmallString<256> cwd;
+      llvm::sys::fs::current_path(cwd);
+      Opts.DebugCompilationDir = std::string(cwd.str());
+    }
   }
 
   if (const Arg *A = Args.getLastArg(options::OPT_debug_info_format)) {

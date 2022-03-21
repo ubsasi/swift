@@ -519,7 +519,7 @@ protected:
     IsComputingSemanticMembers : 1
   );
 
-  SWIFT_INLINE_BITFIELD_FULL(ProtocolDecl, NominalTypeDecl, 1+1+1+1+1+1+1+1+1+8+16,
+  SWIFT_INLINE_BITFIELD_FULL(ProtocolDecl, NominalTypeDecl, 1+1+1+1+1+1+1+1+1+1+1+8+16,
     /// Whether the \c RequiresClass bit is valid.
     RequiresClassValid : 1,
 
@@ -531,6 +531,12 @@ protected:
 
     /// Whether the existential of this protocol conforms to itself.
     ExistentialConformsToSelf : 1,
+
+    /// Whether the \c ExistentialRequiresAny bit is valid.
+    ExistentialRequiresAnyValid : 1,
+
+    /// Whether the existential of this protocol must be spelled with \c any.
+    ExistentialRequiresAny : 1,
 
     /// True if the protocol has requirements that cannot be satisfied (e.g.
     /// because they could not be imported from Objective-C).
@@ -890,7 +896,7 @@ public:
   void setHoisted(bool hoisted = true) { Bits.Decl.Hoisted = hoisted; }
 
   /// Whether this declaration predates the introduction of concurrency.
-  bool predatesConcurrency() const;
+  bool preconcurrency() const;
 
 public:
   bool escapedFromIfConfig() const {
@@ -4224,6 +4230,21 @@ class ProtocolDecl final : public NominalTypeDecl {
     Bits.ProtocolDecl.ExistentialConformsToSelf = result;
   }
 
+  /// Returns the cached result of \c existentialRequiresAny or \c None if it
+  /// hasn't yet been computed.
+  Optional<bool> getCachedExistentialRequiresAny() {
+    if (Bits.ProtocolDecl.ExistentialRequiresAnyValid)
+      return Bits.ProtocolDecl.ExistentialRequiresAny;
+
+    return None;
+  }
+
+  /// Caches the result of \c existentialRequiresAny
+  void setCachedExistentialRequiresAny(bool requiresAny) {
+    Bits.ProtocolDecl.ExistentialRequiresAnyValid = true;
+    Bits.ProtocolDecl.ExistentialRequiresAny = requiresAny;
+  }
+
   bool hasLazyRequirementSignature() const {
     return Bits.ProtocolDecl.HasLazyRequirementSignature;
   }
@@ -4237,6 +4258,7 @@ class ProtocolDecl final : public NominalTypeDecl {
   friend class RequirementSignatureRequestRQM;
   friend class ProtocolRequiresClassRequest;
   friend class ExistentialConformsToSelfRequest;
+  friend class ExistentialRequiresAnyRequest;
   friend class InheritedProtocolsRequest;
   
 public:
@@ -4274,6 +4296,11 @@ public:
   /// Returns an associated type with the given name, or nullptr if one does
   /// not exist.
   AssociatedTypeDecl *getAssociatedType(Identifier name) const;
+
+  /// Returns the existential type for this protocol.
+  Type getExistentialType() const {
+    return ExistentialType::get(getDeclaredInterfaceType());
+  }
 
   /// Walk this protocol and all of the protocols inherited by this protocol,
   /// transitively, invoking the callback function for each protocol.
@@ -4324,6 +4351,11 @@ public:
   /// the member does not contain any associated types, and does not
   /// contain 'Self' in 'parameter' or 'other' position.
   bool isAvailableInExistential(const ValueDecl *decl) const;
+
+  /// Determine whether an existential type must be explicitly prefixed
+  /// with \c any. \c any is required if any of the members contain
+  /// an associated type, or if \c Self appears in non-covariant position.
+  bool existentialRequiresAny() const;
 
   /// Returns a list of protocol requirements that must be assessed to
   /// determine a concrete's conformance effect polymorphism kind.
@@ -5135,6 +5167,9 @@ public:
       Bits.VarDecl.IsSelfParamCapture = IsSelfParamCapture;
   }
 
+  /// Check whether this capture of the self param is actor-isolated.
+  bool isSelfParamCaptureIsolated() const;
+
   /// Determines if this var has an initializer expression that should be
   /// exposed to clients.
   ///
@@ -5362,7 +5397,16 @@ class ParamDecl : public VarDecl {
   friend class DefaultArgumentInitContextRequest;
   friend class DefaultArgumentExprRequest;
 
-  llvm::PointerIntPair<Identifier, 1, bool> ArgumentNameAndDestructured;
+  enum class ArgumentNameFlags : uint8_t {
+    /// Whether or not this parameter is destructed.
+    Destructured = 1 << 0,
+
+    /// Whether or not this parameter is '_const'.
+    IsCompileTimeConst = 1 << 1,
+  };
+
+  llvm::PointerIntPair<Identifier, 2, OptionSet<ArgumentNameFlags>>
+      ArgumentNameAndFlags;
   SourceLoc ParameterNameLoc;
   SourceLoc ArgumentNameLoc;
   SourceLoc SpecifierLoc;
@@ -5393,13 +5437,10 @@ class ParamDecl : public VarDecl {
 
     /// Whether or not this parameter is 'isolated'.
     IsIsolated = 1 << 2,
-
-    /// Whether or not this parameter is '_const'.
-    IsCompileTimeConst = 1 << 3,
   };
 
   /// The default value, if any, along with flags.
-  llvm::PointerIntPair<StoredDefaultArgument *, 4, OptionSet<Flags>>
+  llvm::PointerIntPair<StoredDefaultArgument *, 3, OptionSet<Flags>>
       DefaultValueAndFlags;
 
   friend class ParamSpecifierRequest;
@@ -5417,7 +5458,7 @@ public:
 
   /// Retrieve the argument (API) name for this function parameter.
   Identifier getArgumentName() const {
-    return ArgumentNameAndDestructured.getPointer();
+    return ArgumentNameAndFlags.getPointer();
   }
 
   /// Retrieve the parameter (local) name for this function parameter.
@@ -5437,8 +5478,17 @@ public:
   TypeRepr *getTypeRepr() const { return TyRepr; }
   void setTypeRepr(TypeRepr *repr) { TyRepr = repr; }
 
-  bool isDestructured() const { return ArgumentNameAndDestructured.getInt(); }
-  void setDestructured(bool repr) { ArgumentNameAndDestructured.setInt(repr); }
+  bool isDestructured() const {
+    auto flags = ArgumentNameAndFlags.getInt();
+    return flags.contains(ArgumentNameFlags::Destructured);
+  }
+
+  void setDestructured(bool repr) {
+    auto flags = ArgumentNameAndFlags.getInt();
+    flags = repr ? flags | ArgumentNameFlags::Destructured
+                 : flags - ArgumentNameFlags::Destructured;
+    ArgumentNameAndFlags.setInt(flags);
+  }
 
   DefaultArgumentKind getDefaultArgumentKind() const {
     return static_cast<DefaultArgumentKind>(Bits.ParamDecl.defaultArgumentKind);
@@ -5570,13 +5620,15 @@ public:
 
   /// Whether or not this parameter is marked with '_const'.
   bool isCompileTimeConst() const {
-    return DefaultValueAndFlags.getInt().contains(Flags::IsCompileTimeConst);
+    return ArgumentNameAndFlags.getInt().contains(
+        ArgumentNameFlags::IsCompileTimeConst);
   }
 
   void setCompileTimeConst(bool value = true) {
-    auto flags = DefaultValueAndFlags.getInt();
-    DefaultValueAndFlags.setInt(value ? flags | Flags::IsCompileTimeConst
-                                      : flags - Flags::IsCompileTimeConst);
+    auto flags = ArgumentNameAndFlags.getInt();
+    flags = value ? flags | ArgumentNameFlags::IsCompileTimeConst
+                  : flags - ArgumentNameFlags::IsCompileTimeConst;
+    ArgumentNameAndFlags.setInt(flags);
   }
 
   /// Does this parameter reject temporary pointer conversions?

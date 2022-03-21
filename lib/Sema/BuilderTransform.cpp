@@ -914,14 +914,14 @@ protected:
 
   /// Visit a throw statement, which never produces a result.
   VarDecl *visitThrowStmt(ThrowStmt *throwStmt) {
-    Type exnType = ctx.getErrorDecl()->getDeclaredInterfaceType();
-    if (!exnType) {
+    if (!ctx.getErrorDecl()) {
       hadError = true;
     }
 
     if (cs) {
      SolutionApplicationTarget target(
-         throwStmt->getSubExpr(), dc, CTP_ThrowStmt, exnType,
+         throwStmt->getSubExpr(), dc, CTP_ThrowStmt,
+         ctx.getErrorExistentialType(),
          /*isDiscarded=*/false);
      if (cs->generateConstraints(target, FreeTypeVariableBinding::Disallow))
        hadError = true;
@@ -1122,10 +1122,15 @@ private:
       if (!resultTarget)
         continue;
 
+      // FIXME: It's unfortunate that we're duplicating code from CSApply here.
+      // If there were a request for the fully-typechecked initializer of a
+      // pattern binding we may be able to eliminate the duplication here.
       patternBinding->setPattern(
           index, resultTarget->getInitializationPattern(),
-          resultTarget->getDeclContext());
+          resultTarget->getDeclContext(),
+          /*isFullyValidated=*/true);
       patternBinding->setInit(index, resultTarget->getAsExpr());
+      patternBinding->setInitializerChecked(index);
     }
   }
 
@@ -1226,6 +1231,7 @@ public:
       // Skip variable declarations; they're always part of a pattern
       // binding.
       if (isa<VarDecl>(decl)) {
+        TypeChecker::typeCheckDecl(decl);
         newElements.push_back(decl);
         continue;
       }
@@ -1233,6 +1239,7 @@ public:
       // Handle pattern bindings.
       if (auto patternBinding = dyn_cast<PatternBindingDecl>(decl)) {
         finishPatternBindingDecl(patternBinding);
+        TypeChecker::typeCheckDecl(decl);
         newElements.push_back(decl);
         continue;
       }

@@ -1172,6 +1172,10 @@ ClangImporter::create(ASTContext &ctx,
 
   // Create a compiler instance.
   {
+    // The Clang modules produced by ClangImporter are always embedded in an
+    // ObjectFilePCHContainer and contain -gmodules debug info.
+    importer->Impl.Invocation->getCodeGenOpts().DebugTypeExtRefs = true;
+
     auto PCHContainerOperations =
       std::make_shared<clang::PCHContainerOperations>();
     PCHContainerOperations->registerWriter(
@@ -2590,10 +2594,6 @@ static bool isVisibleFromModule(const ClangModuleUnit *ModuleFilter,
   auto *Importer = static_cast<ClangImporter *>(Ctx.getClangModuleLoader());
   auto ClangNode = Importer->getEffectiveClangNode(VD);
 
-  // Decls in the __ObjC bridging header is always visible.
-  if (VD->getModuleContext() == Importer->getImportedHeaderModule())
-    return true;
-
   // Macros can be "redeclared" by putting an equivalent definition in two
   // different modules. (We don't actually check the equivalence.)
   // FIXME: We're also not checking if the redeclaration is in /this/ module.
@@ -3041,6 +3041,9 @@ public:
 };
 } // unnamed namespace
 
+// FIXME: should submodules still be crawled for the symbol graph? (SR-15753)
+bool ClangModuleUnit::shouldCollectDisplayDecls() const { return isTopLevel(); }
+
 void ClangModuleUnit::getTopLevelDecls(SmallVectorImpl<Decl*> &results) const {
   VectorDeclPtrConsumer consumer(results);
   FilteringDeclaredDeclConsumer filterConsumer(consumer, this);
@@ -3161,7 +3164,7 @@ static void getImportDecls(ClangModuleUnit *ClangUnit, const clang::Module *M,
   }
 }
 
-void ClangModuleUnit::getDisplayDecls(SmallVectorImpl<Decl*> &results) const {
+void ClangModuleUnit::getDisplayDecls(SmallVectorImpl<Decl*> &results, bool recursive) const {
   if (clangModule)
     getImportDecls(const_cast<ClangModuleUnit *>(this), clangModule, results);
   getTopLevelDecls(results);

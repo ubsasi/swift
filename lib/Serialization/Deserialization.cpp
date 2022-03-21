@@ -3564,13 +3564,14 @@ public:
                                        StringRef blobData) {
     IdentifierID nameID;
     DeclContextID contextID;
-    bool isImplicit, isClassBounded, isObjC;
+    bool isImplicit, isClassBounded, isObjC, existentialRequiresAny;
     uint8_t rawAccessLevel;
     unsigned numInheritedTypes;
     ArrayRef<uint64_t> rawInheritedAndDependencyIDs;
 
     decls_block::ProtocolLayout::readRecord(scratch, nameID, contextID,
                                             isImplicit, isClassBounded, isObjC,
+                                            existentialRequiresAny,
                                             rawAccessLevel, numInheritedTypes,
                                             rawInheritedAndDependencyIDs);
 
@@ -3596,6 +3597,8 @@ public:
 
     ctx.evaluator.cacheOutput(ProtocolRequiresClassRequest{proto},
                               std::move(isClassBounded));
+    ctx.evaluator.cacheOutput(ExistentialRequiresAnyRequest{proto},
+                              std::move(existentialRequiresAny));
 
     if (auto accessLevel = getActualAccessLevel(rawAccessLevel))
       proto->setAccess(*accessLevel);
@@ -4482,6 +4485,14 @@ llvm::Error DeclDeserializer::deserializeDeclCommon() {
         break;
       }
 
+      case decls_block::MainType_DECL_ATTR: {
+        bool isImplicit;
+        serialization::decls_block::MainTypeDeclAttrLayout::readRecord(
+            scratch, isImplicit);
+        Attr = new (ctx) MainTypeAttr(isImplicit);
+        break;
+      }
+
       case decls_block::Specialize_DECL_ATTR: {
         unsigned exported;
         SpecializeAttr::SpecializationKind specializationKind;
@@ -4744,6 +4755,14 @@ llvm::Error DeclDeserializer::deserializeDeclCommon() {
 
         Attr = SPIAccessControlAttr::create(ctx, SourceLoc(),
                                             SourceRange(), spis);
+        break;
+      }
+
+      case decls_block::UnavailableFromAsync_DECL_ATTR: {
+        bool isImplicit;
+        serialization::decls_block::UnavailableFromAsyncDeclAttrLayout::
+            readRecord(scratch, isImplicit);
+        Attr = new (ctx) UnavailableFromAsyncAttr(blobData, isImplicit);
         break;
       }
 
@@ -5498,7 +5517,7 @@ public:
     decls_block::OpenedArchetypeTypeLayout::readRecord(scratch,
                                                        existentialID);
 
-    return OpenedArchetypeType::get(MF.getType(existentialID));
+    return OpenedArchetypeType::get(MF.getType(existentialID)->getCanonicalType());
   }
       
   Expected<Type> deserializeOpaqueArchetypeType(ArrayRef<uint64_t> scratch,
@@ -5596,6 +5615,18 @@ public:
     }
 
     return ProtocolCompositionType::get(ctx, protocols, hasExplicitAnyObject);
+  }
+
+  Expected<Type> deserializeExistentialType(ArrayRef<uint64_t> scratch,
+                                            StringRef blobData) {
+    TypeID constraintID;
+    decls_block::ExistentialTypeLayout::readRecord(scratch, constraintID);
+
+    auto constraintType = MF.getTypeChecked(constraintID);
+    if (!constraintType)
+      return constraintType.takeError();
+
+    return ExistentialType::get(constraintType.get());
   }
 
   Expected<Type> deserializeDependentMemberType(ArrayRef<uint64_t> scratch,
@@ -6097,6 +6128,7 @@ Expected<Type> TypeDeserializer::getTypeCheckedImpl() {
   CASE(SequenceArchetype)
   CASE(GenericTypeParam)
   CASE(ProtocolComposition)
+  CASE(Existential)
   CASE(DependentMember)
   CASE(BoundGeneric)
   CASE(SILBlockStorage)

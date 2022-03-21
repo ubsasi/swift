@@ -2862,6 +2862,31 @@ static void emitDeclaredHereIfNeeded(DiagnosticEngine &diags,
   diags.diagnose(value, diag::decl_declared_here, value->getName());
 }
 
+/// Determine if the witness can be made implicitly async.
+static bool isValidImplicitAsync(ValueDecl *witness, ValueDecl *requirement) {
+  if (auto witnessFunc = dyn_cast<AbstractFunctionDecl>(witness)) {
+    if (auto requirementFunc = dyn_cast<AbstractFunctionDecl>(requirement)) {
+      return requirementFunc->hasAsync() &&
+          !(witnessFunc->hasThrows() && !requirementFunc->hasThrows());
+    }
+
+    return false;
+  }
+
+  if (auto witnessStorage = dyn_cast<AbstractStorageDecl>(witness)) {
+    if (auto requirementStorage = dyn_cast<AbstractStorageDecl>(requirement)) {
+      auto requirementAccessor = requirementStorage->getEffectfulGetAccessor();
+      if (!requirementAccessor || !requirementAccessor->hasAsync())
+        return false;
+
+      return witnessStorage->isLessEffectfulThan(
+          requirementStorage, EffectKind::Throws);
+    }
+  }
+
+  return false;
+}
+
 bool ConformanceChecker::checkActorIsolation(
     ValueDecl *requirement, ValueDecl *witness) {
   /// Retrieve a concrete witness for Sendable checking.
@@ -2880,7 +2905,7 @@ bool ConformanceChecker::checkActorIsolation(
   bool isCrossActor = false;
   bool witnessIsUnsafe = false;
   DiagnosticBehavior behavior = SendableCheckContext(
-      witness->getInnermostDeclContext()).defaultDiagnosticBehavior();
+      Conformance->getDeclContext()).defaultDiagnosticBehavior();
   Type witnessGlobalActor;
   switch (auto witnessRestriction =
               ActorIsolationRestriction::forDeclaration(
@@ -2986,9 +3011,15 @@ bool ConformanceChecker::checkActorIsolation(
     // A synchronous actor function can witness an asynchronous protocol
     // requirement, since calls "through" the protocol are always cross-actor,
     // in which case the function becomes implicitly async.
+    //
+    // In this case, we're crossing actor boundaries so we need to
+    // perform Sendable checking.
     if (witnessClass && witnessClass->isActor()) {
-      if (requirementFunc && requirementFunc->hasAsync() &&
-          (requirementFunc->hasThrows() == witnessFunc->hasThrows())) {
+      if (isValidImplicitAsync(witness, requirement)) {
+        diagnoseNonSendableTypesInReference(
+            getConcreteWitness(), DC, witness->getLoc(),
+            SendableCheckReason::Conformance);
+
         return false;
       }
     }
@@ -3026,7 +3057,7 @@ bool ConformanceChecker::checkActorIsolation(
   case ActorIsolationRestriction::CrossActorSelf: {
     if (diagnoseNonSendableTypesInReference(
             getConcreteWitness(), DC, witness->getLoc(),
-            ConcurrentReferenceKind::CrossActor)) {
+            SendableCheckReason::Conformance)) {
       return true;
     }
 
@@ -3157,7 +3188,7 @@ bool ConformanceChecker::checkActorIsolation(
 
     return diagnoseNonSendableTypesInReference(
         getConcreteWitness(), DC, witness->getLoc(),
-        ConcurrentReferenceKind::CrossActor);
+        SendableCheckReason::Conformance);
   }
 
   // If the witness has a global actor but the requirement does not, we have
@@ -4115,35 +4146,6 @@ void ConformanceChecker::checkNonFinalClassWitness(ValueDecl *requirement,
   }
 }
 
-static bool isSwiftRawRepresentableEnum(Type adoptee) {
-  auto *enumDecl = dyn_cast<EnumDecl>(adoptee->getAnyNominal());
-  return (enumDecl && enumDecl->hasRawType() && !enumDecl->isObjC());
-}
-
-// If the given witness matches a generic RawRepresentable function conforming
-// with a given protocol e.g. `func == <T : RawRepresentable>(lhs: T, rhs: T) ->
-// Bool where T.RawValue : Equatable`
-static bool isRawRepresentableGenericFunction(
-    ASTContext &ctx, const ValueDecl *witness,
-    const NormalProtocolConformance *conformance) {
-  auto *fnDecl = dyn_cast<AbstractFunctionDecl>(witness);
-  if (!fnDecl || !fnDecl->isStdlibDecl())
-    return false;
-
-  return fnDecl->isGeneric() && fnDecl->getGenericParams()->size() == 1 &&
-         fnDecl->getGenericRequirements().size() == 2 &&
-         llvm::all_of(
-             fnDecl->getGenericRequirements(), [&](Requirement genericReq) {
-               if (genericReq.getKind() != RequirementKind::Conformance)
-                 return false;
-               return genericReq.getProtocolDecl() ==
-                          ctx.getProtocol(
-                              KnownProtocolKind::RawRepresentable) ||
-                      genericReq.getProtocolDecl() ==
-                          conformance->getProtocol();
-             });
-}
-
 ResolveWitnessResult
 ConformanceChecker::resolveWitnessViaLookup(ValueDecl *requirement) {
   assert(!isa<AssociatedTypeDecl>(requirement) && "Use resolveTypeWitnessVia*");
@@ -4197,10 +4199,6 @@ ConformanceChecker::resolveWitnessViaLookup(ValueDecl *requirement) {
       !canDerive && !requirement->getAttrs().hasAttribute<OptionalAttr>() &&
       !requirement->getAttrs().isUnavailable(getASTContext());
 
-  auto &ctx = getASTContext();
-  bool isEquatableConformance = (Conformance->getProtocol() ==
-                                 ctx.getProtocol(KnownProtocolKind::Equatable));
-
   if (findBestWitness(requirement,
                       considerRenames ? &ignoringNames : nullptr,
                       Conformance,
@@ -4208,28 +4206,6 @@ ConformanceChecker::resolveWitnessViaLookup(ValueDecl *requirement) {
                       matches, numViable, bestIdx, doNotDiagnoseMatches)) {
     const auto &best = matches[bestIdx];
     auto witness = best.Witness;
-
-    if (canDerive &&
-        isEquatableConformance &&
-        isSwiftRawRepresentableEnum(Adoptee) &&
-        !Conformance->getDeclContext()->getParentModule()->isResilient()) {
-      // For swift enum types that can derive an Equatable conformance,
-      // if the best witness is the default implementation
-      //
-      //   func == <T : RawRepresentable>(lhs: T, rhs: T) -> Bool
-      //     where T.RawValue : Equatable
-      //
-      // let's return as missing and derive the conformance, since it will be
-      // more efficient than comparing rawValues.
-      //
-      // However, we only do this if the module is non-resilient. If it is
-      // resilient, this change can break ABI by publishing a synthesized ==
-      // declaration that may not exist in versions of the framework built
-      // with an older compiler.
-      if (isRawRepresentableGenericFunction(ctx, witness, Conformance)) {
-        return ResolveWitnessResult::Missing;
-      }
-    }
 
     // If the name didn't actually line up, complain.
     if (ignoringNames &&
@@ -4731,6 +4707,19 @@ ResolveWitnessResult ConformanceChecker::resolveTypeWitnessViaLookup(
     auto memberType = TypeChecker::substMemberTypeWithBase(DC->getParentModule(),
                                                            typeDecl, Adoptee);
 
+    // Type witnesses that resolve to constraint types are always
+    // existential types. This can only happen when the type witness
+    // is explicitly written with a type alias. The type alias itself
+    // is still a constraint type because it can be used as both a
+    // type witness and as a generic constraint.
+    //
+    // With SE-0335, using a type alias as both a type witness and a generic
+    // constraint will be disallowed in Swift 6, because existential types
+    // must be explicit, and a generic constraint isn't a valid type witness.
+    if (memberType->isConstraintType()) {
+      memberType = ExistentialType::get(memberType);
+    }
+
     if (!viableTypes.insert(memberType->getCanonicalType()).second)
       continue;
 
@@ -4892,19 +4881,6 @@ void ConformanceChecker::resolveValueWitnesses() {
 
       if (checkActorIsolation(requirement, witness))
         return;
-
-      // Ensure that Actor.unownedExecutor is implemented within the
-      // actor class itself.  But if this somehow resolves to the
-      // requirement, ignore it.
-      if (requirement->getName().isSimpleName(C.Id_unownedExecutor) &&
-          Proto->isSpecificProtocol(KnownProtocolKind::Actor) &&
-          DC != witness->getDeclContext() &&
-          !isa<ProtocolDecl>(witness->getDeclContext()) &&
-          Adoptee->getClassOrBoundGenericClass() &&
-          Adoptee->getClassOrBoundGenericClass()->isActor()) {
-        witness->diagnose(diag::unowned_executor_outside_actor);
-        return;
-      }
 
       // Objective-C checking for @objc requirements.
       if (requirement->isObjC() &&
@@ -5214,8 +5190,11 @@ void swift::diagnoseConformanceFailure(Type T,
       TypeChecker::containsProtocol(T, Proto, DC->getParentModule())) {
 
     if (!T->isObjCExistentialType()) {
+      Type constraintType = T;
+      if (auto existential = T->getAs<ExistentialType>())
+        constraintType = existential->getConstraintType();
       diags.diagnose(ComplainLoc, diag::type_cannot_conform, true,
-                     T, T->isEqual(Proto->getDeclaredInterfaceType()), 
+                     T, constraintType->isEqual(Proto->getDeclaredInterfaceType()),
                      Proto->getDeclaredInterfaceType());
       diags.diagnose(ComplainLoc,
                      diag::only_concrete_types_conform_to_protocols);
@@ -5347,7 +5326,10 @@ TypeChecker::containsProtocol(Type T, ProtocolDecl *Proto, ModuleDecl *M,
   if (T->isExistentialType()) {
     // Handle the special case of the Error protocol, which self-conforms
     // *and* has a witness table.
-    if (T->isEqual(Proto->getDeclaredInterfaceType()) &&
+    auto constraint = T;
+    if (auto existential = T->getAs<ExistentialType>())
+      constraint = existential->getConstraintType();
+    if (constraint->isEqual(Proto->getDeclaredInterfaceType()) &&
         Proto->requiresSelfConformanceWitnessTable()) {
       auto &ctx = M->getASTContext();
       return ProtocolConformanceRef(ctx.getSelfConformance(Proto));
@@ -6057,7 +6039,7 @@ static bool isImpliedByConformancePredatingConcurrency(
     return false;
 
   auto impliedProto = implied->getProtocol();
-  if (impliedProto->predatesConcurrency() ||
+  if (impliedProto->preconcurrency() ||
       impliedProto->isSpecificProtocol(KnownProtocolKind::Error) ||
       impliedProto->isSpecificProtocol(KnownProtocolKind::CodingKey))
     return true;
@@ -6091,7 +6073,7 @@ void TypeChecker::checkConformancesInContext(IterableDeclContext *idc) {
 
   ProtocolConformance *SendableConformance = nullptr;
   bool sendableConformanceIsUnchecked = false;
-  bool sendableConformancePredatesConcurrency = false;
+  bool sendableConformancePreconcurrency = false;
   bool anyInvalid = false;
   for (auto conformance : conformances) {
     // Check and record normal conformances.
@@ -6125,7 +6107,7 @@ void TypeChecker::checkConformancesInContext(IterableDeclContext *idc) {
         if (normal->isUnchecked())
           sendableConformanceIsUnchecked = true;
         else if (isImpliedByConformancePredatingConcurrency(normal))
-          sendableConformancePredatesConcurrency = true;
+          sendableConformancePreconcurrency = true;
         else if (isa<InheritedProtocolConformance>(conformance))
           sendableConformanceIsUnchecked = true;
       }
@@ -6163,7 +6145,7 @@ void TypeChecker::checkConformancesInContext(IterableDeclContext *idc) {
   // Check constraints of Sendable.
   if (SendableConformance && !sendableConformanceIsUnchecked) {
     SendableCheck check = SendableCheck::Explicit;
-    if (sendableConformancePredatesConcurrency)
+    if (sendableConformancePreconcurrency)
       check = SendableCheck::ImpliedByStandardProtocol;
     else if (SendableConformance->getSourceKind() ==
                  ConformanceEntryKind::Synthesized)

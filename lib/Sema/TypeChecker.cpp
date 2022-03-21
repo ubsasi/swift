@@ -264,6 +264,23 @@ void swift::performTypeChecking(SourceFile &SF) {
                                  TypeCheckSourceFileRequest{&SF}, {});
 }
 
+/// If any of the imports in this source file was @preconcurrency but
+/// there were no diagnostics downgraded or suppressed due to that
+/// @preconcurrency, suggest that the attribute be removed.
+static void diagnoseUnnecessaryPreconcurrencyImports(SourceFile &sf) {
+  ASTContext &ctx = sf.getASTContext();
+  for (const auto &import : sf.getImports()) {
+    if (import.options.contains(ImportFlags::Preconcurrency) &&
+        import.importLoc.isValid() &&
+        !sf.hasImportUsedPreconcurrency(import)) {
+      ctx.Diags.diagnose(
+          import.importLoc, diag::remove_predates_concurrency_import,
+          import.module.importedModule->getName())
+        .fixItRemove(import.preconcurrencyRange);
+    }
+  }
+}
+
 evaluator::SideEffect
 TypeCheckSourceFileRequest::evaluate(Evaluator &eval, SourceFile *SF) const {
   assert(SF && "Source file cannot be null!");
@@ -304,6 +321,8 @@ TypeCheckSourceFileRequest::evaluate(Evaluator &eval, SourceFile *SF) const {
 
     typeCheckDelayedFunctions(*SF);
   }
+
+  diagnoseUnnecessaryPreconcurrencyImports(*SF);
 
   // Check to see if there's any inconsistent @_implementationOnly imports.
   evaluateOrDefault(

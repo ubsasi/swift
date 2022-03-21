@@ -1928,6 +1928,9 @@ static CanSILFunctionType getSILFunctionType(
   }
 
   bool shouldBuildSubstFunctionType = [&]{
+    if (TC.Context.LangOpts.DisableSubstSILFunctionTypes)
+      return false;
+
     // If there is no genericity in the abstraction pattern we're lowering
     // against, we don't need to introduce substitutions into the lowered
     // type.
@@ -4345,8 +4348,9 @@ SILFunctionType::isABICompatibleWith(CanSILFunctionType other,
   if (getRepresentation() != other->getRepresentation())
     return ABICompatibilityCheckResult::DifferentFunctionRepresentations;
 
-  // `() async -> ()` is not compatible with `() async -> @error Error`.
-  if (!hasErrorResult() && other->hasErrorResult() && isAsync()) {
+  // `() async -> ()` is not compatible with `() async -> @error Error` and
+  // vice versa.
+  if (hasErrorResult() != other->hasErrorResult() && isAsync()) {
     return ABICompatibilityCheckResult::DifferentErrorResultConventions;
   }
 

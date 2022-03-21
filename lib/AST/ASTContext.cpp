@@ -408,6 +408,7 @@ struct ASTContext::Implementation {
     llvm::DenseMap<std::pair<StructDecl*, Type>, StructType*> StructTypes;
     llvm::DenseMap<std::pair<ClassDecl*, Type>, ClassType*> ClassTypes;
     llvm::DenseMap<std::pair<ProtocolDecl*, Type>, ProtocolType*> ProtocolTypes;
+    llvm::DenseMap<Type, ExistentialType *> ExistentialTypes;
     llvm::FoldingSet<UnboundGenericType> UnboundGenericTypes;
     llvm::FoldingSet<BoundGenericType> BoundGenericTypes;
     llvm::FoldingSet<ProtocolCompositionType> ProtocolCompositionTypes;
@@ -855,9 +856,9 @@ Type ASTContext::get##NAME##Type() const { \
 }
 #include "swift/AST/KnownStdlibTypes.def"
 
-CanType ASTContext::getExceptionType() const {
+CanType ASTContext::getErrorExistentialType() const {
   if (auto exn = getErrorDecl()) {
-    return exn->getDeclaredInterfaceType()->getCanonicalType();
+    return exn->getExistentialType()->getCanonicalType();
   } else {
     // Use Builtin.NativeObject just as a stand-in.
     return TheNativeObjectType;
@@ -2325,7 +2326,7 @@ ASTContext::getSelfConformance(ProtocolDecl *protocol) {
   auto &entry = selfConformances[protocol];
   if (!entry) {
     entry = new (*this, AllocationArena::Permanent)
-      SelfProtocolConformance(protocol->getDeclaredInterfaceType());
+      SelfProtocolConformance(protocol->getExistentialType());
   }
   return entry;
 }
@@ -3315,6 +3316,11 @@ MetatypeType::MetatypeType(Type T, const ASTContext *C,
 ExistentialMetatypeType *
 ExistentialMetatypeType::get(Type T, Optional<MetatypeRepresentation> repr,
                              const ASTContext &ctx) {
+  // If we're creating an existential metatype from an
+  // existential type, wrap the constraint type direcly.
+  if (auto existential = T->getAs<ExistentialType>())
+    T = existential->getConstraintType();
+
   auto properties = T->getRecursiveProperties();
   auto arena = getArena(properties);
 
@@ -3345,6 +3351,10 @@ ExistentialMetatypeType::ExistentialMetatypeType(Type T,
     assert(getASTContext().LangOpts.EnableObjCInterop ||
            *repr != MetatypeRepresentation::ObjC);
   }
+}
+
+Type ExistentialMetatypeType::getExistentialInstanceType() {
+  return ExistentialType::get(getInstanceType());
 }
 
 ModuleType *ModuleType::get(ModuleDecl *M) {
@@ -4093,6 +4103,32 @@ ProtocolType::ProtocolType(ProtocolDecl *TheDecl, Type Parent,
                            RecursiveTypeProperties properties)
   : NominalType(TypeKind::Protocol, &Ctx, TheDecl, Parent, properties) { }
 
+Type ExistentialType::get(Type constraint) {
+  auto &C = constraint->getASTContext();
+  if (!C.LangOpts.EnableExplicitExistentialTypes)
+    return constraint;
+
+  // FIXME: Any and AnyObject don't yet use ExistentialType.
+  if (constraint->isAny() || constraint->isAnyObject())
+    return constraint;
+
+  // ExistentialMetatypeType is already an existential type.
+  if (constraint->is<ExistentialMetatypeType>())
+    return constraint;
+
+  auto properties = constraint->getRecursiveProperties();
+  auto arena = getArena(properties);
+
+  auto &entry = C.getImpl().getArena(arena).ExistentialTypes[constraint];
+  if (entry)
+    return entry;
+
+  const ASTContext *canonicalContext = constraint->isCanonical() ? &C : nullptr;
+  return entry = new (C, arena) ExistentialType(constraint,
+                                                canonicalContext,
+                                                properties);
+}
+
 LValueType *LValueType::get(Type objectTy) {
   assert(!objectTy->is<LValueType>() && !objectTy->is<InOutType>() &&
          "cannot have 'inout' or @lvalue wrapped inside an @lvalue");
@@ -4313,8 +4349,18 @@ OpaqueTypeArchetypeType::get(OpaqueTypeDecl *Decl, unsigned ordinal,
   return newOpaque;
 }
 
-CanOpenedArchetypeType OpenedArchetypeType::get(Type existential,
+CanOpenedArchetypeType OpenedArchetypeType::get(CanType existential,
                                                 Optional<UUID> knownID) {
+  // FIXME: Opened archetypes can't be transformed because the
+  // the identity of the archetype has to be preserved. This
+  // means that simplifying an opened archetype in the constraint
+  // system to replace type variables with fixed types is not
+  // yet supported. For now, assert that an opened archetype never
+  // contains type variables to catch cases where type variables
+  // would be applied to the type-checked AST.
+  assert(!existential->hasTypeVariable() &&
+         "opened existentials containing type variables cannot be simplified");
+
   auto &ctx = existential->getASTContext();
   auto &openedExistentialArchetypes = ctx.getImpl().OpenedExistentialArchetypes;
   // If we know the ID already...
@@ -4382,9 +4428,10 @@ GenericEnvironment *OpenedArchetypeType::getGenericEnvironment() const {
   return env;
 }
 
-CanType OpenedArchetypeType::getAny(Type existential) {
+CanType OpenedArchetypeType::getAny(CanType existential) {
   if (auto metatypeTy = existential->getAs<ExistentialMetatypeType>()) {
-    auto instanceTy = metatypeTy->getInstanceType();
+    auto instanceTy =
+        metatypeTy->getExistentialInstanceType()->getCanonicalType();
     return CanMetatypeType::get(OpenedArchetypeType::getAny(instanceTy));
   }
   assert(existential->isExistentialType());
@@ -4899,7 +4946,7 @@ Type ASTContext::getBridgedToObjC(const DeclContext *dc, Type type,
     if (auto nsErrorTy = getNSErrorType()) {
       // The corresponding value type is Error.
       if (bridgedValueType)
-        *bridgedValueType = getErrorDecl()->getDeclaredInterfaceType();
+        *bridgedValueType = getErrorExistentialType();
 
       return nsErrorTy;
     }
@@ -4936,7 +4983,7 @@ Type ASTContext::getBridgedToObjC(const DeclContext *dc, Type type,
   if (findConformance(KnownProtocolKind::Error)) {
     // The corresponding value type is Error.
     if (bridgedValueType)
-      *bridgedValueType = getErrorDecl()->getDeclaredInterfaceType();
+      *bridgedValueType = getErrorExistentialType();
 
     // Bridge to NSError.
     if (auto nsErrorTy = getNSErrorType())
@@ -5024,16 +5071,18 @@ CanGenericSignature ASTContext::getSingleGenericParameterSignature() const {
 // constraints while existential values do.
 CanGenericSignature ASTContext::getOpenedArchetypeSignature(Type type) {
   assert(type->isExistentialType());
+  if (auto existential = type->getAs<ExistentialType>())
+    type = existential->getConstraintType();
 
-  const CanType existential = type->getCanonicalType();
+  const CanType constraint = type->getCanonicalType();
 
   // The opened archetype signature for a protocol type is identical
   // to the protocol's own canonical generic signature.
-  if (const auto protoTy = dyn_cast<ProtocolType>(existential)) {
+  if (const auto protoTy = dyn_cast<ProtocolType>(constraint)) {
     return protoTy->getDecl()->getGenericSignature().getCanonicalSignature();
   }
 
-  auto found = getImpl().ExistentialSignatures.find(existential);
+  auto found = getImpl().ExistentialSignatures.find(constraint);
   if (found != getImpl().ExistentialSignatures.end())
     return found->second;
 
@@ -5041,7 +5090,7 @@ CanGenericSignature ASTContext::getOpenedArchetypeSignature(Type type) {
       GenericTypeParamType::get(/*type sequence*/ false,
                                 /*depth*/ 0, /*index*/ 0, *this);
   Requirement requirement(RequirementKind::Conformance, genericParam,
-                          existential);
+                          constraint);
   auto genericSig = buildGenericSignature(*this,
                                           GenericSignature(),
                                           {genericParam},
@@ -5050,7 +5099,7 @@ CanGenericSignature ASTContext::getOpenedArchetypeSignature(Type type) {
   CanGenericSignature canGenericSig(genericSig);
 
   auto result = getImpl().ExistentialSignatures.insert(
-    std::make_pair(existential, canGenericSig));
+    std::make_pair(constraint, canGenericSig));
   assert(result.second);
   (void) result;
 

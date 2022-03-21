@@ -1,3 +1,5 @@
+// REQUIRES: rdar88504525
+
 // RUN: %empty-directory(%t)
 // RUN: echo "func f() { f() }" > %t/t.swift
 
@@ -15,10 +17,10 @@
 // EDIT_NOWAIT-NEXT: }
 
 // RUN: %sourcekitd-test \
-// RUN:   -req=open -req-opts=enablesyntaxmap=0,enablesubstructure=1,enablediagnostics=0 %t/t.swift -- %t/t.swift == \
+// RUN:   -req=open -req-opts=enablesyntaxmap=0,enablesubstructure=0,enablediagnostics=0 %t/t.swift -- %t/t.swift == \
 // RUN:   -req=print-annotations %t/t.swift  == \
-// RUN:   -req=edit -offset=0 -replace="func foo() { warn("") }" -length=16 -req-opts=enablesyntaxmap=0,enablesubstructure=1,enablediagnostics=0 %t/t.swift == \
-// RUN:   -req=edit -offset=13 -replace="print" -length=4 -req-opts=enablesyntaxmap=0,enablesubstructure=1,enablediagnostics=0 %t/t.swift == \
+// RUN:   -req=edit -offset=0 -replace="func foo() { warn("") }" -length=16 -req-opts=enablesyntaxmap=0,enablesubstructure=0,enablediagnostics=0 %t/t.swift == \
+// RUN:   -req=edit -offset=13 -replace="print" -length=4 -req-opts=enablesyntaxmap=0,enablesubstructure=0,enablediagnostics=0 %t/t.swift == \
 // RUN:   -req=print-annotations %t/t.swift \
 // RUN: | %FileCheck --check-prefix=ANNOTATION %s
 

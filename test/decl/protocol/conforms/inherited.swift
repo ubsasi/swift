@@ -1,4 +1,4 @@
-// RUN: %target-typecheck-verify-swift
+// RUN: %target-typecheck-verify-swift -enable-experimental-universal-existentials
 
 // Inheritable: method with 'Self' in contravariant position.
 protocol P1 {
@@ -167,13 +167,13 @@ class B : A {
 }
 
 func testB(_ b: B) {
-  var _: P1 = b
-  var _: P4 = b
+  var _: P1 = b // expected-warning {{protocol 'P1' as a type must be explicitly marked as 'any'}}
+  var _: P4 = b // expected-warning {{protocol 'P4' as a type must be explicitly marked as 'any'}}
   var _: P5 = b
   var _: P6 = b
-  var _: P7 = b
+  var _: P7 = b // expected-warning {{protocol 'P7' as a type must be explicitly marked as 'any'}}
   var _: P8 = b
-  var _: P9 = b
+  var _: P9 = b // expected-warning {{protocol 'P9' as a type must be explicitly marked as 'any'}}
 }
 
 // Class A5 conforms to P5 in an inheritable manner.

@@ -703,6 +703,9 @@ public:
     return getRecursiveProperties().hasDependentMember();
   }
 
+  /// Whether this type represents a generic constraint.
+  bool isConstraintType() const;
+
   /// isExistentialType - Determines whether this type is an existential type,
   /// whose real (runtime) type is unknown but which is known to conform to
   /// some set of protocols. Protocol and protocol-conformance types are
@@ -1993,7 +1996,7 @@ public:
 
   ParameterTypeFlags withCompileTimeConst(bool isConst) const {
     return ParameterTypeFlags(isConst ? value | ParameterTypeFlags::CompileTimeConst
-                                      : value | ParameterTypeFlags::CompileTimeConst);
+                                      : value - ParameterTypeFlags::CompileTimeConst);
   }
   
   ParameterTypeFlags withShared(bool isShared) const {
@@ -2704,6 +2707,8 @@ public:
   static bool classof(const TypeBase *T) {
     return T->getKind() == TypeKind::ExistentialMetatype;
   }
+
+  Type getExistentialInstanceType();
   
 private:
   ExistentialMetatypeType(Type T, const ASTContext *C,
@@ -5199,6 +5204,42 @@ private:
 BEGIN_CAN_TYPE_WRAPPER(ProtocolCompositionType, Type)
 END_CAN_TYPE_WRAPPER(ProtocolCompositionType, Type)
 
+/// An existential type, spelled with \c any .
+///
+/// In Swift 5 mode, a plain protocol name in type
+/// context is an implicit existential type.
+class ExistentialType final : public TypeBase {
+  Type ConstraintType;
+
+  ExistentialType(Type constraintType,
+                  const ASTContext *canonicalContext,
+                  RecursiveTypeProperties properties)
+      : TypeBase(TypeKind::Existential, canonicalContext, properties),
+        ConstraintType(constraintType) {}
+
+public:
+  static Type get(Type constraint);
+
+  Type getConstraintType() const { return ConstraintType; }
+
+  bool requiresClass() const {
+    if (auto protocol = ConstraintType->getAs<ProtocolType>())
+      return protocol->requiresClass();
+
+    if (auto composition = ConstraintType->getAs<ProtocolCompositionType>())
+      return composition->requiresClass();
+
+    return false;
+  }
+
+  static bool classof(const TypeBase *type) {
+    return type->getKind() == TypeKind::Existential;
+  }
+};
+BEGIN_CAN_TYPE_WRAPPER(ExistentialType, Type)
+  PROXY_CAN_TYPE_SIMPLE_GETTER(getConstraintType)
+END_CAN_TYPE_WRAPPER(ExistentialType, Type)
+
 /// LValueType - An l-value is a handle to a physical object.  The
 /// type of that object uniquely determines the type of an l-value
 /// for it.
@@ -5625,14 +5666,14 @@ public:
   /// \param knownID When non-empty, the known ID of the archetype. When empty,
   /// a fresh archetype with a unique ID will be opened.
   static CanTypeWrapper<OpenedArchetypeType>
-                        get(Type existential,
+                        get(CanType existential,
                             Optional<UUID> knownID = None);
 
   /// Create a new archetype that represents the opened type
   /// of an existential value.
   ///
   /// \param existential The existential type or existential metatype to open.
-  static CanType getAny(Type existential);
+  static CanType getAny(CanType existential);
 
   /// Retrieve the ID number of this opened existential.
   UUID getOpenedExistentialID() const { return ID; }
@@ -6145,6 +6186,15 @@ inline GenericTypeParamType *TypeBase::getRootGenericParam() {
   return t->castTo<GenericTypeParamType>();
 }
 
+inline bool TypeBase::isConstraintType() const {
+  return getCanonicalType().isConstraintType();
+}
+
+inline bool CanType::isConstraintTypeImpl(CanType type) {
+  return (isa<ProtocolType>(type) ||
+          isa<ProtocolCompositionType>(type));
+}
+
 inline bool TypeBase::isExistentialType() {
   return getCanonicalType().isExistentialType();
 }
@@ -6154,7 +6204,9 @@ inline bool TypeBase::isAnyExistentialType() {
 }
 
 inline bool CanType::isExistentialTypeImpl(CanType type) {
-  return isa<ProtocolType>(type) || isa<ProtocolCompositionType>(type);
+  return (isa<ProtocolType>(type) ||
+          isa<ProtocolCompositionType>(type) ||
+          isa<ExistentialType>(type));
 }
 
 inline bool CanType::isAnyExistentialTypeImpl(CanType type) {
@@ -6167,6 +6219,8 @@ inline bool TypeBase::isClassExistentialType() {
     return pt->requiresClass();
   if (auto pct = dyn_cast<ProtocolCompositionType>(T))
     return pct->requiresClass();
+  if (auto existential = dyn_cast<ExistentialType>(T))
+    return existential->requiresClass();
   return false;
 }
 
@@ -6247,6 +6301,8 @@ inline NominalTypeDecl *TypeBase::getNominalOrBoundGenericNominal() {
 inline NominalTypeDecl *CanType::getNominalOrBoundGenericNominal() const {
   if (auto Ty = dyn_cast<NominalOrBoundGenericNominalType>(*this))
     return Ty->getDecl();
+  if (auto Ty = dyn_cast<ExistentialType>(*this))
+    return Ty->getConstraintType()->getNominalOrBoundGenericNominal();
   return nullptr;
 }
 
@@ -6255,6 +6311,9 @@ inline NominalTypeDecl *TypeBase::getAnyNominal() {
 }
 
 inline Type TypeBase::getNominalParent() {
+  if (auto existential = getAs<ExistentialType>())
+    return existential->getConstraintType()->getNominalParent();
+
   return castTo<AnyGenericType>()->getParent();
 }
 
@@ -6426,6 +6485,9 @@ inline bool TypeBase::hasSimpleTypeRepr() const {
   case TypeKind::Metatype:
   case TypeKind::ExistentialMetatype:
     return !cast<const AnyMetatypeType>(this)->hasRepresentation();
+
+  case TypeKind::Existential:
+    return false;
 
   case TypeKind::NestedArchetype:
     return cast<NestedArchetypeType>(this)->getParent()->hasSimpleTypeRepr();

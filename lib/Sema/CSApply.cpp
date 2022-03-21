@@ -1381,6 +1381,8 @@ namespace {
         baseIsInstance = false;
         isExistentialMetatype = baseMeta->is<ExistentialMetatypeType>();
         baseTy = baseMeta->getInstanceType();
+        if (auto existential = baseTy->getAs<ExistentialType>())
+          baseTy = existential->getConstraintType();
 
         // A valid reference to a static member (computed property or a method)
         // declared on a protocol is only possible if result type conforms to
@@ -5341,10 +5343,8 @@ Expr *ExprRewriter::coerceSuperclass(Expr *expr, Type toType) {
 
   while (fromInstanceType->is<AnyMetatypeType>() &&
          toInstanceType->is<MetatypeType>()) {
-    fromInstanceType = fromInstanceType->castTo<AnyMetatypeType>()
-      ->getInstanceType();
-    toInstanceType = toInstanceType->castTo<MetatypeType>()
-      ->getInstanceType();
+    fromInstanceType = fromInstanceType->getMetatypeInstanceType();
+    toInstanceType = toInstanceType->getMetatypeInstanceType();
   }
 
   if (fromInstanceType->is<ArchetypeType>()) {
@@ -5365,7 +5365,8 @@ Expr *ExprRewriter::coerceSuperclass(Expr *expr, Type toType) {
   if (fromInstanceType->isExistentialType()) {
     // Coercion from superclass-constrained existential to its
     // concrete superclass.
-    auto fromArchetype = OpenedArchetypeType::getAny(fromType);
+    auto fromArchetype = OpenedArchetypeType::getAny(
+        fromType->getCanonicalType());
 
     auto *archetypeVal = cs.cacheType(new (ctx) OpaqueValueExpr(
         expr->getSourceRange(), fromArchetype));
@@ -5417,7 +5418,7 @@ Expr *ExprRewriter::coerceExistential(Expr *expr, Type toType) {
          toInstanceType->is<ExistentialMetatypeType>()) {
     if (!fromInstanceType->is<UnresolvedType>())
       fromInstanceType = fromInstanceType->castTo<AnyMetatypeType>()->getInstanceType();
-    toInstanceType = toInstanceType->castTo<ExistentialMetatypeType>()->getInstanceType();
+    toInstanceType = toInstanceType->castTo<ExistentialMetatypeType>()->getExistentialInstanceType();
   }
 
   ASTContext &ctx = cs.getASTContext();
@@ -5428,7 +5429,7 @@ Expr *ExprRewriter::coerceExistential(Expr *expr, Type toType) {
 
   // For existential-to-existential coercions, open the source existential.
   if (fromType->isAnyExistentialType()) {
-    fromType = OpenedArchetypeType::getAny(fromType);
+    fromType = OpenedArchetypeType::getAny(fromType->getCanonicalType());
 
     auto *archetypeVal = cs.cacheType(
         new (ctx) OpaqueValueExpr(expr->getSourceRange(), fromType));
@@ -6942,6 +6943,7 @@ Expr *ExprRewriter::coerceToType(Expr *expr, Type toType,
   case TypeKind::Struct:
   case TypeKind::Protocol:
   case TypeKind::ProtocolComposition:
+  case TypeKind::Existential:
   case TypeKind::BoundGenericEnum:
   case TypeKind::BoundGenericStruct:
   case TypeKind::GenericFunction:
@@ -6954,6 +6956,7 @@ Expr *ExprRewriter::coerceToType(Expr *expr, Type toType,
   auto desugaredToType = toType->getDesugaredType();
   switch (desugaredToType->getKind()) {
   // Coercions from a type to an existential type.
+  case TypeKind::Existential:
   case TypeKind::ExistentialMetatype:
   case TypeKind::ProtocolComposition:
   case TypeKind::Protocol:
@@ -7424,7 +7427,7 @@ Expr *ExprRewriter::finishApply(ApplyExpr *apply, Type openedType,
           openedInstanceTy = metaTy->getInstanceType();
           existentialInstanceTy = existentialInstanceTy
             ->castTo<ExistentialMetatypeType>()
-            ->getInstanceType();
+            ->getExistentialInstanceType();
         }
         assert(openedInstanceTy->castTo<OpenedArchetypeType>()
                    ->getOpenedExistentialType()
@@ -8692,7 +8695,7 @@ ExprWalker::rewriteTarget(SolutionApplicationTarget target) {
       return convertType &&
           !convertType->hasPlaceholder() &&
           !target.isOptionalSomePatternInit() &&
-          !(solution.getType(resultExpr)->isUninhabited() &&
+          !(solution.getResolvedType(resultExpr)->isUninhabited() &&
             cs.getContextualTypePurpose(target.getAsExpr())
               == CTP_ReturnSingleExpr);
     };

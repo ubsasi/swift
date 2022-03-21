@@ -2891,6 +2891,10 @@ static bool usesFeatureBuiltinStackAlloc(Decl *decl) {
   return false;
 }
 
+static bool usesFeatureBuiltinAssumeAlignment(Decl *decl) {
+  return false;
+}
+
 /// Determine the set of "new" features used on a given declaration.
 ///
 /// Note: right now, all features we check for are "new". At some point, we'll
@@ -4339,6 +4343,9 @@ class TypePrinter : public TypeVisitor<TypePrinter> {
         return isSimpleUnderPrintOptions(opaque->getExistentialType());
       }
       llvm_unreachable("bad opaque-return-type printing mode");
+    } else if (auto existential = dyn_cast<ExistentialType>(T.getPointer())) {
+      if (!Options.PrintExplicitAny)
+        return isSimpleUnderPrintOptions(existential->getConstraintType());
     }
     return T->hasSimpleTypeRepr();
   }
@@ -4739,11 +4746,16 @@ public:
       case MetatypeRepresentation::ObjC:  Printer << "@objc_metatype "; break;
       }
     }
+
+    if (T->is<ExistentialMetatypeType>() && Options.PrintExplicitAny)
+      Printer << "any ";
+
     printWithParensIfNotSimple(T->getInstanceType());
 
     // We spell normal metatypes of existential types as .Protocol.
     if (isa<MetatypeType>(T) &&
-        T->getInstanceType()->isAnyExistentialType()) {
+        T->getInstanceType()->isAnyExistentialType() &&
+        !Options.PrintExplicitAny) {
       Printer << ".Protocol";
     } else {
       Printer << ".Type";
@@ -5327,6 +5339,13 @@ public:
       if (T->hasExplicitAnyObject())
         Printer << " & AnyObject";
     }
+  }
+
+  void visitExistentialType(ExistentialType *T) {
+    if (Options.PrintExplicitAny)
+      Printer << "any ";
+
+    visit(T->getConstraintType());
   }
 
   void visitLValueType(LValueType *T) {

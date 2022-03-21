@@ -2171,7 +2171,7 @@ ConstraintSystem::matchFunctionTypes(FunctionType *func1, FunctionType *func2,
 
   /// Whether to downgrade to a concurrency warning.
   auto isConcurrencyWarning = [&] {
-    if (contextRequiresStrictConcurrencyChecking(DC))
+    if (contextRequiresStrictConcurrencyChecking(DC, GetClosureType{*this}))
       return false;
 
     switch (kind) {
@@ -2751,42 +2751,40 @@ ConstraintSystem::matchDeepEqualityTypes(Type type1, Type type2,
     return result;
   }
 
-  // Handle protocol compositions.
-  if (auto existential1 = type1->getAs<ProtocolCompositionType>()) {
-    if (auto existential2 = type2->getAs<ProtocolCompositionType>()) {
-      auto layout1 = existential1->getExistentialLayout();
-      auto layout2 = existential2->getExistentialLayout();
+  // Handle existential types.
+  if (type1->isExistentialType() && type2->isExistentialType()) {
+    auto layout1 = type1->getExistentialLayout();
+    auto layout2 = type2->getExistentialLayout();
 
-      // Explicit AnyObject and protocols must match exactly.
-      if (layout1.hasExplicitAnyObject != layout2.hasExplicitAnyObject)
+    // Explicit AnyObject and protocols must match exactly.
+    if (layout1.hasExplicitAnyObject != layout2.hasExplicitAnyObject)
+      return getTypeMatchFailure(locator);
+
+    if (layout1.getProtocols().size() != layout2.getProtocols().size())
+      return getTypeMatchFailure(locator);
+
+    for (unsigned i: indices(layout1.getProtocols())) {
+      if (!layout1.getProtocols()[i]->isEqual(layout2.getProtocols()[i]))
         return getTypeMatchFailure(locator);
-
-      if (layout1.getProtocols().size() != layout2.getProtocols().size())
-        return getTypeMatchFailure(locator);
-
-      for (unsigned i: indices(layout1.getProtocols())) {
-        if (!layout1.getProtocols()[i]->isEqual(layout2.getProtocols()[i]))
-          return getTypeMatchFailure(locator);
-      }
-
-      // This is the only interesting case. We might have type variables
-      // on either side of the superclass constraint, so make sure we
-      // recursively call matchTypes() here.
-      if (layout1.explicitSuperclass || layout2.explicitSuperclass) {
-        if (!layout1.explicitSuperclass || !layout2.explicitSuperclass)
-          return getTypeMatchFailure(locator);
-
-        auto result = matchTypes(layout1.explicitSuperclass,
-                                 layout2.explicitSuperclass,
-                                 ConstraintKind::Bind, subflags,
-                                 locator.withPathElement(
-                                   ConstraintLocator::ExistentialSuperclassType));
-        if (result.isFailure())
-          return result;
-      }
-
-      return getTypeMatchSuccess();
     }
+
+    // This is the only interesting case. We might have type variables
+    // on either side of the superclass constraint, so make sure we
+    // recursively call matchTypes() here.
+    if (layout1.explicitSuperclass || layout2.explicitSuperclass) {
+      if (!layout1.explicitSuperclass || !layout2.explicitSuperclass)
+        return getTypeMatchFailure(locator);
+
+      auto result = matchTypes(layout1.explicitSuperclass,
+                               layout2.explicitSuperclass,
+                               ConstraintKind::Bind, subflags,
+                               locator.withPathElement(
+                                 ConstraintLocator::ExistentialSuperclassType));
+      if (result.isFailure())
+        return result;
+    }
+
+    return getTypeMatchSuccess();
   }
   // Handle nominal types that are not directly generic.
   if (auto nominal1 = type1->getAs<NominalType>()) {
@@ -2920,7 +2918,13 @@ ConstraintSystem::matchExistentialTypes(Type type1, Type type2,
 
   // Handle existential metatypes.
   if (auto meta1 = type1->getAs<MetatypeType>()) {
-    if (auto meta2 = type2->getAs<ExistentialMetatypeType>()) {
+    ExistentialMetatypeType *meta2;
+    if (auto existential = type2->getAs<ExistentialType>()) {
+      meta2 = existential->getConstraintType()->getAs<ExistentialMetatypeType>();
+    } else {
+      meta2 = type2->getAs<ExistentialMetatypeType>();
+    }
+    if (meta2) {
       return matchExistentialTypes(meta1->getInstanceType(),
                                    meta2->getInstanceType(), kind, subflags,
                                    locator.withPathElement(
@@ -5674,6 +5678,7 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
     case TypeKind::GenericFunction:
       llvm_unreachable("Polymorphic function type should have been opened");
 
+    case TypeKind::Existential:
     case TypeKind::ProtocolComposition:
       switch (kind) {
       case ConstraintKind::Equal:
@@ -5877,8 +5882,12 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
               return true;
           return false;
         };
+
+        auto constraintType = meta1->getInstanceType();
+        if (auto existential = constraintType->getAs<ExistentialType>())
+          constraintType = existential->getConstraintType();
         
-        if (auto protoTy = meta1->getInstanceType()->getAs<ProtocolType>()) {
+        if (auto protoTy = constraintType->getAs<ProtocolType>()) {
           if (protoTy->getDecl()->isObjC()
               && isProtocolClassType(type2)) {
             increaseScore(ScoreKind::SK_UserConversion);
@@ -6314,6 +6323,7 @@ ConstraintSystem::simplifyConstructionConstraint(
   case TypeKind::DynamicSelf:
   case TypeKind::ProtocolComposition:
   case TypeKind::Protocol:
+  case TypeKind::Existential:
     // Break out to handle the actual construction below.
     break;
 
@@ -6839,7 +6849,7 @@ static bool isCastToExpressibleByNilLiteral(ConstraintSystem &cs, Type fromType,
   if (!nilLiteral)
     return false;
 
-  return toType->isEqual(nilLiteral->getDeclaredType()) &&
+  return toType->isEqual(nilLiteral->getExistentialType()) &&
          fromType->getOptionalObjectType();
 }
 
@@ -9640,10 +9650,10 @@ ConstraintSystem::simplifyOpenedExistentialOfConstraint(
     auto instanceTy = type2;
     if (auto metaTy = type2->getAs<ExistentialMetatypeType>()) {
       isMetatype = true;
-      instanceTy = metaTy->getInstanceType();
+      instanceTy = metaTy->getExistentialInstanceType();
     }
     assert(instanceTy->isExistentialType());
-    Type openedTy = OpenedArchetypeType::get(instanceTy);
+    Type openedTy = OpenedArchetypeType::get(instanceTy->getCanonicalType());
     if (isMetatype)
       openedTy = MetatypeType::get(openedTy, getASTContext());
     return matchTypes(type1, openedTy, ConstraintKind::Bind, subflags, locator);
@@ -10690,6 +10700,11 @@ getDynamicCallableMethods(Type type, ConstraintSystem &CS,
     if (auto protocolComp = dyn_cast<ProtocolCompositionType>(canType))
       return calculateForComponentTypes(protocolComp->getMembers());
 
+    if (auto existential = dyn_cast<ExistentialType>(canType)) {
+      auto constraint = existential->getConstraintType();
+      return getDynamicCallableMethods(constraint, CS, locator);
+    }
+
     // Otherwise, this must be a nominal type.
     // Dynamic calling doesn't work for tuples, etc.
     auto nominal = canType->getAnyNominal();
@@ -11657,9 +11672,16 @@ bool ConstraintSystem::recordFix(ConstraintFix *fix, unsigned impact) {
   // current anchor or, in case of anchor being an expression, any of
   // its sub-expressions.
   llvm::SmallDenseSet<ASTNode> anchors;
-  for (const auto *fix : Fixes)
-    anchors.insert(fix->getAnchor());
+  for (const auto *fix : Fixes) {
+    // Warning fixes shouldn't be considered because even if
+    // such fix is recorded at that anchor this should not
+    // have any affect in the recording of any other fix.
+    if (fix->isWarning())
+      continue;
 
+    anchors.insert(fix->getAnchor());
+  }
+  
   bool found = false;
   if (auto *expr = getAsExpr(anchor)) {
     forEachExpr(expr, [&](Expr *subExpr) -> Expr * {

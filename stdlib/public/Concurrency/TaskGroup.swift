@@ -32,7 +32,7 @@ import Swift
 /// If you need more control or only a few results,
 /// you can call `next()` directly:
 ///
-///     guard let first = await group.next() {
+///     guard let first = await group.next() else {
 ///         group.cancelAll()
 ///         return 0
 ///     }
@@ -106,7 +106,7 @@ public func withTaskGroup<ChildTaskResult, GroupResult>(
 /// If you need more control or only a few results,
 /// you can call `next()` directly:
 ///
-///     guard let first = await group.next() {
+///     guard let first = await group.next() else {
 ///         group.cancelAll()
 ///         return 0
 ///     }
@@ -373,8 +373,8 @@ public struct TaskGroup<ChildTaskResult: Sendable> {
   /// If you add a task to a group after canceling the group,
   /// that task is canceled immediately after being added to the group.
   ///
-  /// There are no restrictions on where you can call this method.
-  /// Code inside a child task or even another task can cancel a group.
+  /// This method can only be called by the parent task that created the task
+  /// group.
   ///
   /// - SeeAlso: `Task.isCancelled`
   /// - SeeAlso: `TaskGroup.isCancelled`
@@ -393,6 +393,10 @@ public struct TaskGroup<ChildTaskResult: Sendable> {
     return _taskGroupIsCancelled(group: _group)
   }
 }
+
+@available(SwiftStdlib 5.1, *)
+@available(*, unavailable)
+extension TaskGroup: Sendable { }
 
 // Implementation note:
 // We are unable to just™ abstract over Failure == Error / Never because of the
@@ -693,6 +697,10 @@ public struct ThrowingTaskGroup<ChildTaskResult: Sendable, Failure: Error> {
     return _taskGroupIsCancelled(group: _group)
   }
 }
+
+@available(SwiftStdlib 5.1, *)
+@available(*, unavailable)
+extension ThrowingTaskGroup: Sendable { }
 
 /// ==== TaskGroup: AsyncSequence ----------------------------------------------
 

@@ -334,6 +334,9 @@ void ToolChain::addCommonFrontendArgs(const OutputInfo &OI,
     auto OptArg = inputArgs.getLastArgNoClaim(options::OPT_O_Group);
     if (!OptArg || OptArg->getOption().matches(options::OPT_Onone))
       arguments.push_back("-enable-anonymous-context-mangled-names");
+
+    // TODO: Should we support -fcoverage-compilation-dir?
+    inputArgs.AddAllArgs(arguments, options::OPT_file_compilation_dir);
   }
 
   // Pass through any subsystem flags.
@@ -682,6 +685,7 @@ const char *ToolChain::JobContext::computeFrontendModeForCompile() const {
   case file_types::TY_SwiftCrossImportDir:
   case file_types::TY_SwiftOverlayFile:
   case file_types::TY_IndexUnitOutputPath:
+  case file_types::TY_SwiftABIDescriptor:
     llvm_unreachable("Output type can never be primary output.");
   case file_types::TY_INVALID:
     llvm_unreachable("Invalid type ID");
@@ -941,6 +945,7 @@ ToolChain::constructInvocation(const BackendJobAction &job,
     case file_types::TY_SwiftCrossImportDir:
     case file_types::TY_SwiftOverlayFile:
     case file_types::TY_IndexUnitOutputPath:
+    case file_types::TY_SwiftABIDescriptor:
       llvm_unreachable("Output type can never be primary output.");
     case file_types::TY_INVALID:
       llvm_unreachable("Invalid type ID");

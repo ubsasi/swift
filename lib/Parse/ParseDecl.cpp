@@ -1943,6 +1943,11 @@ bool Parser::parseNewDeclAttribute(DeclAttributes &Attributes, SourceLoc AtLoc,
     break;
 #include "swift/AST/Attr.def"
 
+  case DAK_MainType:
+    if (!DiscardAttribute)
+      Attributes.add(new (Context) MainTypeAttr(AtLoc, Loc));
+    break;
+
   case DAK_Effects: {
     auto kind = parseSingleAttrOption<EffectsKind>
                          (*this, Loc, AttrRange, AttrName, DK)
@@ -2749,6 +2754,53 @@ bool Parser::parseNewDeclAttribute(DeclAttributes &Attributes, SourceLoc AtLoc,
     Attributes.add(TypeSequenceAttr::create(Context, AtLoc, range));
     break;
   }
+
+  case DAK_UnavailableFromAsync: {
+    StringRef message;
+    if (consumeIf(tok::l_paren)) {
+      if (!Tok.is(tok::identifier)) {
+        llvm_unreachable("Flag must start with an indentifier");
+      }
+
+      StringRef flag = Tok.getText();
+
+      if (flag != "message") {
+        diagnose(Tok.getLoc(), diag::attr_unknown_option, flag, AttrName);
+        return true;
+      }
+      consumeToken();
+      if (!consumeIf(tok::colon)) {
+        if (!Tok.is(tok::equal)) {
+          diagnose(Tok.getLoc(), diag::attr_expected_colon_after_label, flag);
+          return false;
+        }
+        diagnose(Tok.getLoc(), diag::replace_equal_with_colon_for_value)
+          .fixItReplace(Tok.getLoc(), ": ");
+        consumeToken();
+      }
+      if (!Tok.is(tok::string_literal)) {
+        diagnose(Tok.getLoc(), diag::attr_expected_string_literal, AttrName);
+        return false;
+      }
+
+      Optional<StringRef> value = getStringLiteralIfNotInterpolated(
+          Tok.getLoc(), flag);
+      if (!value)
+        return false;
+      Token stringTok = Tok;
+      consumeToken();
+      message = *value;
+
+      if (!consumeIf(tok::r_paren))
+        diagnose(stringTok.getRange().getEnd(), diag::attr_expected_rparen,
+            AttrName, /*isModifiler*/false)
+          .fixItInsertAfter(stringTok.getLoc(), ")");
+    }
+
+    Attributes.add(new (Context) UnavailableFromAsyncAttr(
+        message, AtLoc, SourceRange(Loc, Tok.getLoc()), false));
+    break;
+  }
   }
 
   if (DuplicateAttribute) {
@@ -3043,6 +3095,11 @@ ParserStatus Parser::parseDeclAttribute(
     DK = DAK_Nonisolated;
     AtLoc = SourceLoc();
   }
+
+  // Temporary name for @preconcurrency
+  checkInvalidAttrName(
+      "_predatesConcurrency", "preconcurrency", DAK_Preconcurrency,
+      diag::attr_renamed_warning);
 
   if (DK == DAK_Count && Tok.getText() == "warn_unused_result") {
     // The behavior created by @warn_unused_result is now the default. Emit a
@@ -7710,8 +7767,10 @@ ParserResult<ClassDecl> Parser::parseDeclClass(ParseDeclOptions Flags,
   {
     // Parse the body.
     if (parseMemberDeclList(LBLoc, RBLoc,
-                            diag::expected_lbrace_class,
-                            diag::expected_rbrace_class,
+                            isExplicitActorDecl ? diag::expected_lbrace_actor
+                                                : diag::expected_lbrace_class,
+                            isExplicitActorDecl ? diag::expected_rbrace_actor
+                                                : diag::expected_rbrace_class,
                             CD))
       Status.setIsParseError();
   }

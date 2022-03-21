@@ -213,9 +213,12 @@ def dependency_scan_cache_remarks : Flag<["-"], "Rdependency-scan-cache">,
   HelpText<"Emit remarks indicating use of the serialized module dependency scanning cache.">;
 
 def enable_copy_propagation : Flag<["-"], "enable-copy-propagation">,
-  HelpText<"Run SIL copy propagation to shorten object lifetime.">;
-def disable_copy_propagation : Flag<["-"], "disable-copy-propagation">,
-  HelpText<"Don't run SIL copy propagation to preserve object lifetime.">;
+  HelpText<"Run SIL copy propagation with lexical lifetimes to shorten object "
+           "lifetimes while preserving variable lifetimes.">;
+def copy_propagation_state_EQ :
+  Joined<["-"], "enable-copy-propagation=">,
+  HelpText<"Whether to enable copy propagation">,
+  MetaVarName<"true|requested-passes-only|false">;
 
 def enable_infer_public_concurrent_value : Flag<["-"], "enable-infer-public-sendable">,
     HelpText<"Enable inference of Sendable conformances for public structs and enums">;
@@ -259,15 +262,18 @@ def enable_experimental_concurrency :
   Flag<["-"], "enable-experimental-concurrency">,
   HelpText<"Enable experimental concurrency model">;
 
-def disable_lexical_lifetimes :
-  Flag<["-"], "disable-lexical-lifetimes">,
-  HelpText<"Disables early lexical lifetimes. Mutually exclusive with "
-           "-enable-lexical-lifetimes">;
-
+def enable_lexical_borrow_scopes :
+  Joined<["-"], "enable-lexical-borrow-scopes=">,
+  HelpText<"Whether to emit lexical borrow scopes (default: true)">,
+  MetaVarName<"true|false">;
+          
 def enable_lexical_lifetimes :
+  Joined<["-"], "enable-lexical-lifetimes=">,
+  HelpText<"Whether to enable lexical lifetimes">,
+  MetaVarName<"true|false">;
+def enable_lexical_lifetimes_noArg :
   Flag<["-"], "enable-lexical-lifetimes">,
-  HelpText<"Enable lexical lifetimes. Mutually exclusive with "
-           "-disable-lexical-lifetimes">;
+  HelpText<"Enable lexical lifetimes">;
 
 def enable_experimental_move_only :
   Flag<["-"], "enable-experimental-move-only">,
@@ -464,6 +470,10 @@ def enable_experimental_static_assert :
   Flag<["-"], "enable-experimental-static-assert">,
   HelpText<"Enable experimental #assert">;
 
+def disable_subst_sil_function_types :
+  Flag<["-"], "disable-subst-sil-function-types">,
+  HelpText<"Disable substituted function types for SIL type lowering of function values">;
+
 def enable_experimental_named_opaque_types :
   Flag<["-"], "enable-experimental-named-opaque-types">,
   HelpText<"Enable experimental support for named opaque result types">;
@@ -471,6 +481,14 @@ def enable_experimental_named_opaque_types :
 def enable_experimental_structural_opaque_types :
   Flag<["-"], "enable-experimental-structural-opaque-types">,
   HelpText<"Enable experimental support for structural opaque result types">;
+
+def enable_explicit_existential_types :
+  Flag<["-"], "enable-explicit-existential-types">,
+  HelpText<"Enable experimental support for explicit existential types">;
+
+def enable_experimental_universal_existentials :
+  Flag<["-"], "enable-experimental-universal-existentials">,
+  HelpText<"Enable experimental support for universal existential types">;
 
 def enable_deserialization_recovery :
   Flag<["-"], "enable-deserialization-recovery">,
