@@ -68,7 +68,7 @@ SOURCE_PATH="$( cd "$(dirname $0)/../../../.." && pwd )"
 SWIFT_PATH=$SOURCE_PATH/swift
 cd $SWIFT_PATH
 
-./utils/update-checkout --clone --scheme wasm --skip-repository swift
+./utils/update-checkout --clone --scheme wasm/5.7 --skip-repository swift
 
 # Install wasmer
 # FIXME: Wasmer doesn't support linux-aarch64, consider using a different WASI-compatible runtime.

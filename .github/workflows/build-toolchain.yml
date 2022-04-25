@@ -8,6 +8,7 @@ on:
       - swiftwasm-release/5.4
       - swiftwasm-release/5.5
       - swiftwasm-release/5.6
+      - swiftwasm-release/5.7
   pull_request:
     branches:
       - swiftwasm
@@ -15,6 +16,7 @@ on:
       - swiftwasm-release/5.4
       - swiftwasm-release/5.5
       - swiftwasm-release/5.6
+      - swiftwasm-release/5.7
 jobs:
   build_toolchain:
     env:
