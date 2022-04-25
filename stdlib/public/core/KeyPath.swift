@@ -3410,7 +3410,7 @@ internal struct InstantiateKeyPathBuffer: KeyPathPatternVisitor {
         // The pointer in the pattern is to a function that generates the
         // identifier pointer.
         typealias Resolver = @convention(c) (UnsafeRawPointer?) -> UnsafeRawPointer?
-        let absoluteID = _resolveRelativeFunctionAddress(idValueBase, idValue)
+        let absoluteID = _resolveCompactFunctionPointer(idValueBase, idValue)
         let resolverSigned = _PtrAuth.sign(
           pointer: absoluteID,
           key: .processIndependentCode,
