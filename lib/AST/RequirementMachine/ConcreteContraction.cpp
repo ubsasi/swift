@@ -182,7 +182,8 @@ public:
 
   bool performConcreteContraction(
       ArrayRef<StructuralRequirement> requirements,
-      SmallVectorImpl<StructuralRequirement> &result);
+      SmallVectorImpl<StructuralRequirement> &result,
+      SmallVectorImpl<RequirementError> &errors);
 };
 
 }  // end namespace
@@ -222,7 +223,8 @@ Optional<Type> ConcreteContraction::substTypeParameter(
 
     auto conformance = ((*substBaseType)->isTypeParameter()
                         ? ProtocolConformanceRef(proto)
-                        : module->lookupConformance(*substBaseType, proto));
+                        : module->lookupConformance(*substBaseType, proto,
+                                                    /*allowMissing=*/true));
 
     // The base type doesn't conform, in which case the requirement remains
     // unsubstituted.
@@ -361,8 +363,25 @@ ConcreteContraction::substRequirement(const Requirement &req) const {
 
     auto *proto = req.getProtocolDecl();
     auto *module = proto->getParentModule();
+
+    // For conformance to 'Sendable', allow synthesis of a missing conformance
+    // if the generic parameter is concrete, that is, if we're looking at a
+    // signature of the form 'T == Foo, T : Sendable'.
+    //
+    // Otherwise, we have a superclass requirement, like 'T : C, T : Sendable';
+    // don't synthesize the conformance in this case since dropping
+    // 'T : Sendable' would be incorrect; we want to ensure that we only admit
+    // subclasses of 'C' which are 'Sendable'.
+    bool allowMissing = false;
+    if (auto *rootParam = firstType->getAs<GenericTypeParamType>()) {
+      auto key = GenericParamKey(rootParam);
+      if (ConcreteTypes.count(key) > 0)
+        allowMissing = true;
+    }
+
     if (!substFirstType->isTypeParameter() &&
-        !module->lookupConformance(substFirstType, proto)) {
+        !module->lookupConformance(substFirstType, proto,
+                                   allowMissing)) {
       // Handle the case of <T where T : P, T : C> where C is a class and
       // C does not conform to P by leaving the conformance requirement
       // unsubstituted.
@@ -380,6 +399,13 @@ ConcreteContraction::substRequirement(const Requirement &req) const {
 
   case RequirementKind::Layout: {
     auto substFirstType = substTypeParameter(firstType);
+    if (!substFirstType->isTypeParameter() &&
+        !substFirstType->satisfiesClassConstraint() &&
+        req.getLayoutConstraint()->isClass()) {
+      // If the concrete type doesn't satisfy the layout constraint,
+      // leave it unsubstituted so that we produce a better diagnostic.
+      return req;
+    }
 
     return Requirement(req.getKind(),
                        substFirstType,
@@ -464,7 +490,8 @@ bool ConcreteContraction::preserveSameTypeRequirement(
 /// original \p requirements.
 bool ConcreteContraction::performConcreteContraction(
     ArrayRef<StructuralRequirement> requirements,
-    SmallVectorImpl<StructuralRequirement> &result) {
+    SmallVectorImpl<StructuralRequirement> &result,
+    SmallVectorImpl<RequirementError> &errors) {
 
   // Phase 1 - collect concrete type and superclass requirements where the
   // subject type is a generic parameter.
@@ -577,7 +604,48 @@ bool ConcreteContraction::performConcreteContraction(
       llvm::dbgs() << "\n";
     }
 
-    if (preserveSameTypeRequirement(req.req)) {
+    // Substitute the requirement.
+    auto substReq = substRequirement(req.req);
+
+    if (Debug) {
+      llvm::dbgs() << "@ Substituted requirement: ";
+      substReq.dump(llvm::dbgs());
+      llvm::dbgs() << "\n";
+    }
+
+    // Otherwise, desugar the requirement again, since we might now have a
+    // requirement where the left hand side is not a type parameter.
+    SmallVector<Requirement, 4> reqs;
+    if (req.inferred) {
+      // Discard errors from desugaring a substituted requirement that
+      // was inferred. For example, if we have something like
+      //
+      //   <T, U where T == Int, U == Set<T>>
+      //
+      // The inferred requirement 'T : Hashable' from 'Set<>' will
+      // be substituted with 'T == Int' to get 'Int : Hashable'.
+      //
+      // Desugaring will diagnose a redundant conformance requirement,
+      // but we want to ignore that, since the user did not explicitly
+      // write 'Int : Hashable' (or 'T : Hashable') anywhere.
+      SmallVector<RequirementError, 4> discardErrors;
+      desugarRequirement(substReq, SourceLoc(), reqs, discardErrors);
+    } else {
+      desugarRequirement(substReq, req.loc, reqs, errors);
+    }
+
+    for (auto desugaredReq : reqs) {
+      if (Debug) {
+        llvm::dbgs() << "@@ Desugared requirement: ";
+        desugaredReq.dump(llvm::dbgs());
+        llvm::dbgs() << "\n";
+      }
+      result.push_back({desugaredReq, req.loc, req.inferred});
+    }
+
+    if (preserveSameTypeRequirement(req.req) &&
+        (!req.req.getFirstType()->isEqual(substReq.getFirstType()) ||
+         !req.req.getSecondType()->isEqual(substReq.getSecondType()))) {
       if (Debug) {
         llvm::dbgs() << "@ Preserving original requirement: ";
         req.req.dump(llvm::dbgs());
@@ -587,44 +655,6 @@ bool ConcreteContraction::performConcreteContraction(
       // Make the duplicated requirement 'inferred' so that we don't diagnose
       // it as redundant.
       result.push_back({req.req, SourceLoc(), /*inferred=*/true});
-    }
-
-    // Substitute the requirement.
-    Optional<Requirement> substReq = substRequirement(req.req);
-
-    // If substitution failed, we have a conflict; bail out here so that we can
-    // diagnose the conflict later.
-    if (!substReq) {
-      if (Debug) {
-        llvm::dbgs() << "@ Concrete contraction cannot proceed; requirement ";
-        llvm::dbgs() << "substitution failed:\n";
-        req.req.dump(llvm::dbgs());
-        llvm::dbgs() << "\n";
-      }
-
-      continue;
-    }
-
-    if (Debug) {
-      llvm::dbgs() << "@ Substituted requirement: ";
-      substReq->dump(llvm::dbgs());
-      llvm::dbgs() << "\n";
-    }
-
-    // Otherwise, desugar the requirement again, since we might now have a
-    // requirement where the left hand side is not a type parameter.
-    //
-    // FIXME: Do we need to check for errors? Right now they're just ignored.
-    SmallVector<Requirement, 4> reqs;
-    SmallVector<RequirementError, 1> errors;
-    desugarRequirement(*substReq, reqs, errors);
-    for (auto desugaredReq : reqs) {
-      if (Debug) {
-        llvm::dbgs() << "@@ Desugared requirement: ";
-        desugaredReq.dump(llvm::dbgs());
-        llvm::dbgs() << "\n";
-      }
-      result.push_back({desugaredReq, req.loc, req.inferred});
     }
   }
 
@@ -647,7 +677,9 @@ bool ConcreteContraction::performConcreteContraction(
 bool swift::rewriting::performConcreteContraction(
     ArrayRef<StructuralRequirement> requirements,
     SmallVectorImpl<StructuralRequirement> &result,
+    SmallVectorImpl<RequirementError> &errors,
     bool debug) {
   ConcreteContraction concreteContraction(debug);
-  return concreteContraction.performConcreteContraction(requirements, result);
+  return concreteContraction.performConcreteContraction(
+      requirements, result, errors);
 }

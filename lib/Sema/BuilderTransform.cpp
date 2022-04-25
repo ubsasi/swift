@@ -374,8 +374,7 @@ protected:
     // If the builder supports `buildPartialBlock(first:)` and
     // `buildPartialBlock(accumulated:next:)`, use this to combine
     // subexpressions pairwise.
-    if (ctx.LangOpts.EnableExperimentalPairwiseBuildBlock &&
-        !expressions.empty() &&
+    if (!expressions.empty() &&
         builderSupports(ctx.Id_buildPartialBlock, {ctx.Id_first},
                         /*checkAvailability*/ true) &&
         builderSupports(ctx.Id_buildPartialBlock,
@@ -398,31 +397,10 @@ protected:
                                  {ctx.Id_accumulated, ctx.Id_next});
       }
     }
-    // TODO: Remove support for the old method name,
-    // `buildBlock(combining:into:)`.
-    else if (ctx.LangOpts.EnableExperimentalPairwiseBuildBlock &&
-             !expressions.empty() &&
-             builderSupports(ctx.Id_buildBlock,
-                             {ctx.Id_combining, ctx.Id_into})) {
-      // NOTE: The current implementation uses one-way constraints in between
-      // subexpressions. It's functionally equivalent to the following:
-      //   let v0 = Builder.buildBlock(arg_0)
-      //   let v1 = Builder.buildBlock(combining: arg_1, into: v0)
-      //   ...
-      //   return Builder.buildBlock(combining: arg_n, into: ...)
-      call = buildCallIfWanted(braceStmt->getStartLoc(), ctx.Id_buildBlock,
-                               {expressions.front()}, /*argLabels=*/{});
-      for (auto *expr : llvm::drop_begin(expressions)) {
-        call = buildCallIfWanted(braceStmt->getStartLoc(), ctx.Id_buildBlock,
-                                 {expr, new (ctx) OneWayExpr(call)},
-                                 {ctx.Id_combining, ctx.Id_into});
-      }
-    }
     // If `buildBlock` does not exist at this point, it could be the case that
     // `buildPartialBlock` did not have the sufficient availability for this
     // call site.  Diagnose it.
-    else if (ctx.LangOpts.EnableExperimentalPairwiseBuildBlock &&
-             !builderSupports(ctx.Id_buildBlock)) {
+    else if (!builderSupports(ctx.Id_buildBlock)) {
       ctx.Diags.diagnose(
           braceStmt->getStartLoc(),
           diag::result_builder_missing_available_buildpartialblock,
@@ -1736,10 +1714,10 @@ Optional<BraceStmt *> TypeChecker::applyResultBuilderBodyTransform(
   }
 
   // Solve the constraint system.
-  SmallVector<Solution, 4> solutions;
-  bool solvingFailed = cs.solve(solutions);
-
   if (cs.getASTContext().CompletionCallback) {
+    SmallVector<Solution, 4> solutions;
+    cs.solveForCodeCompletion(solutions);
+
     CompletionContextFinder analyzer(func, func->getDeclContext());
     filterSolutionsForCodeCompletion(solutions, analyzer);
     for (const auto &solution : solutions) {
@@ -1747,6 +1725,9 @@ Optional<BraceStmt *> TypeChecker::applyResultBuilderBodyTransform(
     }
     return nullptr;
   }
+
+  SmallVector<Solution, 4> solutions;
+  bool solvingFailed = cs.solve(solutions);
 
   if (solvingFailed || solutions.size() != 1) {
     // Try to fix the system or provide a decent diagnostic.

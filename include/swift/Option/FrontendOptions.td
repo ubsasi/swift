@@ -248,6 +248,10 @@ let Flags = [FrontendOption, NoDriverOption, HelpHidden, ModuleInterfaceOptionIg
   def enable_lexical_lifetimes_noArg :
     Flag<["-"], "enable-lexical-lifetimes">,
     HelpText<"Enable lexical lifetimes">;
+  def enable_destroy_hoisting :
+    Joined<["-"], "enable-destroy-hoisting=">,
+    HelpText<"Whether to enable destroy hoisting">,
+    MetaVarName<"true|false">;
 }
 
 // Flags that are saved into module interfaces
@@ -422,6 +426,10 @@ def disable_implicit_distributed_module_import : Flag<["-"],
   "disable-implicit-distributed-module-import">,
   HelpText<"Disable the implicit import of the Distributed module.">;
 
+def disable_implicit_string_processing_module_import : Flag<["-"],
+  "disable-implicit-string-processing-module-import">,
+  HelpText<"Disable the implicit import of the _StringProcessing module.">;
+
 def disable_arc_opts : Flag<["-"], "disable-arc-opts">,
   HelpText<"Don't run SIL ARC optimization passes.">;
 def disable_ossa_opts : Flag<["-"], "disable-ossa-opts">,
@@ -532,9 +540,9 @@ def enable_explicit_existential_types :
   Flag<["-"], "enable-explicit-existential-types">,
   HelpText<"Enable experimental support for explicit existential types">;
 
-def enable_parameterized_protocol_types :
-  Flag<["-"], "enable-parameterized-protocol-types">,
-  HelpText<"Enable experimental support for primary associated types and parameterized protocols">;
+def enable_parameterized_existential_types :
+  Flag<["-"], "enable-parameterized-existential-types">,
+  HelpText<"Enable experimental support for parameterized existential types">;
 
 def enable_experimental_opened_existential_types :
   Flag<["-"], "enable-experimental-opened-existential-types">,
@@ -554,6 +562,9 @@ def disable_deserialization_recovery :
 def enable_experimental_string_processing :
   Flag<["-"], "enable-experimental-string-processing">,
   HelpText<"Enable experimental string processing">;
+def disable_experimental_string_processing :
+  Flag<["-"], "disable-experimental-string-processing">,
+  HelpText<"Disable experimental string processing">;
 
 def enable_experimental_variadic_generics :
   Flag<["-"], "enable-experimental-variadic-generics">,
@@ -887,10 +898,6 @@ def experimental_one_way_closure_params :
 def experimental_multi_statement_closures :
   Flag<["-"], "experimental-multi-statement-closures">,
   HelpText<"Enable experimental support for type inference in multi-statement closures">;
-
-def experimental_type_inference_from_defaults :
-  Flag<["-"], "enable-experimental-type-inference-from-defaults">,
-  HelpText<"Enable experimental support for generic parameter inference from default values">;
 
 def prebuilt_module_cache_path :
   Separate<["-"], "prebuilt-module-cache-path">,

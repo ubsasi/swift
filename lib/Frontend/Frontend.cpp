@@ -793,7 +793,8 @@ bool CompilerInvocation::shouldImportSwiftConcurrency() const {
 }
 
 bool CompilerInvocation::shouldImportSwiftStringProcessing() const {
-  return getLangOptions().EnableExperimentalStringProcessing;
+  return getLangOptions().EnableExperimentalStringProcessing &&
+      !getLangOptions().DisableImplicitStringProcessingModuleImport;
 }
 
 /// Implicitly import the SwiftOnoneSupport module in non-optimized
@@ -1017,8 +1018,7 @@ ModuleDecl *CompilerInstance::getMainModule() const {
     }
     if (Invocation.getFrontendOptions().EnableLibraryEvolution)
       MainModule->setResilienceStrategy(ResilienceStrategy::Resilient);
-    if (Invocation.getLangOptions().WarnConcurrency ||
-        Invocation.getLangOptions().isSwiftVersionAtLeast(6))
+    if (Invocation.getLangOptions().isSwiftVersionAtLeast(6))
       MainModule->setIsConcurrencyChecked(true);
 
     // Register the main module with the AST context.

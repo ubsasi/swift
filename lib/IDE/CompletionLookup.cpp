@@ -119,11 +119,13 @@ static bool hasTrivialTrailingClosure(const FuncDecl *FD,
 }
 } // end anonymous namespace
 
-bool swift::ide::DefaultFilter(ValueDecl *VD, DeclVisibilityKind Kind) {
+bool swift::ide::DefaultFilter(ValueDecl *VD, DeclVisibilityKind Kind,
+                               DynamicLookupInfo dynamicLookupInfo) {
   return true;
 }
 
-bool swift::ide::KeyPathFilter(ValueDecl *decl, DeclVisibilityKind) {
+bool swift::ide::KeyPathFilter(ValueDecl *decl, DeclVisibilityKind,
+                               DynamicLookupInfo dynamicLookupInfo) {
   return isa<TypeDecl>(decl) ||
          (isa<VarDecl>(decl) && decl->getDeclContext()->isTypeContext());
 }
@@ -748,8 +750,7 @@ void CompletionLookup::analyzeActorIsolation(
     // For "unsafe" global actor isolation, automatic 'async' only happens
     // if the context has adopted concurrency.
     if (!CanCurrDeclContextHandleAsync &&
-        !completionContextUsesConcurrencyFeatures(CurrDeclContext) &&
-        !CurrDeclContext->getParentModule()->isConcurrencyChecked()) {
+        !completionContextUsesConcurrencyFeatures(CurrDeclContext)) {
       return;
     }
     LLVM_FALLTHROUGH;
@@ -767,7 +768,7 @@ void CompletionLookup::analyzeActorIsolation(
   }
 
   // If the reference is 'async', all types must be 'Sendable'.
-  if (CurrDeclContext->getParentModule()->isConcurrencyChecked() &&
+  if (Ctx.LangOpts.StrictConcurrencyLevel >= StrictConcurrency::Complete &&
       implicitlyAsync && T) {
     auto *M = CurrDeclContext->getParentModule();
     if (isa<VarDecl>(VD)) {
@@ -977,13 +978,14 @@ void CompletionLookup::addEffectsSpecifiers(
   assert(AFT != nullptr);
 
   // 'async'.
-  if (forceAsync || (AFD && AFD->hasAsync()) || AFT->isAsync())
+  if (forceAsync || (AFD && AFD->hasAsync()) ||
+      (AFT->hasExtInfo() && AFT->isAsync()))
     Builder.addAnnotatedAsync();
 
   // 'throws' or 'rethrows'.
   if (AFD && AFD->getAttrs().hasAttribute<RethrowsAttr>())
     Builder.addAnnotatedRethrows();
-  else if (AFT->isThrowing())
+  else if (AFT->hasExtInfo() && AFT->isThrowing())
     Builder.addAnnotatedThrows();
 }
 
@@ -1146,7 +1148,8 @@ void CompletionLookup::addFunctionCallPattern(
     else
       addTypeAnnotation(Builder, AFT->getResult(), genericSig);
 
-    if (!isForCaching() && AFT->isAsync() && !CanCurrDeclContextHandleAsync) {
+    if (!isForCaching() && AFT->hasExtInfo() && AFT->isAsync() &&
+        !CanCurrDeclContextHandleAsync) {
       Builder.setContextualNotRecommended(
           ContextualNotRecommendedReason::InvalidAsyncContext);
     }
@@ -1797,7 +1800,7 @@ void CompletionLookup::foundDecl(ValueDecl *D, DeclVisibilityKind Reason,
   if (D->shouldHideFromEditor())
     return;
 
-  if (IsKeyPathExpr && !KeyPathFilter(D, Reason))
+  if (IsKeyPathExpr && !KeyPathFilter(D, Reason, dynamicLookupInfo))
     return;
 
   if (IsSwiftKeyPathExpr && !SwiftKeyPathFilter(D, Reason))
@@ -2072,7 +2075,7 @@ bool CompletionLookup::tryModuleCompletions(Type ExprType, bool TypesOnly) {
                                        .withModuleQualifier(false);
       if (TypesOnly)
         Request = Request.onlyTypes();
-      RequestedCachedResults.push_back(Request);
+      RequestedCachedResults.insert(Request);
     }
     return true;
   }
@@ -2635,7 +2638,7 @@ void CompletionLookup::getValueCompletionsInDeclContext(SourceLoc Loc,
 
   lookupVisibleDecls(FilteringConsumer, CurrDeclContext,
                      /*IncludeTopLevel=*/false, Loc);
-  RequestedCachedResults.push_back(
+  RequestedCachedResults.insert(
       RequestedResultsTy::toplevelResults().withModuleQualifier(
           ModuleQualifier));
 
@@ -2693,7 +2696,8 @@ void CompletionLookup::getUnresolvedMemberCompletions(Type T) {
   // type and has the same type (or if the member is a function, then the
   // same result type) as the contextual type.
   FilteredDeclConsumer consumer(*this,
-                                [=](ValueDecl *VD, DeclVisibilityKind Reason) {
+                                [=](ValueDecl *VD, DeclVisibilityKind Reason,
+                                    DynamicLookupInfo dynamicLookupInfo) {
                                   // In optional context, ignore
                                   // '.init(<some>)', 'init(nilLiteral:)',
                                   return !isInitializerOnOptional(T, VD);
@@ -2936,9 +2940,9 @@ void CompletionLookup::collectPrecedenceGroups() {
     if (Module == CurrModule)
       continue;
 
-    RequestedCachedResults.push_back(RequestedResultsTy::fromModule(Module)
-                                         .onlyPrecedenceGroups()
-                                         .withModuleQualifier(false));
+    RequestedCachedResults.insert(RequestedResultsTy::fromModule(Module)
+                                      .onlyPrecedenceGroups()
+                                      .withModuleQualifier(false));
   }
 }
 
@@ -3028,7 +3032,7 @@ void CompletionLookup::getTypeCompletionsInDeclContext(SourceLoc Loc,
   lookupVisibleDecls(AccessFilteringConsumer, CurrDeclContext,
                      /*IncludeTopLevel=*/false, Loc);
 
-  RequestedCachedResults.push_back(
+  RequestedCachedResults.insert(
       RequestedResultsTy::toplevelResults().onlyTypes().withModuleQualifier(
           ModuleQualifier));
 }
@@ -3115,4 +3119,33 @@ void CompletionLookup::getStmtLabelCompletions(SourceLoc Loc, bool isContinue) {
                                         SemanticContextKind::Local);
     Builder.addTextChunk(name.str());
   }
+}
+
+void CompletionLookup::getOptionalBindingCompletions(SourceLoc Loc) {
+  ExprType = Type();
+  Kind = LookupKind::ValueInDeclContext;
+  NeedLeadingDot = false;
+
+  AccessFilteringDeclConsumer AccessFilteringConsumer(CurrDeclContext, *this);
+
+  // Suggest only 'Optional' type var decls (incl. parameters)
+  FilteredDeclConsumer FilteringConsumer(
+      AccessFilteringConsumer,
+      [&](ValueDecl *VD, DeclVisibilityKind Reason,
+          DynamicLookupInfo dynamicLookupInfo) -> bool {
+        auto *VarD = dyn_cast<VarDecl>(VD);
+        if (!VarD)
+          return false;
+
+        auto Ty = getTypeOfMember(VD, dynamicLookupInfo);
+        return Ty->isOptional();
+      });
+
+  // FIXME: Currently, it doesn't include top level decls for performance
+  // reason. Enabling 'IncludeTopLevel' pulls everything including imported
+  // modules. For suggesting top level results, we need a way to filter cached
+  // results.
+
+  lookupVisibleDecls(FilteringConsumer, CurrDeclContext,
+                     /*IncludeTopLevel=*/false, Loc);
 }

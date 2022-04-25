@@ -1396,13 +1396,27 @@ void Serializer::serializeGenericRequirements(
   }
 }
 
-void Serializer::writeAssociatedTypes(ArrayRef<AssociatedTypeDecl *> assocTypes) {
+void Serializer::writeAssociatedTypes(
+    ArrayRef<AssociatedTypeDecl *> assocTypes) {
   using namespace decls_block;
 
   auto assocTypeAbbrCode = DeclTypeAbbrCodes[AssociatedTypeLayout::Code];
 
   for (auto *assocType : assocTypes) {
     AssociatedTypeLayout::emitRecord(
+        Out, ScratchRecord, assocTypeAbbrCode,
+        addDeclRef(assocType));
+  }
+}
+
+void Serializer::writePrimaryAssociatedTypes(
+    ArrayRef<AssociatedTypeDecl *> assocTypes) {
+  using namespace decls_block;
+
+  auto assocTypeAbbrCode = DeclTypeAbbrCodes[PrimaryAssociatedTypeLayout::Code];
+
+  for (auto *assocType : assocTypes) {
+    PrimaryAssociatedTypeLayout::emitRecord(
         Out, ScratchRecord, assocTypeAbbrCode,
         addDeclRef(assocType));
   }
@@ -3487,7 +3501,6 @@ public:
       contextID.getOpaqueValue(),
       S.addTypeRef(assocType->getDefaultDefinitionType()),
       assocType->isImplicit(),
-      assocType->isPrimary(),
       overriddenAssocTypeIDs);
   }
 
@@ -3707,6 +3720,7 @@ public:
     writeGenericParams(proto->getGenericParams());
     S.writeRequirementSignature(proto->getRequirementSignature());
     S.writeAssociatedTypes(proto->getAssociatedTypeMembers());
+    S.writePrimaryAssociatedTypes(proto->getPrimaryAssociatedTypes());
     writeMembers(id, proto->getAllMembers(), true);
     writeDefaultWitnessTable(proto);
   }
@@ -3898,16 +3912,44 @@ public:
     auto genericSigID = S.addGenericSignatureRef(opaqueDecl->getGenericSignature());
 
     SubstitutionMapID underlyingSubsID = 0;
-    if (auto underlying = opaqueDecl->getUniqueUnderlyingTypeSubstitutions())
+    if (auto underlying = opaqueDecl->getUniqueUnderlyingTypeSubstitutions()) {
       underlyingSubsID = S.addSubstitutionMapRef(*underlying);
+    } else if (opaqueDecl->hasConditionallyAvailableSubstitutions()) {
+      // Universally available type doesn't have any availability conditions
+      // so it could be serialized into "unique" slot to safe space.
+      auto universal =
+          opaqueDecl->getConditionallyAvailableSubstitutions().back();
+      underlyingSubsID = S.addSubstitutionMapRef(universal->getSubstitutions());
+    }
     uint8_t rawAccessLevel =
-      getRawStableAccessLevel(opaqueDecl->getFormalAccess());
+        getRawStableAccessLevel(opaqueDecl->getFormalAccess());
     unsigned abbrCode = S.DeclTypeAbbrCodes[OpaqueTypeLayout::Code];
     OpaqueTypeLayout::emitRecord(S.Out, S.ScratchRecord, abbrCode,
                                  contextID.getOpaqueValue(), namingDeclID,
                                  interfaceSigID, interfaceTypeID, genericSigID,
                                  underlyingSubsID, rawAccessLevel);
     writeGenericParams(opaqueDecl->getGenericParams());
+
+    // Serialize all of the conditionally available substitutions expect the
+    // last one - universal, it's serialized into "unique" slot.
+    if (opaqueDecl->hasConditionallyAvailableSubstitutions()) {
+      unsigned abbrCode =
+          S.DeclTypeAbbrCodes[ConditionalSubstitutionLayout::Code];
+      for (const auto *subs :
+           opaqueDecl->getConditionallyAvailableSubstitutions().drop_back()) {
+        SmallVector<IdentifierID, 4> conditions;
+
+        for (const auto &condition : subs->getAvailability()) {
+          auto lowerEndpoint = condition.getLowerEndpoint();
+          conditions.push_back(
+              S.addUniquedStringRef(lowerEndpoint.getAsString()));
+        }
+
+        ConditionalSubstitutionLayout::emitRecord(
+            S.Out, S.ScratchRecord, abbrCode,
+            S.addSubstitutionMapRef(subs->getSubstitutions()), conditions);
+      }
+    }
   }
 
   void visitAccessorDecl(const AccessorDecl *fn) {
@@ -5017,6 +5059,7 @@ void Serializer::writeAllDeclsAndTypes() {
   registerDeclTypeAbbr<PatternBindingLayout>();
   registerDeclTypeAbbr<ProtocolLayout>();
   registerDeclTypeAbbr<AssociatedTypeLayout>();
+  registerDeclTypeAbbr<PrimaryAssociatedTypeLayout>();
   registerDeclTypeAbbr<DefaultWitnessTableLayout>();
   registerDeclTypeAbbr<PrefixOperatorLayout>();
   registerDeclTypeAbbr<PostfixOperatorLayout>();
@@ -5074,6 +5117,8 @@ void Serializer::writeAllDeclsAndTypes() {
   registerDeclTypeAbbr<FilenameForPrivateLayout>();
   registerDeclTypeAbbr<MembersLayout>();
   registerDeclTypeAbbr<XRefLayout>();
+
+  registerDeclTypeAbbr<ConditionalSubstitutionLayout>();
 
 #define DECL_ATTR(X, NAME, ...) \
   registerDeclTypeAbbr<NAME##DeclAttrLayout>();

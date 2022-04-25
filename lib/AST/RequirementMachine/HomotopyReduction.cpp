@@ -126,68 +126,56 @@ void RewriteSystem::propagateRedundantRequirementIDs() {
     llvm::dbgs() << "\nPropagating requirement IDs: {";
   }
 
-  for (auto ruleAndReplacement : RedundantRules) {
-    auto ruleID = ruleAndReplacement.first;
-    auto rewritePath = ruleAndReplacement.second;
-    auto &rule = Rules[ruleID];
+  for (const auto &ruleAndReplacement : RedundantRules) {
+    unsigned ruleID = ruleAndReplacement.first;
+    const auto &rewritePath = ruleAndReplacement.second;
+    const auto &rule = Rules[ruleID];
 
     auto requirementID = rule.getRequirementID();
-    if (!requirementID.hasValue())
+    if (!requirementID.hasValue()) {
+      if (Debug.contains(DebugFlags::PropagateRequirementIDs)) {
+        llvm::dbgs() << "\n- rule does not have a requirement ID: "
+                     << rule;
+      }
       continue;
+    }
 
     MutableTerm lhs(rule.getLHS());
-    for (auto ruleID : rewritePath.getRulesInEmptyContext(lhs, *this)) {
+    for (auto ruleID : rewritePath.findRulesAppearingOnceInEmptyContext(lhs, *this)) {
       auto &replacement = Rules[ruleID];
-      if (!replacement.isPermanent()) {
-        // If the replacement rule already has a requirementID, overwrite
-        // it if the existing ID corresponds to an inferred requirement.
-        // This effectively makes the inferred requirement the redundant
-        // one, which makes it easier to suppress redundancy warnings for
-        // inferred requirements later on.
-        auto existingID = replacement.getRequirementID();
-        if (existingID.hasValue() && !WrittenRequirements[*existingID].inferred)
-          continue;
-
+      if (replacement.isPermanent()) {
         if (Debug.contains(DebugFlags::PropagateRequirementIDs)) {
-          llvm::dbgs() << "\n- propagating ID = "
-            << requirementID
-            << "\n  from ";
-          rule.dump(llvm::dbgs());
-          llvm::dbgs() << "\n  to ";
-          replacement.dump(llvm::dbgs());
+          llvm::dbgs() << "\n- skipping permanent rule: " << rule;
         }
-
-        replacement.setRequirementID(requirementID);
+        continue;
       }
+
+      // If the replacement rule already has a requirementID, overwrite
+      // it if the existing ID corresponds to an inferred requirement.
+      // This effectively makes the inferred requirement the redundant
+      // one, which makes it easier to suppress redundancy warnings for
+      // inferred requirements later on.
+      auto existingID = replacement.getRequirementID();
+      if (existingID.hasValue() && !WrittenRequirements[*existingID].inferred) {
+        if (Debug.contains(DebugFlags::PropagateRequirementIDs)) {
+          llvm::dbgs() << "\n- rule already has a requirement ID: "
+                       << rule;
+        }
+        continue;
+      }
+
+      if (Debug.contains(DebugFlags::PropagateRequirementIDs)) {
+        llvm::dbgs() << "\n- propagating ID = " << requirementID
+                     << "\n  from " << rule;
+        llvm::dbgs() << "\n  to " << replacement;
+      }
+
+      replacement.setRequirementID(requirementID);
     }
   }
 
   if (Debug.contains(DebugFlags::PropagateRequirementIDs)) {
     llvm::dbgs() << "\n}\n";
-  }
-}
-
-/// Process pairs of conflicting rules, marking the more specific rule as
-/// conflicting, which instructs minimization to drop this rule.
-void RewriteSystem::processConflicts() {
-  for (auto pair : ConflictingRules) {
-    auto *existingRule = &getRule(pair.first);
-    auto *newRule = &getRule(pair.second);
-
-    // The identity conformance rule ([P].[P] => [P]) will conflict with
-    // a concrete type requirement in an invalid protocol declaration
-    // where 'Self' is constrained to a type that does not conform to
-    // the protocol. This rule is permanent, so don't mark it as
-    // conflicting in this case.
-
-    if (!existingRule->isIdentityConformanceRule() &&
-        existingRule->getRHS().size() >= newRule->getRHS().size())
-      existingRule->markConflicting();
-    if (!newRule->isIdentityConformanceRule() &&
-        newRule->getRHS().size() >= existingRule->getRHS().size())
-      newRule->markConflicting();
-
-    // FIXME: Diagnose the conflict later.
   }
 }
 
@@ -477,7 +465,6 @@ void RewriteSystem::minimizeRewriteSystem() {
   Minimized = 1;
 
   propagateExplicitBits();
-  processConflicts();
 
   if (Context.getASTContext().LangOpts.EnableRequirementMachineLoopNormalization) {
     for (auto &loop : Loops) {

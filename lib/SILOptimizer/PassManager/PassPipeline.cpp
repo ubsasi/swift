@@ -354,7 +354,9 @@ void addFunctionPasses(SILPassPipelinePlan &P,
   // Promote box allocations to stack allocations.
   P.addAllocBoxToStack();
 
-  P.addSSADestroyHoisting();
+  if (P.getOptions().DestroyHoisting == DestroyHoistingOption::On) {
+    P.addSSADestroyHoisting();
+  }
 
   // Propagate copies through stack locations.  Should run after
   // box-to-stack promotion since it is limited to propagating through
@@ -862,7 +864,8 @@ SILPassPipelinePlan::getPerformancePassPipeline(const SILOptions &Options) {
     P.addSemanticARCOpts();
   }
 
-  P.addCrossModuleOptimization();
+  // disabled in Swift 5.7
+  // P.addCrossModuleOptimization();
 
   // It is important to serialize before any of the @_semantics
   // functions are inlined, because otherwise the information about

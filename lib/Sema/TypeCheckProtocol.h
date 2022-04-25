@@ -189,6 +189,10 @@ enum class MatchKind : uint8_t {
   /// The witness has fewer effects than the requirement, which is okay.
   FewerEffects,
 
+  /// The witness is @Sendable and the requirement is not. Okay in certain
+  /// language modes.
+  RequiresNonSendable,
+
   /// There is a difference in optionality.
   OptionalityConflict,
 
@@ -474,6 +478,7 @@ struct RequirementMatch {
     switch(Kind) {
     case MatchKind::ExactMatch:
     case MatchKind::FewerEffects:
+    case MatchKind::RequiresNonSendable:
       return true;
 
     case MatchKind::OptionalityConflict:
@@ -510,6 +515,7 @@ struct RequirementMatch {
     switch(Kind) {
     case MatchKind::ExactMatch:
     case MatchKind::FewerEffects:
+    case MatchKind::RequiresNonSendable:
     case MatchKind::OptionalityConflict:
     case MatchKind::RenamedMatch:
       return true;
@@ -545,6 +551,7 @@ struct RequirementMatch {
     switch(Kind) {
     case MatchKind::ExactMatch:
     case MatchKind::FewerEffects:
+    case MatchKind::RequiresNonSendable:
     case MatchKind::RenamedMatch:
     case MatchKind::TypeConflict:
     case MatchKind::MissingRequirement:
@@ -1197,6 +1204,20 @@ private:
                 ArrayRef<AssociatedTypeDecl *> unresolvedAssocTypes,
                 ConformanceChecker &checker,
                 SmallVectorImpl<InferredTypeWitnessesSolution> &solutions);
+
+  /// We may need to determine a type witness, regardless of the existence of a
+  /// default value for it, e.g. when a 'distributed actor' is looking up its
+  /// 'ID', the default defined in an extension for 'Identifiable' would be
+  /// located using the lookup resolve. This would not be correct, since the
+  /// type actually must be based on the associated 'ActorSystem'.
+  ///
+  /// TODO(distributed): perhaps there is a better way to avoid this mixup?
+  ///   Note though that this issue seems to only manifest in "real" builds
+  ///   involving multiple files/modules, and not in tests within the Swift
+  ///   project itself.
+  bool canAttemptEagerTypeWitnessDerivation(
+      ConformanceChecker &checker,
+      AssociatedTypeDecl *assocType);
 
 public:
   /// Describes a mapping from associated type declarations to their

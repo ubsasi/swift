@@ -559,6 +559,11 @@ public:
     return f(backtrackScope);
   }
 
+  /// Discard the current token. This will avoid interface hashing or updating
+  /// the previous loc. Only should be used if you've completely re-lexed
+  /// a different token at that position.
+  SourceLoc discardToken();
+
   /// Consume a token that we created on the fly to correct the original token
   /// stream from lexer.
   void consumeExtraToken(Token K);
@@ -671,8 +676,15 @@ public:
   /// skipUntilDeclStmtRBrace - Skip to the next decl or '}'.
   void skipUntilDeclRBrace();
 
-  void skipUntilDeclStmtRBrace(tok T1);
-  void skipUntilDeclStmtRBrace(tok T1, tok T2);
+  template <typename ...T>
+  void skipUntilDeclStmtRBrace(T... K) {
+    while (Tok.isNot(K..., tok::eof, tok::r_brace, tok::pound_endif,
+                     tok::pound_else, tok::pound_elseif,
+                     tok::code_complete) &&
+           !isStartOfStmt() && !isStartOfSwiftDecl()) {
+      skipSingle();
+    }
+  }
 
   void skipUntilDeclRBrace(tok T1, tok T2);
   
@@ -1213,9 +1225,9 @@ public:
   parseAbstractFunctionBodyDelayed(AbstractFunctionDecl *AFD);
 
   ParserStatus parsePrimaryAssociatedTypes(
-      SmallVectorImpl<AssociatedTypeDecl *> &AssocTypes);
+      SmallVectorImpl<PrimaryAssociatedTypeName> &AssocTypeNames);
   ParserStatus parsePrimaryAssociatedTypeList(
-      SmallVectorImpl<AssociatedTypeDecl *> &AssocTypes);
+      SmallVectorImpl<PrimaryAssociatedTypeName> &AssocTypeNames);
   ParserResult<ProtocolDecl> parseDeclProtocol(ParseDeclOptions Flags,
                                                DeclAttributes &Attributes);
 
@@ -1745,7 +1757,16 @@ public:
   ParserResult<Expr>
   parseExprPoundCodeCompletion(Optional<StmtKind> ParentKind);
 
+  UnresolvedDeclRefExpr *makeExprOperator(const Token &opToken);
   UnresolvedDeclRefExpr *parseExprOperator();
+
+  /// Try re-lex a '/' operator character as a regex literal. This should be
+  /// called when parsing in an expression position to ensure a regex literal is
+  /// correctly parsed.
+  ///
+  /// If \p mustBeRegex is set to true, a regex literal will always be lexed if
+  /// enabled. Otherwise, it will not be lexed if it may be ambiguous.
+  void tryLexRegexLiteral(bool mustBeRegex);
 
   void validateCollectionElement(ParserResult<Expr> element);
 

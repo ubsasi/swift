@@ -1275,6 +1275,9 @@ public:
     if (ArgInfo.isBefore(argIdx)) {
       return false;
     }
+    if (argIdx == 0 && ArgInfo.completionIdx == 0) {
+      return false;
+    }
     return ArgumentFailureTracker::extraArgument(argIdx);
   }
 
@@ -1777,7 +1780,8 @@ static ConstraintSystem::TypeMatchResult matchCallArguments(
     if (parameterBindings[paramIdx].empty() && callee) {
       auto &ctx = cs.getASTContext();
 
-      if (ctx.TypeCheckerOpts.EnableTypeInferenceFromDefaultArguments) {
+      // Type inference from default value expressions.
+      {
         auto *paramList = getParameterList(callee);
         if (!paramList)
           continue;
@@ -1825,7 +1829,6 @@ static ConstraintSystem::TypeMatchResult matchCallArguments(
       auto *argExpr = getArgumentExpr(locator.getAnchor(), argIdx);
       if (param.isAutoClosure() && !isSynthesizedArgument(argument)) {
         auto &ctx = cs.getASTContext();
-        auto *fnType = paramTy->castTo<FunctionType>();
 
         // If this is a call to a function with a closure argument and the
         // parameter is an autoclosure, let's just increment the score here
@@ -1845,7 +1848,9 @@ static ConstraintSystem::TypeMatchResult matchCallArguments(
         if (ctx.isSwiftVersionAtLeast(5) || !isAutoClosureArgument(argExpr)) {
           // In Swift >= 5 mode there is no @autoclosure forwarding,
           // so let's match result types.
-          paramTy = fnType->getResult();
+          if (auto *fnType = paramTy->getAs<FunctionType>()) {
+            paramTy = fnType->getResult();
+          }
         } else {
           // Matching @autoclosure argument to @autoclosure parameter
           // directly would mean introducting a function conversion
@@ -1872,7 +1877,7 @@ static ConstraintSystem::TypeMatchResult matchCallArguments(
         for (const auto &opened : openedExistentials) {
           paramTy = typeEraseOpenedExistentialReference(
               paramTy, opened.second->getExistentialType(), opened.first,
-              /*FIXME*/cs.DC, TypePosition::Contravariant);
+              TypePosition::Contravariant);
         }
       }
 
@@ -3260,7 +3265,7 @@ ConstraintSystem::matchDeepEqualityTypes(Type type1, Type type2,
       return getTypeMatchFailure(locator);
 
     for (unsigned i: indices(layout1.getProtocols())) {
-      if (!layout1.getProtocols()[i]->isEqual(layout2.getProtocols()[i]))
+      if (layout1.getProtocols()[i] != layout2.getProtocols()[i])
         return getTypeMatchFailure(locator);
     }
 
@@ -3514,9 +3519,7 @@ ConstraintSystem::matchExistentialTypes(Type type1, Type type2,
       return result;
   }
 
-  for (auto *proto : layout.getProtocols()) {
-    auto *protoDecl = proto->getDecl();
-
+  for (auto *protoDecl : layout.getProtocols()) {
     if (auto superclass = protoDecl->getSuperclass()) {
       auto subKind = std::min(ConstraintKind::Subtype, kind);
       auto result = matchTypes(type1, superclass, subKind,
@@ -3551,6 +3554,7 @@ ConstraintSystem::matchExistentialTypes(Type type1, Type type2,
           auto last = path.back();
 
           if (last.is<LocatorPathElt::ApplyArgToParam>()) {
+            auto proto = protoDecl->getDeclaredInterfaceType();
             auto *fix = AllowArgumentMismatch::create(
                 *this, type1, proto, getConstraintLocator(anchor, path));
 
@@ -3594,6 +3598,7 @@ ConstraintSystem::matchExistentialTypes(Type type1, Type type2,
           break;
         }
 
+        auto proto = protoDecl->getDeclaredInterfaceType();
         auto *fix = MissingConformance::forContextual(
             *this, type1, proto, getConstraintLocator(anchor, path));
 
@@ -8940,6 +8945,9 @@ static bool inferEnumMemberThroughTildeEqualsOperator(
 
   std::tie(matchVar, matchCall) = *tildeEqualsApplication;
 
+  cs.setType(matchVar, enumTy);
+  cs.setType(EP, enumTy);
+
   // result of ~= operator is always a `Bool`.
   auto target = SolutionApplicationTarget::forExprPattern(
       matchCall, DC, EP, ctx.getBoolDecl()->getDeclaredInterfaceType());
@@ -8968,7 +8976,6 @@ static bool inferEnumMemberThroughTildeEqualsOperator(
   // Store the $match variable and binary expression for solution application.
   EP->setMatchVar(matchVar);
   EP->setMatchExpr(matchCall);
-  EP->setType(enumTy);
 
   cs.setSolutionApplicationTarget(pattern, target);
 
@@ -11396,7 +11403,7 @@ ConstraintSystem::simplifyApplicableFnConstraint(
     if (result2->hasTypeVariable() && !openedExistentials.empty()) {
       for (const auto &opened : openedExistentials) {
         result2 = typeEraseOpenedExistentialReference(
-            result2, opened.second->getExistentialType(), opened.first, DC,
+            result2, opened.second->getExistentialType(), opened.first,
             TypePosition::Covariant);
       }
     }

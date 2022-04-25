@@ -31,6 +31,9 @@ class DeclContext;
 class FuncDecl;
 class NominalTypeDecl;
 
+/// Obtain a distributed actor's well-known property by name.
+VarDecl* lookupDistributedActorProperty(NominalTypeDecl *decl, DeclName name);
+
 /// Determine the concrete type of 'ActorSystem' as seen from the member.
 /// E.g. when in a protocol, and trying to determine what the actor system was
 /// constrained to.
@@ -53,9 +56,20 @@ Type getDistributedActorIDType(NominalTypeDecl *actor);
 Type getDistributedSerializationRequirementType(
     NominalTypeDecl *nominal, ProtocolDecl *protocol);
 
+/// Given a distributed thunk declaration, inside a 'distributed actor',
+/// finds the ad-hoc witness for 'decodeNextArgument' on the associated
+/// 'ActorSystem.InvocationDecoder' of the actor, or null.
+AbstractFunctionDecl *
+getAssociatedDistributedInvocationDecoderDecodeNextArgumentFunction(
+    ValueDecl *thunk);
+
 /// Get the specific 'InvocationEncoder' type of a specific distributed actor
 /// system.
 Type getDistributedActorSystemInvocationEncoderType(NominalTypeDecl *system);
+
+/// Get the specific 'InvocationDecoder' type of a specific distributed actor
+/// system.
+Type getDistributedActorSystemInvocationDecoderType(NominalTypeDecl *system);
 
 /// Get the specific 'ResultHandler' type of a specific distributed actor
 /// system.

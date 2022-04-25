@@ -506,11 +506,6 @@ protected:
     IsOpaqueType : 1
   );
 
-  SWIFT_INLINE_BITFIELD_FULL(AssociatedTypeDecl, AbstractTypeParamDecl, 1,
-    /// Whether this is a primary associated type.
-    IsPrimary : 1
-  );
-
   SWIFT_INLINE_BITFIELD_EMPTY(GenericTypeDecl, TypeDecl);
 
   SWIFT_INLINE_BITFIELD(TypeAliasDecl, GenericTypeDecl, 1+1,
@@ -532,7 +527,7 @@ protected:
     IsComputingSemanticMembers : 1
   );
 
-  SWIFT_INLINE_BITFIELD_FULL(ProtocolDecl, NominalTypeDecl, 1+1+1+1+1+1+1+1+1+1+1+8,
+  SWIFT_INLINE_BITFIELD_FULL(ProtocolDecl, NominalTypeDecl, 1+1+1+1+1+1+1+1+1+1+1+1+8,
     /// Whether the \c RequiresClass bit is valid.
     RequiresClassValid : 1,
 
@@ -566,6 +561,9 @@ protected:
 
     /// Whether we have a lazy-loaded list of associated types.
     HasLazyAssociatedTypes : 1,
+
+    /// Whether we have a lazy-loaded list of primary associated types.
+    HasLazyPrimaryAssociatedTypes : 1,
 
     : NumPadBits,
 
@@ -2908,6 +2906,10 @@ public:
     UniqueUnderlyingType = subs;
   }
 
+  bool hasConditionallyAvailableSubstitutions() const {
+    return ConditionallyAvailableTypes.hasValue();
+  }
+
   ArrayRef<ConditionallyAvailableSubstitutions *>
   getConditionallyAvailableSubstitutions() const {
     assert(ConditionallyAvailableTypes);
@@ -3272,14 +3274,6 @@ public:
                      LazyMemberLoader *definitionResolver,
                      uint64_t resolverData);
 
-  bool isPrimary() const {
-    return Bits.AssociatedTypeDecl.IsPrimary;
-  }
-
-  void setPrimary() {
-    Bits.AssociatedTypeDecl.IsPrimary = true;
-  }
-
   /// Get the protocol in which this associated type is declared.
   ProtocolDecl *getProtocol() const {
     return cast<ProtocolDecl>(getDeclContext());
@@ -3560,10 +3554,10 @@ public:
   VarDecl *getDistributedActorIDProperty() const;
 
   /// Find the 'RemoteCallTarget.init(_:)' initializer function.
-  ConstructorDecl* getDistributedRemoteCallTargetInitFunction() const;
+  ConstructorDecl *getDistributedRemoteCallTargetInitFunction() const;
 
   /// Find the 'RemoteCallArgument(label:name:value:)' initializer function.
-  ConstructorDecl* getDistributedRemoteCallArgumentInitFunction() const;
+  ConstructorDecl *getDistributedRemoteCallArgumentInitFunction() const;
 
   /// Collect the set of protocols to which this type should implicitly
   /// conform, such as AnyObject (for classes).
@@ -4358,10 +4352,13 @@ enum class KnownDerivableProtocolKind : uint8_t {
   Decodable,
   AdditiveArithmetic,
   Differentiable,
+  Identifiable,
   Actor,
   DistributedActor,
   DistributedActorSystem,
 };
+
+using PrimaryAssociatedTypeName = std::pair<Identifier, SourceLoc>;
 
 /// ProtocolDecl - A declaration of a protocol, for example:
 ///
@@ -4379,6 +4376,7 @@ enum class KnownDerivableProtocolKind : uint8_t {
 class ProtocolDecl final : public NominalTypeDecl {
   SourceLoc ProtocolLoc;
 
+  ArrayRef<PrimaryAssociatedTypeName> PrimaryAssociatedTypeNames;
   ArrayRef<ProtocolDecl *> InheritedProtocols;
   ArrayRef<AssociatedTypeDecl *> AssociatedTypes;
 
@@ -4445,6 +4443,10 @@ class ProtocolDecl final : public NominalTypeDecl {
     return Bits.ProtocolDecl.HasLazyRequirementSignature;
   }
 
+  bool hasLazyPrimaryAssociatedTypes() const {
+    return Bits.ProtocolDecl.HasLazyPrimaryAssociatedTypes;
+  }
+
   friend class SuperclassDeclRequest;
   friend class SuperclassTypeRequest;
   friend class StructuralRequirementsRequest;
@@ -4457,10 +4459,13 @@ class ProtocolDecl final : public NominalTypeDecl {
   friend class ExistentialConformsToSelfRequest;
   friend class ExistentialRequiresAnyRequest;
   friend class InheritedProtocolsRequest;
+  friend class PrimaryAssociatedTypesRequest;
   
 public:
   ProtocolDecl(DeclContext *DC, SourceLoc ProtocolLoc, SourceLoc NameLoc,
-               Identifier Name, ArrayRef<InheritedEntry> Inherited,
+               Identifier Name,
+               ArrayRef<PrimaryAssociatedTypeName> PrimaryAssociatedTypeNames,
+               ArrayRef<InheritedEntry> Inherited,
                TrailingWhereClause *TrailingWhere);
 
   using Decl::getASTContext;
@@ -4485,6 +4490,13 @@ public:
   /// saves loading the set of members in cases where there's no possibility of
   /// a protocol having nested types (ObjC protocols).
   ArrayRef<AssociatedTypeDecl *> getAssociatedTypeMembers() const;
+
+  /// Returns the list of primary associated type names. These are the associated
+  /// types that is parametrized with same-type requirements in a
+  /// parametrized protocol type of the form SomeProtocol<Arg1, Arg2...>.
+  ArrayRef<PrimaryAssociatedTypeName> getPrimaryAssociatedTypeNames() const {
+    return PrimaryAssociatedTypeNames;
+  }
 
   /// Returns the list of primary associated types. These are the associated
   /// types that is parametrized with same-type requirements in a
@@ -4672,6 +4684,9 @@ public:
   void setLazyAssociatedTypeMembers(LazyMemberLoader *lazyLoader,
                                     uint64_t associatedTypesData);
 
+  void setLazyPrimaryAssociatedTypeMembers(LazyMemberLoader *lazyLoader,
+                                           uint64_t associatedTypesData);
+
 public:
   // Implement isa/cast/dyncast/etc.
   static bool classof(const Decl *D) {
@@ -4850,11 +4865,21 @@ public:
     return getImplInfo().supportsMutation();
   }
 
-  /// isSettable - Determine whether references to this decl may appear
-  /// on the left-hand side of an assignment or as the operand of a
-  /// `&` or 'inout' operator.
+  /// Determine whether references to this storage declaration may appear
+  /// on the left-hand side of an assignment, as the operand of a
+  /// `&` or 'inout' operator, or as a component in a writable key path.
   bool isSettable(const DeclContext *UseDC,
                   const DeclRefExpr *base = nullptr) const;
+
+  /// Determine whether references to this storage declaration in Swift may
+  /// appear on the left-hand side of an assignment, as the operand of a
+  /// `&` or 'inout' operator, or as a component in a writable key path.
+  ///
+  /// This method is equivalent to \c isSettable with the exception of
+  /// 'optional' storage requirements, which lack support for direct writes
+  /// in Swift.
+  bool isSettableInSwift(const DeclContext *UseDC,
+                         const DeclRefExpr *base = nullptr) const;
 
   /// Does this storage declaration have explicitly-defined accessors
   /// written in the source?
@@ -7959,6 +7984,17 @@ inline bool AbstractStorageDecl::isSettable(const DeclContext *UseDC,
 
   auto sd = cast<SubscriptDecl>(this);
   return sd->supportsMutation();
+}
+
+inline bool
+AbstractStorageDecl::isSettableInSwift(const DeclContext *UseDC,
+                                       const DeclRefExpr *base) const {
+  // TODO: Writing to an optional storage requirement is not supported in Swift.
+  if (getAttrs().hasAttribute<OptionalAttr>()) {
+    return false;
+  }
+
+  return isSettable(UseDC, base);
 }
 
 inline void

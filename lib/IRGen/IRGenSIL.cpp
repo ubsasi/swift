@@ -5765,8 +5765,9 @@ void IRGenSILFunction::visitBeginUnpairedAccessInst(
     // in which case we should use the caller, which is generally ok because
     // materializeForSet can't usually be thunked.
     llvm::Value *pc;
-    // hack: wasm doesn't have returnaddress
-    if (true || hasBeenInlined(access)) {
+    // Wasm doesn't have returnaddress because it can't access call frame
+    // for security purposes
+    if (IGM.Triple.isWasm() || hasBeenInlined(access)) {
       pc = llvm::ConstantPointerNull::get(IGM.Int8PtrTy);
     } else {
       auto retAddrFn =
@@ -6472,8 +6473,7 @@ void IRGenSILFunction::visitKeyPathInst(swift::KeyPathInst *I) {
       emitInitOfGenericRequirementsBuffer(*this, requirements, argsBuf,
         [&](GenericRequirement reqt) -> llvm::Value * {
           return emitGenericRequirementFromSubstitutions(*this, sig,
-                                           *IGM.getSwiftModule(),
-                                           reqt, subs);
+                                                         reqt, subs);
         });
     }
     

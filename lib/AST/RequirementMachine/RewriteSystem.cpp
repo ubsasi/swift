@@ -591,10 +591,7 @@ void RewriteSystem::verifyRewriteRules(ValidityPolicy policy) const {
         ASSERT_RULE(symbol.getKind() != Symbol::Kind::GenericParam);
       }
 
-      // Completion can produce rules like [P:T].[Q:R] => [P:T].[Q]
-      // which are immediately simplified away.
-      if (!rule.isRHSSimplified() &&
-          index != 0) {
+      if (index != 0) {
         ASSERT_RULE(symbol.getKind() != Symbol::Kind::Protocol);
       }
     }
@@ -606,6 +603,41 @@ void RewriteSystem::verifyRewriteRules(ValidityPolicy policy) const {
   }
 
 #undef ASSERT_RULE
+}
+
+/// Determine whether this is a redundantly inheritable Objective-C protocol.
+///
+/// A redundantly-inheritable Objective-C protocol is one where we will
+/// silently accept a directly-stated redundant conformance to this protocol,
+/// and emit this protocol in the list of "inherited" protocols. There are
+/// two cases where we allow this:
+///
+//    1) For a protocol defined in Objective-C, so that we will match Clang's
+///      behavior, and
+///   2) For an @objc protocol defined in Swift that directly inherits from
+///      JavaScriptCore's JSExport, which depends on this behavior.
+static bool isRedundantlyInheritableObjCProtocol(const ProtocolDecl *inheritingProto,
+                                                 const ProtocolDecl *proto) {
+  if (!proto->isObjC()) return false;
+
+  // Check the two conditions in which we will suppress the diagnostic and
+  // emit the redundant inheritance.
+  if (!inheritingProto->hasClangNode() && !proto->getName().is("JSExport"))
+    return false;
+
+  // If the inheriting protocol already has @_restatedObjCConformance with
+  // this protocol, we're done.
+  for (auto *attr : inheritingProto->getAttrs()
+                      .getAttributes<RestatedObjCConformanceAttr>()) {
+    if (attr->Proto == proto) return true;
+  }
+
+  // Otherwise, add @_restatedObjCConformance.
+  auto &ctx = proto->getASTContext();
+  const_cast<ProtocolDecl *>(inheritingProto)
+      ->getAttrs().add(new (ctx) RestatedObjCConformanceAttr(
+          const_cast<ProtocolDecl *>(proto)));
+  return true;
 }
 
 /// Computes the set of explicit redundant requirements to
@@ -628,6 +660,15 @@ void RewriteSystem::computeRedundantRequirementDiagnostics(
 
     if (!isInMinimizationDomain(rule.getLHS().getRootProtocol()))
       continue;
+
+    // Concrete conformance rules do not map to requirements in the minimized
+    // signature; we don't consider them to be 'non-explicit non-redundant',
+    // so that a conformance rule (T.[P] => T) expressed in terms of a concrete
+    // conformance (T.[concrete: C : P] => T) is still diagnosed as redundant.
+    if (auto optSymbol = rule.isPropertyRule()) {
+      if (optSymbol->getKind() == Symbol::Kind::ConcreteConformance)
+        continue;
+    }
 
     auto requirementID = rule.getRequirementID();
 
@@ -689,8 +730,18 @@ void RewriteSystem::computeRedundantRequirementDiagnostics(
   auto isRedundantRule = [&](unsigned ruleID) {
     const auto &rule = getRules()[ruleID];
 
-    return (rule.isRedundant() &&
-            nonExplicitNonRedundantRules.count(ruleID) == 0);
+    if (!rule.isRedundant())
+      return false;
+
+    if (nonExplicitNonRedundantRules.count(ruleID) > 0)
+      return false;
+
+    if (rule.isProtocolRefinementRule(Context) &&
+        isRedundantlyInheritableObjCProtocol(rule.getLHS()[0].getProtocol(),
+                                             rule.getLHS()[1].getProtocol()))
+      return false;
+
+    return true;
   };
 
   // Finally walk through the written requirements, diagnosing any that are
@@ -719,6 +770,9 @@ void RewriteSystem::computeRedundantRequirementDiagnostics(
 
     // If all rules derived from this structural requirement are redundant,
     // then the requirement is unnecessary in the source code.
+    //
+    // This means the rules derived from this requirement were all
+    // determined to be redundant by homotopy reduction.
     const auto &ruleIDs = pairIt->second;
     if (llvm::all_of(ruleIDs, isRedundantRule)) {
       auto requirement = WrittenRequirements[requirementID];
@@ -862,6 +916,18 @@ void RewriteSystem::dump(llvm::raw_ostream &out) const {
 
       out << "- (#" << loopID << ") ";
       loop.dump(out, *this);
+      out << "\n";
+    }
+  }
+  if (!WrittenRequirements.empty()) {
+    out << "Written requirements: {\n";
+
+    for (unsigned reqID : indices(WrittenRequirements)) {
+      out << " - ID: " << reqID << " - ";
+      const auto &requirement = WrittenRequirements[reqID];
+      requirement.req.dump(out);
+      out << " at ";
+      requirement.loc.print(out, Context.getASTContext().SourceMgr);
       out << "\n";
     }
   }

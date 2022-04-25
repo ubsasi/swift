@@ -19,6 +19,7 @@
 #ifndef SWIFT_RUNTIME_ATOMICWAITQUEUE_H
 #define SWIFT_RUNTIME_ATOMICWAITQUEUE_H
 
+#include "swift/Runtime/Heap.h"
 #include "swift/Runtime/Mutex.h"
 #include <assert.h>
 
@@ -424,6 +425,11 @@ public:
   private:
     template <class... Args>
     static Impl *createNewQueue(Args &&...args) {
+#if !defined(__cpp_aligned_new)
+      static_assert(!swift::requires_aligned_alloc<std::alignment_of<Impl>::value>::value ||
+                     is_aligned_alloc_aware<Impl>::value,
+                    "type is over-aligned for non-alignment aware operator new");
+#endif
       auto queue = new Impl(std::forward<Args>(args)...);
       queue->WaitQueueLock.lock();
       return queue;

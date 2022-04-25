@@ -5,6 +5,72 @@ _**Note:** This is in reverse chronological order, so newer entries are added to
 
 ## Swift 5.7
 
+* [SE-0352][]:
+
+  It's now possible to call a generic function with a value of protocol type
+  in places that would previously fail because `any` types do not conform
+  to their protocols. For example:
+
+  ```
+  protocol P {
+    associatedtype A
+    func getA() -> A
+  }
+
+  func takeP<T: P>(_ value: T) { }
+
+  func test(p: any P) {
+    takeP(p) // was an error "type 'any P' cannot conform to 'P'", now accepted
+  }
+  ```
+
+  This operates by "opening" the value of protocol type and passing the
+  underlying type directly to the generic function.
+
+* [SE-0347][]:
+
+  It's now possible to use a default value expression with a generic parameter type
+  to default the argument and its type:
+
+  ```
+  func compute<C: Collection>(_ values: C = [0, 1, 2]) {
+    ...
+  }
+  ```
+
+  `compute` is now accepted by compiler and `[Int]` is going to be inferred
+  for `C` at call sites that do not provide the argument explicitly.
+
+* [SE-0326][]:
+
+  It's now possible to infer parameter and result types from the body of a multi-statement
+  closure. The distinction between single- and multi-statement closures has been removed.
+
+  Use of closures becomes less cumbersome by removing the need to constantly specify explicit
+  closure types which sometimes could be pretty large e.g. when there are multiple parameters
+  or a complex tuple result type.
+
+  For example:
+
+  ```swift
+  func map<T>(fn: (Int) -> T) -> T {
+    return fn(42)
+  }
+
+  func computeResult<U: BinaryInteger>(_: U) -> U { /* processing */ }
+
+  let _ = map {
+    if let $0 < 0 {
+       // do some processing
+    }
+
+    return computeResult($0)
+  }
+  ```
+
+  The result type of `map` can now be inferred from the body of the trailing closure
+  passed as an argument.
+
 * [SE-0345][]:
 
   It is now possible to unwrap optional variables with a shorthand syntax that
@@ -9119,6 +9185,9 @@ Swift 1.0
 [SE-0343]: <https://github.com/apple/swift-evolution/blob/main/proposals/0343-top-level-concurrency.md>
 [SE-0340]: <https://github.com/apple/swift-evolution/blob/main/proposals/0340-swift-noasync.md>
 [SE-0345]: <https://github.com/apple/swift-evolution/blob/main/proposals/0345-if-let-shorthand.md>
+[SE-0326]: <https://github.com/apple/swift-evolution/blob/main/proposals/0326-extending-multi-statement-closure-inference.md>
+[SE-0347]: <https://github.com/apple/swift-evolution/blob/main/proposals/0347-type-inference-from-default-exprs.md>
+[SE-0352]: <https://github.com/apple/swift-evolution/blob/main/proposals/0352-implicit-open-existentials.md>
 
 [SR-75]: <https://bugs.swift.org/browse/SR-75>
 [SR-106]: <https://bugs.swift.org/browse/SR-106>

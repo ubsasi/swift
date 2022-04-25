@@ -157,6 +157,7 @@ set(SWIFTLIB_ESSENTIAL
   StringProtocol.swift
   StringIndex.swift
   StringIndexConversions.swift
+  StringIndexValidation.swift
   StringInterpolation.swift
   StringLegacy.swift
   StringNormalization.swift
@@ -295,7 +296,7 @@ endif()
 set(swift_core_incorporate_object_libraries)
 list(APPEND swift_core_incorporate_object_libraries swiftRuntime)
 list(APPEND swift_core_incorporate_object_libraries swiftLLVMSupport)
-list(APPEND swift_core_incorporate_object_libraries swiftDemanglingForCore)
+list(APPEND swift_core_incorporate_object_libraries swiftDemangling)
 list(APPEND swift_core_incorporate_object_libraries swiftStdlibStubs)
 if(SWIFT_STDLIB_HAS_COMMANDLINE)
   list(APPEND swift_core_incorporate_object_libraries swiftCommandLineSupport)

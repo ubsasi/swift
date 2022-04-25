@@ -155,13 +155,25 @@ getTypesToCompare(ValueDecl *reqt, Type reqtType, bool reqtTypeIsIUO,
     // function types that aren't in a parameter can be Sendable or not.
     // FIXME: Should we check for a Sendable bound on the requirement type?
     bool inRequirement = (adjustment != TypeAdjustment::NoescapeToEscaping);
-    (void)adjustInferredAssociatedType(adjustment, reqtType, inRequirement);
+    Type adjustedReqtType =
+      adjustInferredAssociatedType(adjustment, reqtType, inRequirement);
 
     bool inWitness = false;
     Type adjustedWitnessType =
       adjustInferredAssociatedType(adjustment, witnessType, inWitness);
-    if (inWitness && !inRequirement)
-      witnessType = adjustedWitnessType;
+
+    switch (variance) {
+    case VarianceKind::None:
+      break;
+    case VarianceKind::Covariant:
+      if (inRequirement && !inWitness)
+        reqtType = adjustedReqtType;
+      break;
+    case VarianceKind::Contravariant:
+      if (inWitness && !inRequirement)
+        witnessType = adjustedWitnessType;
+      break;
+    }
   };
 
   applyAdjustment(TypeAdjustment::NoescapeToEscaping);
@@ -1150,15 +1162,26 @@ swift::matchWitness(WitnessChecker::RequirementEnvironmentCache &reqEnvCache,
           return *result;
       }
     }
-    if (!solution || solution->Fixes.size())
-      return RequirementMatch(witness, MatchKind::TypeConflict,
-                              witnessType);
+    bool requiresNonSendable = false;
+    if (!solution || solution->Fixes.size()) {
+      /// If the *only* problems are that `@Sendable` attributes are missing,
+      /// allow the match in some circumstances.
+      requiresNonSendable = solution
+          && llvm::all_of(solution->Fixes, [](constraints::ConstraintFix *fix) {
+            return fix->getKind() == constraints::FixKind::AddSendableAttribute;
+          });
+      if (!requiresNonSendable)
+        return RequirementMatch(witness, MatchKind::TypeConflict,
+                                witnessType);
+    }
 
     MatchKind matchKind = MatchKind::ExactMatch;
     if (hasAnyError(optionalAdjustments))
       matchKind = MatchKind::OptionalityConflict;
     else if (anyRenaming)
       matchKind = MatchKind::RenamedMatch;
+    else if (requiresNonSendable)
+      matchKind = MatchKind::RequiresNonSendable;
     else if (getEffects(witness).containsOnly(getEffects(req)))
       matchKind = MatchKind::FewerEffects;
 
@@ -2516,6 +2539,12 @@ diagnoseMatch(ModuleDecl *module, NormalProtocolConformance *conformance,
   case MatchKind::FewerEffects:
     diags.diagnose(match.Witness, diag::protocol_witness_exact_match,
                    withAssocTypes);
+    break;
+
+  case MatchKind::RequiresNonSendable:
+    diags.diagnose(match.Witness, diag::protocol_witness_non_sendable,
+                   withAssocTypes,
+                   module->getASTContext().isSwiftVersionAtLeast(6));
     break;
 
   case MatchKind::RenamedMatch: {
@@ -4259,6 +4288,32 @@ ConformanceChecker::resolveWitnessViaLookup(ValueDecl *requirement) {
                          requirement->getName());
         });
     }
+    if (best.Kind == MatchKind::RequiresNonSendable) {
+      SendableCheckContext sendFrom(witness->getDeclContext(),
+                                    SendableCheck::Explicit);
+
+      auto behavior = sendFrom.diagnosticBehavior(Conformance->getProtocol());
+      if (behavior != DiagnosticBehavior::Ignore) {
+        bool isError = behavior < DiagnosticBehavior::Warning;
+        
+        diagnoseOrDefer(requirement, isError,
+                        [this, requirement, witness, sendFrom](
+                          NormalProtocolConformance *conformance) {
+          diagnoseSendabilityErrorBasedOn(conformance->getProtocol(), sendFrom,
+                                          [&](DiagnosticBehavior limit) {
+            auto &diags = DC->getASTContext().Diags;
+            diags.diagnose(getLocForDiagnosingWitness(conformance, witness),
+                           diag::witness_not_as_sendable,
+                           witness->getDescriptiveKind(), witness->getName(),
+                           conformance->getProtocol()->getName())
+                .limitBehavior(limit);
+            diags.diagnose(requirement, diag::less_sendable_reqt_here)
+                .limitBehavior(limit);
+            return false;
+          });
+        });
+      }
+    }
 
     auto check = checkWitness(requirement, best);
 
@@ -5487,6 +5542,16 @@ void swift::diagnoseConformanceFailure(Type T,
     if (!nominal)
       return;
 
+    if (isa<ClassDecl>(nominal) &&
+        !nominal->isDistributedActor()) {
+      if (nominal->isActor()) {
+        diags.diagnose(ComplainLoc,
+                       diag::actor_cannot_inherit_distributed_actor_protocol,
+                       nominal->getName());
+      } // else, already diagnosed elsewhere
+      return;
+    }
+
     // If it is missing the ActorSystem type, suggest adding it:
     auto systemTy = getDistributedActorSystemType(/*actor=*/nominal);
     if (!systemTy || systemTy->hasError()) {
@@ -5637,9 +5702,7 @@ TypeChecker::containsProtocol(Type T, ProtocolDecl *Proto, ModuleDecl *M,
     }
 
     // Next, check if the existential contains the protocol in question.
-    for (auto P : layout.getProtocols()) {
-      auto *PD = P->getDecl();
-
+    for (auto *PD : layout.getProtocols()) {
       // If we found the protocol we're looking for, return an abstract
       // conformance to it.
       if (PD == Proto)
@@ -6403,12 +6466,12 @@ void TypeChecker::checkConformancesInContext(IterableDeclContext *idc) {
         if (!classDecl->isDistributedActor()) {
           if (classDecl->isActor()) {
             dc->getSelfNominalTypeDecl()
-            ->diagnose(diag::distributed_actor_protocol_illegal_inheritance,
+            ->diagnose(diag::actor_cannot_inherit_distributed_actor_protocol,
                        dc->getSelfNominalTypeDecl()->getName())
                        .fixItInsert(classDecl->getStartLoc(), "distributed ");
           } else {
             dc->getSelfNominalTypeDecl()
-            ->diagnose(diag::actor_protocol_illegal_inheritance,
+            ->diagnose(diag::distributed_actor_protocol_illegal_inheritance,
                        dc->getSelfNominalTypeDecl()->getName())
                        .fixItReplace(nominal->getStartLoc(), "distributed actor");
           }
@@ -6911,8 +6974,18 @@ ValueDecl *TypeChecker::deriveProtocolRequirement(DeclContext *DC,
   case KnownDerivableProtocolKind::Differentiable:
     return derived.deriveDifferentiable(Requirement);
 
+  case KnownDerivableProtocolKind::Identifiable:
+    if (derived.Nominal->isDistributedActor()) {
+      return derived.deriveDistributedActor(Requirement);
+    } else {
+      // No synthesis is required for other types; we should only end up
+      // attempting synthesis if the nominal was a distributed actor.
+      llvm_unreachable("Identifiable is synthesized for distributed actors");
+    }
+
   case KnownDerivableProtocolKind::DistributedActor:
     return derived.deriveDistributedActor(Requirement);
+
   case KnownDerivableProtocolKind::DistributedActorSystem:
     return derived.deriveDistributedActorSystem(Requirement);
 
@@ -6946,6 +7019,12 @@ TypeChecker::deriveTypeWitness(DeclContext *DC,
   case KnownProtocolKind::Differentiable:
     return derived.deriveDifferentiable(AssocType);
   case KnownProtocolKind::DistributedActor:
+    return derived.deriveDistributedActor(AssocType);
+  case KnownProtocolKind::Identifiable:
+    // Identifiable only has derivation logic for distributed actors,
+    // because how it depends on the ActorSystem the actor is associated with.
+    // If the nominal wasn't a distributed actor, we should not end up here,
+    // but either way, then we'd return null (fail derivation).
     return derived.deriveDistributedActor(AssocType);
   default:
     return std::make_pair(nullptr, nullptr);

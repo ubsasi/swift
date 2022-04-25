@@ -1155,7 +1155,7 @@ doesStorageProduceLValue(AbstractStorageDecl *storage, Type baseType,
   }
 
   // Unsettable storage decls always produce rvalues.
-  if (!storage->isSettable(useDC, base))
+  if (!storage->isSettableInSwift(useDC, base))
     return false;
 
   if (!storage->isSetterAccessibleFrom(useDC))
@@ -1397,6 +1397,38 @@ AnyFunctionType *ConstraintSystem::adjustFunctionTypeForConcurrency(
       fnType, decl, dc, numApplies, isMainDispatchQueue, GetClosureType{*this});
 }
 
+/// For every parameter in \p type that has an error type, replace that
+/// parameter's type by a placeholder type, where \p value is the declaration
+/// that declared \p type. This is useful for code completion so we can match
+/// the types we do know instead of bailing out completely because \p type
+/// contains an error type.
+static Type replaceParamErrorTypeByPlaceholder(Type type, ValueDecl *value) {
+  if (!type->is<AnyFunctionType>() || !isa<AbstractFunctionDecl>(value)) {
+    return type;
+  }
+  auto funcType = type->castTo<AnyFunctionType>();
+  auto funcDecl = cast<AbstractFunctionDecl>(value);
+
+  auto declParams = funcDecl->getParameters();
+  auto typeParams = funcType->getParams();
+  assert(declParams->size() == typeParams.size());
+  SmallVector<AnyFunctionType::Param, 4> newParams;
+  newParams.reserve(declParams->size());
+  for (auto i : indices(typeParams)) {
+    AnyFunctionType::Param param = typeParams[i];
+    if (param.getPlainType()->is<ErrorType>()) {
+      auto paramDecl = declParams->get(i);
+      auto placeholder =
+          PlaceholderType::get(paramDecl->getASTContext(), paramDecl);
+      newParams.push_back(param.withType(placeholder));
+    } else {
+      newParams.push_back(param);
+    }
+  }
+  assert(newParams.size() == declParams->size());
+  return FunctionType::get(newParams, funcType->getResult());
+}
+
 std::pair<Type, Type>
 ConstraintSystem::getTypeOfReference(ValueDecl *value,
                                      FunctionRefKind functionRefKind,
@@ -1457,6 +1489,12 @@ ConstraintSystem::getTypeOfReference(ValueDecl *value,
     openedType = unwrapPropertyWrapperParameterTypes(*this, funcDecl, functionRefKind,
                                                      openedType->getAs<FunctionType>(),
                                                      locator);
+
+    if (isForCodeCompletion() && openedType->hasError()) {
+      // In code completion, replace error types by placeholder types so we can
+      // match the types we know instead of bailing out completely.
+      openedType = replaceParamErrorTypeByPlaceholder(openedType, value);
+    }
 
     // If we opened up any type variables, record the replacements.
     recordOpenedTypes(locator, replacements);
@@ -1795,16 +1833,16 @@ static bool isMainDispatchQueueMember(ConstraintLocator *locator) {
 /// routine will recurse into the concrete type.
 static Type
 typeEraseExistentialSelfReferences(
-    Type refTy, Type baseTy, const DeclContext *useDC,
+    Type refTy, Type baseTy,
     TypePosition outermostPosition) {
   assert(baseTy->isExistentialType());
   if (!refTy->hasTypeParameter()) {
     return refTy;
   }
 
-  auto contextSig = useDC->getGenericSignatureOfContext();
   const auto existentialSig =
-      baseTy->getASTContext().getOpenedArchetypeSignature(baseTy, contextSig);
+      baseTy->getASTContext().getOpenedArchetypeSignature(baseTy,
+                                                          GenericSignature());
 
   unsigned metatypeDepth = 0;
 
@@ -1916,7 +1954,7 @@ typeEraseExistentialSelfReferences(
 
 Type constraints::typeEraseOpenedExistentialReference(
     Type type, Type existentialBaseType, TypeVariableType *openedTypeVar,
-    const DeclContext *useDC, TypePosition outermostPosition) {
+    TypePosition outermostPosition) {
   Type selfGP = GenericTypeParamType::get(false, 0, 0, type->getASTContext());
 
   // First, temporarily reconstitute the 'Self' generic parameter.
@@ -1933,8 +1971,8 @@ Type constraints::typeEraseOpenedExistentialReference(
   });
 
   // Then, type-erase occurrences of covariant 'Self'-rooted type parameters.
-  type = typeEraseExistentialSelfReferences(
-      type, existentialBaseType, useDC, outermostPosition);
+  type = typeEraseExistentialSelfReferences(type, existentialBaseType,
+                                            outermostPosition);
 
   // Finally, swap the 'Self'-corresponding type variable back in.
   return type.transformRec([&](TypeBase *t) -> Optional<Type> {
@@ -1948,38 +1986,6 @@ Type constraints::typeEraseOpenedExistentialReference(
     // Recurse.
     return None;
   });
-}
-
-/// For every parameter in \p type that has an error type, replace that
-/// parameter's type by a placeholder type, where \p value is the declaration
-/// that declared \p type. This is useful for code completion so we can match
-/// the types we do know instead of bailing out completely because \p type
-/// contains an error type.
-static Type replaceParamErrorTypeByPlaceholder(Type type, ValueDecl *value) {
-  if (!type->is<AnyFunctionType>() || !isa<AbstractFunctionDecl>(value)) {
-    return type;
-  }
-  auto funcType = type->castTo<AnyFunctionType>();
-  auto funcDecl = cast<AbstractFunctionDecl>(value);
-
-  auto declParams = funcDecl->getParameters();
-  auto typeParams = funcType->getParams();
-  assert(declParams->size() == typeParams.size());
-  SmallVector<AnyFunctionType::Param, 4> newParams;
-  newParams.reserve(declParams->size());
-  for (auto i : indices(typeParams)) {
-    AnyFunctionType::Param param = typeParams[i];
-    if (param.getPlainType()->is<ErrorType>()) {
-      auto paramDecl = declParams->get(i);
-      auto placeholder =
-          PlaceholderType::get(paramDecl->getASTContext(), paramDecl);
-      newParams.push_back(param.withType(placeholder));
-    } else {
-      newParams.push_back(param);
-    }
-  }
-  assert(newParams.size() == declParams->size());
-  return FunctionType::get(newParams, funcType->getResult());
 }
 
 std::pair<Type, Type>
@@ -2279,9 +2285,8 @@ ConstraintSystem::getTypeOfMemberReference(
     const auto selfGP = cast<GenericTypeParamType>(
         outerDC->getSelfInterfaceType()->getCanonicalType());
     auto openedTypeVar = replacements.lookup(selfGP);
-    type =
-        typeEraseOpenedExistentialReference(type, baseObjTy, openedTypeVar, DC,
-                                            TypePosition::Covariant);
+    type = typeEraseOpenedExistentialReference(type, baseObjTy, openedTypeVar,
+                                               TypePosition::Covariant);
   }
 
   // Construct an idealized parameter type of the initializer associated
@@ -2894,6 +2899,11 @@ bool ConstraintSystem::isAsynchronousContext(DeclContext *dc) {
         ClosureEffectsRequest{const_cast<ClosureExpr *>(closure)},
         FunctionType::ExtInfo()).isAsync();
   }
+
+  if (Options.contains(
+          ConstraintSystemFlags::ConsiderNominalTypeContextsAsync) &&
+      isa<NominalTypeDecl>(dc))
+    return true;
 
   return false;
 }
@@ -3522,6 +3532,109 @@ Type Solution::simplifyType(Type type) const {
   }
 
   return resolvedType;
+}
+
+Type Solution::simplifyTypeForCodeCompletion(Type Ty) const {
+  auto &CS = getConstraintSystem();
+
+  // First, instantiate all type variables that we know, but don't replace
+  // placeholders by unresolved types.
+  Ty = CS.simplifyTypeImpl(Ty, [this](TypeVariableType *typeVar) -> Type {
+    return getFixedType(typeVar);
+  });
+
+  // Next, replace all placeholders by type variables. We know that all type
+  // variables now in the type originate from placeholders.
+  Ty = Ty.transform([](Type type) -> Type {
+    if (auto *placeholder = type->getAs<PlaceholderType>()) {
+      if (auto *typeVar =
+              placeholder->getOriginator().dyn_cast<TypeVariableType *>()) {
+        return typeVar;
+      }
+    }
+
+    return type;
+  });
+
+  // Replace all type variables (which must come from placeholders) by their
+  // generic parameters. Because we call into simplifyTypeImpl
+  Ty = CS.simplifyTypeImpl(Ty, [&CS](TypeVariableType *typeVar) -> Type {
+    // Code completion depends on generic parameter type being represented in
+    // terms of `ArchetypeType` since it's easy to extract protocol requirements
+    // from it.
+    auto getTypeVarAsArchetype = [](TypeVariableType *typeVar) -> Type {
+      if (auto *GP = typeVar->getImpl().getGenericParameter()) {
+        if (auto *GPD = GP->getDecl()) {
+          return GPD->getInnermostDeclContext()->mapTypeIntoContext(GP);
+        }
+      }
+      return Type();
+    };
+
+    if (auto archetype = getTypeVarAsArchetype(typeVar)) {
+      return archetype;
+    }
+
+    // When applying the logic below to get contextual types inside result
+    // builders, the code completion type variable is connected by a one-way
+    // constraint to a type variable in the buildBlock call, but that is not the
+    // type variable that represents the argument type. We need to find the type
+    // variable representing the argument to retrieve protocol requirements from
+    // it. Look for a ArgumentConversion constraint that allows us to retrieve
+    // the argument type var.
+    for (auto argConstraint :
+         CS.getConstraintGraph()[typeVar].getConstraints()) {
+      if (argConstraint->getKind() == ConstraintKind::ArgumentConversion &&
+          argConstraint->getFirstType()->getRValueType()->isEqual(typeVar)) {
+        if (auto argTV =
+                argConstraint->getSecondType()->getAs<TypeVariableType>()) {
+          if (auto archetype = getTypeVarAsArchetype(argTV)) {
+            return archetype;
+          }
+        }
+      }
+    }
+
+    return typeVar;
+  });
+
+  // Logic to determine the contextual type inside buildBlock result builders:
+  //
+  // When completing inside a result builder, the result builder
+  //   @ViewBuilder var body: some View {
+  //     Text("Foo")
+  //     #^COMPLETE^#
+  //   }
+  // gets rewritten to
+  //   @ViewBuilder var body: some View {
+  //     let $__builder2: Text
+  //     let $__builder0 = Text("Foo")
+  //     let $__builder1 = #^COMPLETE^#
+  //     $__builder2 = ViewBuilder.buildBlock($__builder0, $__builder1)
+  //     return $__builder2
+  //   }
+  // Inside the constraint system
+  //     let $__builder1 = #^COMPLETE^#
+  // gets type checked without context, so we can't know the contexutal type for
+  // the code completion token. But we know that $__builder1 (and thus the type
+  // of #^COMPLETE^#) is used as the second argument to ViewBuilder.buildBlock,
+  // so we can extract the contextual type from that call. To do this, figure
+  // out the type variable that is used for $__builder1 in the buildBlock call.
+  // This type variable is connected to the type variable of $__builder1's
+  // definition by a one-way constraint.
+  if (auto TV = Ty->getAs<TypeVariableType>()) {
+    for (auto constraint : CS.getConstraintGraph()[TV].getConstraints()) {
+      if (constraint->getKind() == ConstraintKind::OneWayEqual &&
+          constraint->getSecondType()->isEqual(TV)) {
+        return simplifyTypeForCodeCompletion(constraint->getFirstType());
+      }
+    }
+  }
+
+  // Remove any remaining type variables and placeholders
+  Ty = simplifyType(Ty);
+
+  return Ty->getRValueType();
 }
 
 size_t Solution::getTotalMemory() const {
@@ -6448,12 +6561,12 @@ bool ConstraintSystem::isReadOnlyKeyPathComponent(
     // WritableKeyPaths to be formed in the same conditions we did
     // in previous releases even if we should not be able to set
     // the value in this context.
-    if (!storage->isSettable(DC)) {
+    if (!storage->isSettableInSwift(DC)) {
       // A non-settable component makes the key path read-only, unless
       // a reference-writable component shows up later.
       return true;
     }
-  } else if (!storage->isSettable(nullptr) ||
+  } else if (!storage->isSettableInSwift(nullptr) ||
              !storage->isSetterAccessibleFrom(DC)) {
     // A non-settable component makes the key path read-only, unless
     // a reference-writable component shows up later.

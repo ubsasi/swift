@@ -1317,7 +1317,7 @@ func testPlaceholderNoBetterThanArchetype() {
   }
 // PLACEHOLDER_NO_BETTER_THAN_ARCHETYPE_1:     Begin completions, 2 items
 // PLACEHOLDER_NO_BETTER_THAN_ARCHETYPE_1-DAG: Pattern/Local/Flair[ArgLabels]:     {#footer: String#}[#String#];
-// PLACEHOLDER_NO_BETTER_THAN_ARCHETYPE_1-DAG: Pattern/Local/Flair[ArgLabels]:     {#content: () -> _##() -> _#}[#() -> _#];
+// PLACEHOLDER_NO_BETTER_THAN_ARCHETYPE_1-DAG: Pattern/Local/Flair[ArgLabels]:     {#content: () -> Content##() -> Content#}[#() -> Content#];
 // PLACEHOLDER_NO_BETTER_THAN_ARCHETYPE_1:     End completions
 
   Section(header: TectionHeaderView(text: "abc"), #^PLACEHOLDER_NO_BETTER_THAN_ARCHETYPE_2?check=PLACEHOLDER_NO_BETTER_THAN_ARCHETYPE_1^#)
@@ -1371,3 +1371,31 @@ func testDynamicMemberSubscriptLookup() {
 // DYNAMIC_MEMBER_SUBSCRIPT_LOOKUP-DAG: Decl[LocalVar]/Local/TypeRelation[Identical]: index[#Int#]; name=index
 // DYNAMIC_MEMBER_SUBSCRIPT_LOOKUP-DAG: Pattern/CurrNominal/Flair[ArgLabels]: ['[']{#keyPath: KeyPath<Binding<MyStruct>, Value>#}[']'][#Value#]; name=keyPath:
 // DYNAMIC_MEMBER_SUBSCRIPT_LOOKUP: End completions
+
+func testTopLevelFuncWithErrorParam() {
+  enum A { case a }
+  func foo(x: A, b: Undefined) {}
+
+  foo(x: .#^TOP_LEVEL_FUNC_WITH_ERROR_PARAM^#)
+// TOP_LEVEL_FUNC_WITH_ERROR_PARAM: Begin completions, 2 items
+// TOP_LEVEL_FUNC_WITH_ERROR_PARAM-DAG: Decl[EnumElement]/CurrNominal/Flair[ExprSpecific]/TypeRelation[Identical]: a[#A#]; name=a
+// TOP_LEVEL_FUNC_WITH_ERROR_PARAM-DAG: Decl[InstanceMethod]/CurrNominal/TypeRelation[Invalid]: hash({#(self): A#})[#(into: inout Hasher) -> Void#]; name=hash(:)
+// TOP_LEVEL_FUNC_WITH_ERROR_PARAM: End completions
+}
+
+func testVarInitializedByCallingClosure() {
+  struct MyBundle {
+    func vrl(forResource: String, withExtension: String?)
+  }
+
+  struct Foo {
+    private lazy var calculatorContext: Void = {
+      let Bundle_main = MyBundle()
+      Bundle_main.vrl(forResource: "turnips", #^VAR_INITIALIZED_BY_CALLING_CLOSURE^#withExtension: "js")
+    }()
+  }
+
+// VAR_INITIALIZED_BY_CALLING_CLOSURE: Begin completions, 1 items
+// VAR_INITIALIZED_BY_CALLING_CLOSURE-DAG: Pattern/Local/Flair[ArgLabels]:     {#withExtension: String?#}[#String?#];
+// VAR_INITIALIZED_BY_CALLING_CLOSURE: End completions
+}

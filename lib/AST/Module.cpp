@@ -1020,8 +1020,7 @@ ModuleDecl::lookupExistentialConformance(Type type, ProtocolDecl *protocol) {
   }
 
   // Otherwise, the existential might conform abstractly.
-  for (auto proto : layout.getProtocols()) {
-    auto *protoDecl = proto->getDecl();
+  for (auto protoDecl : layout.getProtocols()) {
 
     // If we found the protocol we're looking for, return an abstract
     // conformance to it.
@@ -2917,7 +2916,17 @@ bool FileUnit::walk(ASTWalker &walker) {
   getTopLevelDecls(Decls);
   llvm::SaveAndRestore<ASTWalker::ParentTy> SAR(walker.Parent,
                                                 getParentModule());
+
+  bool SkipInternal = getKind() == FileUnitKind::SerializedAST &&
+      !walker.shouldWalkSerializedTopLevelInternalDecls();
   for (Decl *D : Decls) {
+    if (SkipInternal) {
+      if (auto *VD = dyn_cast<ValueDecl>(D)) {
+        if (!VD->isAccessibleFrom(nullptr))
+          continue;
+      }
+    }
+
 #ifndef NDEBUG
     PrettyStackTraceDecl debugStack("walking into decl", D);
 #endif

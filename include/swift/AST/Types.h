@@ -295,7 +295,9 @@ enum class TypeMatchFlags {
   /// to be non-escaping, but Swift currently does not.
   IgnoreNonEscapingForOptionalFunctionParam = 1 << 4,
   /// Allow compatible opaque archetypes.
-  AllowCompatibleOpaqueTypeArchetypes = 1 << 5
+  AllowCompatibleOpaqueTypeArchetypes = 1 << 5,
+  /// Ignore the @Sendable attributes on functions when matching types.
+  IgnoreFunctionSendability = 1 << 6,
 };
 using TypeMatchOptions = OptionSet<TypeMatchFlags>;
 
@@ -1245,6 +1247,10 @@ public:
 
   /// Whether this is the AnyObject type.
   bool isAnyObject();
+
+  /// Return true if this type is potentially an AnyObject existential after
+  /// substitution.
+  bool isPotentiallyAnyObject();
 
   /// Whether this is an existential composition containing
   /// Error.
@@ -2766,6 +2772,7 @@ BEGIN_CAN_TYPE_WRAPPER(ExistentialMetatypeType, AnyMetatypeType)
                                         MetatypeRepresentation repr) {
     return CanExistentialMetatypeType(ExistentialMetatypeType::get(type, repr));
   }
+  PROXY_CAN_TYPE_SIMPLE_GETTER(getExistentialInstanceType)
 END_CAN_TYPE_WRAPPER(ExistentialMetatypeType, AnyMetatypeType)
   
 /// ModuleType - This is the type given to a module value, e.g. the "Builtin" in
@@ -5252,6 +5259,9 @@ private:
   }
 };
 BEGIN_CAN_TYPE_WRAPPER(ProtocolCompositionType, Type)
+  CanTypeArrayRef getMembers() const {
+    return CanTypeArrayRef(getPointer()->getMembers());
+  }
 END_CAN_TYPE_WRAPPER(ProtocolCompositionType, Type)
 
 /// ParameterizedProtocolType - A type that constrains one or more primary
@@ -5289,9 +5299,17 @@ public:
     return Base;
   }
 
+  ProtocolDecl *getProtocol() const {
+    return Base->getDecl();
+  }
+
   ArrayRef<Type> getArgs() const {
     return {getTrailingObjects<Type>(),
             Bits.ParameterizedProtocolType.ArgCount};
+  }
+
+  bool requiresClass() const {
+    return getBaseType()->requiresClass();
   }
 
   void getRequirements(Type baseType, SmallVectorImpl<Requirement> &reqs) const;
@@ -5315,11 +5333,35 @@ private:
                             RecursiveTypeProperties properties);
 };
 BEGIN_CAN_TYPE_WRAPPER(ParameterizedProtocolType, Type)
-  PROXY_CAN_TYPE_SIMPLE_GETTER(getBaseType)
+  CanProtocolType getBaseType() const {
+    return CanProtocolType(getPointer()->getBaseType());
+  }
   CanTypeArrayRef getArgs() const {
     return CanTypeArrayRef(getPointer()->getArgs());
   }
 END_CAN_TYPE_WRAPPER(ParameterizedProtocolType, Type)
+
+/// The generalized shape of an existential type.
+struct ExistentialTypeGeneralization {
+  /// The generalized existential type.  May refer to type parameters
+  /// from the generalization signature.
+  Type Shape;
+
+  /// The generalization signature and substitutions.
+  SubstitutionMap Generalization;
+
+  /// Retrieve the generalization for the given existential type.
+  ///
+  /// Substituting the generalization substitutions into the shape
+  /// should produce the original existential type.
+  ///
+  /// If there is a generic type substitution which can turn existential
+  /// type A into existential type B, then:
+  /// - the generalized shape types of A and B must be equal and
+  /// - the generic signatures of the generalization substitutions of
+  ///   A and B must be equal.
+  static ExistentialTypeGeneralization get(Type existentialType);
+};
 
 /// An existential type, spelled with \c any .
 ///
@@ -5345,6 +5387,9 @@ public:
 
     if (auto composition = ConstraintType->getAs<ProtocolCompositionType>())
       return composition->requiresClass();
+
+    if (auto paramProtocol = ConstraintType->getAs<ParameterizedProtocolType>())
+      return paramProtocol->requiresClass();
 
     return false;
   }

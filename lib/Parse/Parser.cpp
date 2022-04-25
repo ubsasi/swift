@@ -579,13 +579,16 @@ const Token &Parser::peekToken() {
   return L->peekNextToken();
 }
 
-SourceLoc Parser::consumeTokenWithoutFeedingReceiver() {
-  SourceLoc Loc = Tok.getLoc();
+SourceLoc Parser::discardToken() {
   assert(Tok.isNot(tok::eof) && "Lexing past eof!");
-
-  recordTokenHash(Tok);
-
+  SourceLoc Loc = Tok.getLoc();
   L->lex(Tok, LeadingTrivia, TrailingTrivia);
+  return Loc;
+}
+
+SourceLoc Parser::consumeTokenWithoutFeedingReceiver() {
+  recordTokenHash(Tok);
+  auto Loc = discardToken();
   PreviousLoc = Loc;
   return Loc;
 }
@@ -765,24 +768,6 @@ void Parser::skipUntilDeclRBrace() {
                    tok::code_complete) &&
          !isStartOfSwiftDecl())
     skipSingle();
-}
-
-void Parser::skipUntilDeclStmtRBrace(tok T1) {
-  while (Tok.isNot(T1, tok::eof, tok::r_brace, tok::pound_endif,
-                   tok::pound_else, tok::pound_elseif,
-                   tok::code_complete) &&
-         !isStartOfStmt() && !isStartOfSwiftDecl()) {
-    skipSingle();
-  }
-}
-
-void Parser::skipUntilDeclStmtRBrace(tok T1, tok T2) {
-  while (Tok.isNot(T1, T2, tok::eof, tok::r_brace, tok::pound_endif,
-                   tok::pound_else, tok::pound_elseif,
-                   tok::code_complete) &&
-         !isStartOfStmt() && !isStartOfSwiftDecl()) {
-    skipSingle();
-  }
 }
 
 void Parser::skipListUntilDeclRBrace(SourceLoc startLoc, tok T1, tok T2) {
