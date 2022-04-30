@@ -194,6 +194,8 @@ public:
 
   AnchorType getAnchor() const { return Anchor; }
 
+  SourceRange getAffectedRange() const;
+
   unsigned getWarnLimit() const {
     return Context.TypeCheckerOpts.WarnLongExpressionTypeChecking;
   }
@@ -1491,7 +1493,7 @@ enum class ConstraintSystemFlags {
   /// Note that this flag is automatically applied to all constraint systems,
   /// when \c DebugConstraintSolver is set in \c TypeCheckerOptions. It can be
   /// automatically enabled for select constraint solving attempts by setting
-  /// \c DebugConstraintSolverAttempt. Finally, it can also be automatically 
+  /// \c DebugConstraintSolverAttempt. Finally, it can also be automatically
   /// enabled for a pre-configured set of expressions on line numbers by setting
   /// \c DebugConstraintSolverOnLines.
   DebugConstraints = 0x10,
@@ -1516,9 +1518,8 @@ enum class ConstraintSystemFlags {
   /// `__attribute__((ns_consumed))`.
   UseClangFunctionTypes = 0x80,
 
-  /// When set, nominal typedecl contexts are asynchronous contexts.
-  /// This is set while searching for the main function
-  ConsiderNominalTypeContextsAsync = 0x100,
+  /// When set, ignore async/sync mismatches
+  IgnoreAsyncSyncMismatch = 0x100,
 };
 
 /// Options that affect the constraint system as a whole.
@@ -5415,9 +5416,17 @@ public:
   
   /// Determine if we've already explored too many paths in an
   /// attempt to solve this expression.
-  bool isExpressionAlreadyTooComplex = false;
-  bool getExpressionTooComplex(size_t solutionMemory) {
-    if (isExpressionAlreadyTooComplex)
+  std::pair<bool, SourceRange> isAlreadyTooComplex = {false, SourceRange()};
+
+  /// If optional is not nil, result is guaranteed to point at a valid
+  /// location.
+  Optional<SourceRange> getTooComplexRange() const {
+    auto range = isAlreadyTooComplex.second;
+    return range.isValid() ? range : Optional<SourceRange>();
+  }
+
+  bool isTooComplex(size_t solutionMemory) {
+    if (isAlreadyTooComplex.first)
       return true;
 
     auto CancellationFlag = getASTContext().CancellationFlag;
@@ -5428,7 +5437,9 @@ public:
     MaxMemory = std::max(used, MaxMemory);
     auto threshold = getASTContext().TypeCheckerOpts.SolverMemoryThreshold;
     if (MaxMemory > threshold) {
-      return isExpressionAlreadyTooComplex= true;
+      // No particular location for OoM problems.
+      isAlreadyTooComplex.first = true;
+      return true;
     }
 
     if (Timer && Timer->isExpired()) {
@@ -5437,24 +5448,29 @@ public:
       // emitting an error.
       Timer->disableWarning();
 
-      return isExpressionAlreadyTooComplex = true;
+      isAlreadyTooComplex = {true, Timer->getAffectedRange()};
+      return true;
     }
 
     // Bail out once we've looked at a really large number of
     // choices.
     if (CountScopes > getASTContext().TypeCheckerOpts.SolverBindingThreshold) {
-      return isExpressionAlreadyTooComplex = true;
+      isAlreadyTooComplex.first = true;
+      return true;
     }
 
     return false;
   }
 
-  bool getExpressionTooComplex(SmallVectorImpl<Solution> const &solutions) {
+  bool isTooComplex(SmallVectorImpl<Solution> const &solutions) {
+    if (isAlreadyTooComplex.first)
+      return true;
+
     size_t solutionMemory = 0;
     for (auto const& s : solutions) {
       solutionMemory += s.getTotalMemory();
     }
-    return getExpressionTooComplex(solutionMemory);
+    return isTooComplex(solutionMemory);
   }
 
   // If the given constraint is an applied disjunction, get the argument function

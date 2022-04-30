@@ -5433,7 +5433,7 @@ collectExistentialConformances(Type fromType, Type toType,
   SmallVector<ProtocolConformanceRef, 4> conformances;
   for (auto proto : layout.getProtocols()) {
     conformances.push_back(TypeChecker::containsProtocol(
-        fromType, proto, module));
+        fromType, proto, module, false, /*allowMissing=*/true));
   }
 
   return toType->getASTContext().AllocateCopy(conformances);
@@ -9142,6 +9142,12 @@ SolutionResult SolutionResult::forAmbiguous(
   std::uninitialized_copy(std::make_move_iterator(solutions.begin()),
                           std::make_move_iterator(solutions.end()),
                           result.solutions);
+  return result;
+}
+
+SolutionResult SolutionResult::forTooComplex(Optional<SourceRange> affected) {
+  SolutionResult result(Kind::TooComplex);
+  result.TooComplexAt = affected;
   return result;
 }
 
