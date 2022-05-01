@@ -51,9 +51,9 @@ done
 YEAR=$(date +"%Y")
 MONTH=$(date +"%m")
 DAY=$(date +"%d")
-TOOLCHAIN_NAME="swift-wasm-DEVELOPMENT-SNAPSHOT-${YEAR}-${MONTH}-${DAY}-a"
+TOOLCHAIN_NAME="swift-wasm-5.7-SNAPSHOT-${YEAR}-${MONTH}-${DAY}-a"
 
-PACKAGE_ARTIFACT="$SOURCE_PATH/swift-wasm-DEVELOPMENT-SNAPSHOT-${OS_SUFFIX}.tar.gz"
+PACKAGE_ARTIFACT="$SOURCE_PATH/swift-wasm-5.7-SNAPSHOT-${OS_SUFFIX}.tar.gz"
 
 HOST_TOOLCHAIN_DESTDIR=$SOURCE_PATH/host-toolchain-sdk
 DIST_TOOLCHAIN_DESTDIR=$SOURCE_PATH/dist-toolchain-sdk
@@ -167,7 +167,7 @@ create_darwin_info_plist() {
   echo "-- Create Info.plist --"
   PLISTBUDDY_BIN="/usr/libexec/PlistBuddy"
 
-  DARWIN_TOOLCHAIN_VERSION="5.5.${YEAR}${MONTH}${DAY}"
+  DARWIN_TOOLCHAIN_VERSION="5.7.${YEAR}${MONTH}${DAY}"
   BUNDLE_PREFIX="org.swiftwasm"
   DARWIN_TOOLCHAIN_BUNDLE_IDENTIFIER="${BUNDLE_PREFIX}.${YEAR}${MONTH}${DAY}"
   DARWIN_TOOLCHAIN_DISPLAY_NAME_SHORT="Swift for WebAssembly Snapshot"
