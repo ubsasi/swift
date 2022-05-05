@@ -420,7 +420,9 @@ static bool mayAccessPointer(SILInstruction *instruction) {
 static bool mayLoadWeakOrUnowned(SILInstruction *instruction) {
   // TODO: It is possible to do better here by looking at the address that is
   //       being loaded.
-  return isa<LoadWeakInst>(instruction) || isa<LoadUnownedInst>(instruction);
+  return isa<LoadWeakInst>(instruction) || isa<LoadUnownedInst>(instruction)
+    || isa<StrongCopyUnownedValueInst>(instruction)
+    || isa<StrongCopyUnmanagedValueInst>(instruction);
 }
 
 bool swift::isDeinitBarrier(SILInstruction *instruction) {
@@ -1398,6 +1400,11 @@ void swift::visitProductLeafAccessPathNodes(
         worklist.push_back({silType.getTupleElementType(index), elementNode});
       }
     } else if (auto *decl = silType.getStructOrBoundGenericStruct()) {
+      if (decl->isResilient(tec.getContext()->getParentModule(),
+                            tec.getResilienceExpansion())) {
+        visitor(AccessPath::PathNode(node), silType);
+        continue;
+      }
       unsigned index = 0;
       for (auto *field : decl->getStoredProperties()) {
         auto *fieldNode = node->getChild(index);

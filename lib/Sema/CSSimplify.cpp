@@ -3467,8 +3467,11 @@ ConstraintSystem::matchExistentialTypes(Type type1, Type type2,
               if (!req)
                 return getTypeMatchFailure(locator);
 
-              if (type1->isPlaceholder() ||
-                  req->getRequirementKind() == RequirementKind::Superclass)
+              // Superclass constraints are never satisfied by existentials,
+              // even those that contain the superclass a la `any C & P`.
+              if (!type1->isExistentialType() &&
+                  (type1->isPlaceholder() ||
+                  req->getRequirementKind() == RequirementKind::Superclass))
                 return getTypeMatchSuccess();
 
               auto *fix = fixRequirementFailure(*this, type1, type2, locator);
@@ -8971,7 +8974,8 @@ static bool inferEnumMemberThroughTildeEqualsOperator(
     }
   }
 
-  cs.generateConstraints(target, FreeTypeVariableBinding::Disallow);
+  if (cs.generateConstraints(target, FreeTypeVariableBinding::Disallow))
+    return true;
 
   // Sub-expression associated with expression pattern is the enum element
   // access which needs to be connected to the provided element type.
@@ -9907,8 +9911,9 @@ bool ConstraintSystem::resolveClosure(TypeVariableType *typeVar,
       }
 
       if (!paramDecl->getName().hasDollarPrefix()) {
-        generateWrappedPropertyTypeConstraints(paramDecl, backingType,
-                                               param.getParameterType());
+        if (generateWrappedPropertyTypeConstraints(paramDecl, backingType,
+                                                   param.getParameterType()))
+          return false;
       }
 
       auto result = applyPropertyWrapperToParameter(backingType, param.getParameterType(),
