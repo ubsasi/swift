@@ -287,6 +287,8 @@ RequirementSignatureRequestRQM::evaluate(Evaluator &evaluator,
     rewriteCtx.finishComputingRequirementSignatures(proto);
   };
 
+  SmallVector<RequirementError, 4> errors;
+
   // Collect user-written requirements from the protocols in this connected
   // component.
   llvm::DenseMap<const ProtocolDecl *,
@@ -297,6 +299,20 @@ RequirementSignatureRequestRQM::evaluate(Evaluator &evaluator,
       requirements.push_back(req);
     for (auto req : proto->getTypeAliasRequirements())
       requirements.push_back({req, SourceLoc(), /*inferred=*/false});
+
+    // Preprocess requirements to eliminate conformances on type parameters
+    // which are made concrete.
+    if (ctx.LangOpts.EnableRequirementMachineConcreteContraction) {
+      SmallVector<StructuralRequirement, 4> contractedRequirements;
+
+      bool debug = rewriteCtx.getDebugOptions()
+                             .contains(DebugFlags::ConcreteContraction);
+
+      if (performConcreteContraction(requirements, contractedRequirements,
+                                     errors, debug)) {
+        std::swap(contractedRequirements, requirements);
+      }
+    }
   }
 
   if (rewriteCtx.getDebugOptions().contains(DebugFlags::Timers)) {
@@ -409,7 +425,6 @@ RequirementSignatureRequestRQM::evaluate(Evaluator &evaluator,
     // Diagnose redundant requirements and conflicting requirements.
     if (ctx.LangOpts.RequirementMachineProtocolSignatures ==
         RequirementMachineMode::Enabled) {
-      SmallVector<RequirementError, 4> errors;
       machine->computeRequirementDiagnostics(errors, proto->getLoc());
       diagnoseRequirementErrors(ctx, errors,
                                 AllowConcreteTypePolicy::NestedAssocTypes);
@@ -800,6 +815,15 @@ InferredGenericSignatureRequestRQM::evaluate(
   // an extension whose extended type is a generic typealias.
   for (const auto &req : addedRequirements)
     requirements.push_back({req, SourceLoc(), /*wasInferred=*/true});
+
+  // Re-order requirements so that inferred requirements appear last. This
+  // ensures that if an inferred requirement is redundant with some other
+  // requirement, it is the inferred requirement that becomes redundant,
+  // which muffles the redundancy diagnostic.
+  std::stable_partition(requirements.begin(), requirements.end(),
+                        [](const StructuralRequirement &req) {
+                          return !req.inferred;
+                        });
 
   auto &ctx = moduleForInference->getASTContext();
   auto &rewriteCtx = ctx.getRewriteContext();
