@@ -1671,7 +1671,10 @@ static ManagedValue convertFunctionRepresentation(SILGenFunction &SGF,
     case SILFunctionType::Representation::ObjCMethod:
     case SILFunctionType::Representation::WitnessMethod:
     case SILFunctionType::Representation::CXXMethod:
-    case SILFunctionType::Representation::KeyPathAccessor:
+    case SILFunctionType::Representation::KeyPathAccessorGetter:
+    case SILFunctionType::Representation::KeyPathAccessorSetter:
+    case SILFunctionType::Representation::KeyPathAccessorEquals:
+    case SILFunctionType::Representation::KeyPathAccessorHash:
       llvm_unreachable("should not do function conversion from method rep");
     }
     llvm_unreachable("bad representation");
@@ -1702,7 +1705,10 @@ static ManagedValue convertFunctionRepresentation(SILGenFunction &SGF,
     case SILFunctionType::Representation::ObjCMethod:
     case SILFunctionType::Representation::WitnessMethod:
     case SILFunctionType::Representation::CXXMethod:
-    case SILFunctionType::Representation::KeyPathAccessor:
+    case SILFunctionType::Representation::KeyPathAccessorGetter:
+    case SILFunctionType::Representation::KeyPathAccessorSetter:
+    case SILFunctionType::Representation::KeyPathAccessorEquals:
+    case SILFunctionType::Representation::KeyPathAccessorHash:
       llvm_unreachable("should not do function conversion from method rep");
     }
     llvm_unreachable("bad representation");

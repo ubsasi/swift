@@ -711,7 +711,10 @@ getCalleeFunction(SILFunction *F, FullApplySite AI, bool &IsThick,
   case SILFunctionTypeRepresentation::Method:
   case SILFunctionTypeRepresentation::Closure:
   case SILFunctionTypeRepresentation::WitnessMethod:
-  case SILFunctionTypeRepresentation::KeyPathAccessor:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     break;
     
   case SILFunctionTypeRepresentation::CFunctionPointer:

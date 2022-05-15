@@ -175,7 +175,10 @@ enum class SILFunctionTypeRepresentation : uint8_t {
 
   /// A KeyPath accessor function, which is thin and also uses the variadic length
   /// generic components serialization in trailing buffer.
-  KeyPathAccessor,
+  KeyPathAccessorGetter,
+  KeyPathAccessorSetter,
+  KeyPathAccessorEquals,
+  KeyPathAccessorHash,
 };
 
 /// Returns true if the function with this convention doesn't carry a context.
@@ -206,7 +209,10 @@ isThinRepresentation(SILFunctionTypeRepresentation rep) {
   case SILFunctionTypeRepresentation::CFunctionPointer:
   case SILFunctionTypeRepresentation::Closure:
   case SILFunctionTypeRepresentation::CXXMethod:
-  case SILFunctionTypeRepresentation::KeyPathAccessor:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     return true;
   }
   llvm_unreachable("Unhandled SILFunctionTypeRepresentation in switch.");
@@ -251,7 +257,10 @@ convertRepresentation(SILFunctionTypeRepresentation rep) {
   case SILFunctionTypeRepresentation::ObjCMethod:
   case SILFunctionTypeRepresentation::WitnessMethod:
   case SILFunctionTypeRepresentation::Closure:
-  case SILFunctionTypeRepresentation::KeyPathAccessor:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     return None;
   }
   llvm_unreachable("Unhandled SILFunctionTypeRepresentation!");
@@ -271,7 +280,10 @@ constexpr bool canBeCalledIndirectly(SILFunctionTypeRepresentation rep) {
   case SILFunctionTypeRepresentation::ObjCMethod:
   case SILFunctionTypeRepresentation::Method:
   case SILFunctionTypeRepresentation::WitnessMethod:
-  case SILFunctionTypeRepresentation::KeyPathAccessor:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     return true;
   }
 
@@ -293,7 +305,10 @@ template <typename Repr> constexpr bool shouldStoreClangType(Repr repr) {
   case SILFunctionTypeRepresentation::Method:
   case SILFunctionTypeRepresentation::WitnessMethod:
   case SILFunctionTypeRepresentation::Closure:
-  case SILFunctionTypeRepresentation::KeyPathAccessor:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     return false;
   }
   llvm_unreachable("Unhandled SILFunctionTypeRepresentation.");
@@ -404,7 +419,10 @@ public:
     case SILFunctionTypeRepresentation::Thin:
     case SILFunctionTypeRepresentation::CFunctionPointer:
     case SILFunctionTypeRepresentation::Closure:
-    case SILFunctionTypeRepresentation::KeyPathAccessor:
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
       return false;
     case SILFunctionTypeRepresentation::ObjCMethod:
     case SILFunctionTypeRepresentation::Method:
@@ -643,7 +661,10 @@ SILFunctionLanguage getSILFunctionLanguage(SILFunctionTypeRepresentation rep) {
   case SILFunctionTypeRepresentation::Method:
   case SILFunctionTypeRepresentation::WitnessMethod:
   case SILFunctionTypeRepresentation::Closure:
-  case SILFunctionTypeRepresentation::KeyPathAccessor:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     return SILFunctionLanguage::Swift;
   }
 
@@ -766,7 +787,10 @@ public:
     case Representation::Thin:
     case Representation::CFunctionPointer:
     case Representation::Closure:
-    case Representation::KeyPathAccessor:
+    case Representation::KeyPathAccessorGetter:
+    case Representation::KeyPathAccessorSetter:
+    case Representation::KeyPathAccessorEquals:
+    case Representation::KeyPathAccessorHash:
       return false;
     case Representation::ObjCMethod:
     case Representation::Method:
@@ -790,7 +814,10 @@ public:
     case Representation::WitnessMethod:
     case Representation::Closure:
     case SILFunctionTypeRepresentation::CXXMethod:
-    case Representation::KeyPathAccessor:
+    case Representation::KeyPathAccessorGetter:
+    case Representation::KeyPathAccessorSetter:
+    case Representation::KeyPathAccessorEquals:
+    case Representation::KeyPathAccessorHash:
       return false;
     }
     llvm_unreachable("Unhandled Representation in switch.");

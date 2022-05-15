@@ -307,7 +307,10 @@ llvm::CallingConv::ID irgen::expandCallingConv(IRGenModule &IGM,
   case SILFunctionTypeRepresentation::Closure:
   case SILFunctionTypeRepresentation::Thin:
   case SILFunctionTypeRepresentation::Thick:
-  case SILFunctionTypeRepresentation::KeyPathAccessor:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     if (isAsync)
       return IGM.SwiftAsyncCC;
     return getFreestandingConvention(IGM);
@@ -1343,7 +1346,10 @@ void SignatureExpansion::expandExternalSignatureTypes() {
   case SILFunctionTypeRepresentation::Method:
   case SILFunctionTypeRepresentation::WitnessMethod:
   case SILFunctionTypeRepresentation::Closure:
-  case SILFunctionTypeRepresentation::KeyPathAccessor:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     llvm_unreachable("not a C representation");
   }
 
@@ -1664,7 +1670,10 @@ void SignatureExpansion::expandParameters() {
         return FnType->hasErrorResult();
 
       // KeyPath accessor always has no context.
-      case SILFunctionType::Representation::KeyPathAccessor:
+      case SILFunctionType::Representation::KeyPathAccessorGetter:
+      case SILFunctionType::Representation::KeyPathAccessorSetter:
+      case SILFunctionType::Representation::KeyPathAccessorEquals:
+      case SILFunctionType::Representation::KeyPathAccessorHash:
         return false;
       case SILFunctionType::Representation::Thick:
         return true;
@@ -1831,7 +1840,10 @@ void SignatureExpansion::expandAsyncEntryType() {
       case SILFunctionType::Representation::Thin:
       case SILFunctionType::Representation::Closure:
       case SILFunctionType::Representation::CXXMethod:
-      case SILFunctionType::Representation::KeyPathAccessor:
+      case SILFunctionType::Representation::KeyPathAccessorGetter:
+      case SILFunctionType::Representation::KeyPathAccessorSetter:
+      case SILFunctionType::Representation::KeyPathAccessorEquals:
+      case SILFunctionType::Representation::KeyPathAccessorHash:
         return false;
 
       case SILFunctionType::Representation::Thick:
@@ -2256,7 +2268,10 @@ public:
                            isOutlined);
       break;
 
-    case SILFunctionTypeRepresentation::KeyPathAccessor:
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
       llvm_unreachable("TODO(katei): setArgs");
       break;
     case SILFunctionTypeRepresentation::WitnessMethod:
@@ -2513,7 +2528,10 @@ public:
     case SILFunctionTypeRepresentation::Block:
     case SILFunctionTypeRepresentation::CFunctionPointer:
     case SILFunctionTypeRepresentation::CXXMethod:
-    case SILFunctionTypeRepresentation::KeyPathAccessor:
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
       assert(false && "Should not reach this");
       break;
 
@@ -3195,7 +3213,10 @@ Callee::Callee(CalleeInfo &&info, const FunctionPointer &fn,
   case SILFunctionTypeRepresentation::Thin:
   case SILFunctionTypeRepresentation::Closure:
   case SILFunctionTypeRepresentation::CFunctionPointer:
-  case SILFunctionTypeRepresentation::KeyPathAccessor:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     assert(!FirstData && !SecondData);
     break;
   case SILFunctionTypeRepresentation::CXXMethod:
@@ -3214,7 +3235,10 @@ llvm::Value *Callee::getSwiftContext() const {
   case SILFunctionTypeRepresentation::Thin:
   case SILFunctionTypeRepresentation::Closure:
   case SILFunctionTypeRepresentation::CXXMethod:
-  case SILFunctionTypeRepresentation::KeyPathAccessor:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     return nullptr;
 
   case SILFunctionTypeRepresentation::WitnessMethod:

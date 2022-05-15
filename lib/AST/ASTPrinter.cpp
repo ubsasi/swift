@@ -5785,8 +5785,17 @@ public:
       case SILFunctionType::Representation::Closure:
         Printer << "closure";
         break;
-      case SILFunctionType::Representation::KeyPathAccessor:
-        Printer << "keypath_accessor";
+      case SILFunctionType::Representation::KeyPathAccessorGetter:
+        Printer << "keypath_accessor_getter";
+        break;
+      case SILFunctionType::Representation::KeyPathAccessorSetter:
+        Printer << "keypath_accessor_setter";
+        break;
+      case SILFunctionType::Representation::KeyPathAccessorEquals:
+        Printer << "keypath_accessor_equals";
+        break;
+      case SILFunctionType::Representation::KeyPathAccessorHash:
+        Printer << "keypath_accessor_hash";
         break;
       }
       Printer << ")";
@@ -5872,8 +5881,17 @@ public:
       case SILFunctionType::Representation::Closure:
         Printer << "closure";
         break;
-      case SILFunctionType::Representation::KeyPathAccessor:
-        Printer << "keypath_accessor";
+      case SILFunctionType::Representation::KeyPathAccessorGetter:
+        Printer << "keypath_accessor_getter";
+        break;
+      case SILFunctionType::Representation::KeyPathAccessorSetter:
+        Printer << "keypath_accessor_setter";
+        break;
+      case SILFunctionType::Representation::KeyPathAccessorEquals:
+        Printer << "keypath_accessor_equals";
+        break;
+      case SILFunctionType::Representation::KeyPathAccessorHash:
+        Printer << "keypath_accessor_hash";
         break;
       }
       Printer << ")";

@@ -254,7 +254,10 @@ public:
     case SILFunctionTypeRepresentation::ObjCMethod:
     case SILFunctionTypeRepresentation::WitnessMethod:
     case SILFunctionTypeRepresentation::Closure:
-    case SILFunctionTypeRepresentation::KeyPathAccessor:
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
       return true;
     case SILFunctionTypeRepresentation::Block:
     case SILFunctionTypeRepresentation::Thick:
