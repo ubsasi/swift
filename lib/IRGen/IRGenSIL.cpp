@@ -15,6 +15,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "GenericRequirement.h"
+#include "swift/AST/ExtInfo.h"
+#include "llvm/Support/ErrorHandling.h"
 #define DEBUG_TYPE "irgensil"
 
 #include "swift/AST/ASTContext.h"
@@ -2040,6 +2043,37 @@ static void emitEntryPointArgumentsNativeCC(IRGenSILFunction &IGF,
     llvm::Value *contextPtr = emission->getContext();
     (void)contextPtr;
     assert(contextPtr->getType() == IGF.IGM.RefCountedPtrTy);
+  } else if (isKeyPathAccessorRepresentation(funcTy->getRepresentation())) {
+    auto genericEnv = IGF.CurSILFn->getGenericEnvironment();
+    SmallVector<GenericRequirement, 4> requirements;
+    CanGenericSignature genericSig;
+    if (genericEnv) {
+      genericSig = IGF.CurSILFn->getGenericSignature().getCanonicalSignature();
+      enumerateGenericSignatureRequirements(genericSig,
+        [&](GenericRequirement reqt) { requirements.push_back(reqt); });
+    }
+    auto componentArgsBufSize = allParamValues.takeLast();
+    auto componentArgsBuf = allParamValues.takeLast();
+    bool hasSubscriptIndices;
+    switch (funcTy->getRepresentation()) {
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+      hasSubscriptIndices = params.size() >= 2;
+      break;
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+      hasSubscriptIndices = params.size() >= 3;
+      break;
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
+      hasSubscriptIndices = true;
+      break;
+    default:
+      llvm_unreachable("unhandled keypath accessor representation");
+    }
+    bindPolymorphicArgumentsFromComponentIndices(IGF, genericEnv,
+                                                 requirements,
+                                                 componentArgsBuf,
+                                                 componentArgsBufSize,
+                                                 hasSubscriptIndices);
   }
 
   // Map the remaining SIL parameters to LLVM parameters.

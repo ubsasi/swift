@@ -30,6 +30,7 @@
 #include "clang/CodeGen/ModuleBuilder.h"
 #include "llvm/IR/GlobalPtrAuthInfo.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include "CallEmission.h"
 #include "EntryPointArgumentEmission.h"
@@ -470,6 +471,7 @@ namespace {
     llvm::Type *expandDirectResult();
     void expandIndirectResults();
     void expandParameters();
+    void expandKeyPathAccessorParameters();
     void expandExternalSignatureTypes();
 
     void expandCoroutineResult(bool forContinuation);
@@ -1598,6 +1600,60 @@ bool irgen::hasSelfContextParameter(CanSILFunctionType fnType) {
   return false;
 }
 
+void SignatureExpansion::expandKeyPathAccessorParameters() {
+  auto params = FnType->getParameters();
+  unsigned numArgsToExpand;
+  SmallVector<llvm::Type *, 4> tailParams;
+
+  switch (FnType->getRepresentation()) {
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    // from: (base: CurValue, indices: (X, Y, ...))
+    // to:   (base: CurValue, argument: UnsafeRawPointer, size: Int)
+    numArgsToExpand = 1;
+    tailParams.push_back(IGM.Int8PtrTy);
+    tailParams.push_back(IGM.SizeTy);
+    break;
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+    // from: (value: NewValue, base: CurValue, indices: (X, Y, ...))
+    // to:   (value: NewValue, base: CurValue, argument: UnsafeRawPointer, size: Int)
+    numArgsToExpand = 2;
+    tailParams.push_back(IGM.Int8PtrTy);
+    tailParams.push_back(IGM.SizeTy);
+    break;
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    // from: (lhsIndices: (X, Y, ...), rhsIndices: (X, Y, ...))
+    // to:   (lhsArguments: UnsafeRawPointer, rhsArguments: UnsafeRawPointer, size: Int)
+    numArgsToExpand = 0;
+    tailParams.push_back(IGM.Int8PtrTy);
+    tailParams.push_back(IGM.Int8PtrTy);
+    tailParams.push_back(IGM.SizeTy);
+    break;
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
+    // from: (indices: (X, Y, ...))
+    // to:   (instanceArguments: UnsafeRawPointer, size: Int)
+    numArgsToExpand = 0;
+    tailParams.push_back(IGM.Int8PtrTy);
+    tailParams.push_back(IGM.SizeTy);
+    break;
+  case SILFunctionTypeRepresentation::Thick:
+  case SILFunctionTypeRepresentation::Block:
+  case SILFunctionTypeRepresentation::Thin:
+  case SILFunctionTypeRepresentation::Method:
+  case SILFunctionTypeRepresentation::ObjCMethod:
+  case SILFunctionTypeRepresentation::WitnessMethod:
+  case SILFunctionTypeRepresentation::CFunctionPointer:
+  case SILFunctionTypeRepresentation::Closure:
+  case SILFunctionTypeRepresentation::CXXMethod:
+    llvm_unreachable("non keypath accessor convention");
+  }
+  for (unsigned i = 0; i < numArgsToExpand; i++) {
+    expand(params[i]);
+  }
+  for (auto tailParam : tailParams) {
+    ParamIRTypes.push_back(tailParam);
+  }
+}
+
 /// Expand the abstract parameters of a SIL function type into the physical
 /// parameters of an LLVM function type (results have already been expanded).
 void SignatureExpansion::expandParameters() {
@@ -1717,7 +1773,18 @@ void SignatureExpansion::expandFunctionType() {
       return;
     }
     expandResult();
-    expandParameters();
+
+    switch (FnType->getRepresentation()) {
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
+      expandKeyPathAccessorParameters();
+      break;
+    default:
+      expandParameters();
+      break;
+    }
     return;
   }
   case SILFunctionLanguage::C:

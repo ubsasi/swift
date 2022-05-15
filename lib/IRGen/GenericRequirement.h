@@ -87,6 +87,13 @@ void bindFromGenericRequirementsBuffer(IRGenFunction &IGF,
                                        MetadataState metadataState,
                                        GetTypeParameterInContextFn getInContext);
 
+void bindPolymorphicArgumentsFromComponentIndices(IRGenFunction &IGF,
+                                                  GenericEnvironment *genericEnv,
+                                                  ArrayRef<GenericRequirement> requirements,
+                                                  llvm::Value *args,
+                                                  llvm::Value *size,
+                                                  bool hasSubscriptIndices);
+
 
 /// A class describing the layout of the generic requirements of a
 /// nominal type metadata.

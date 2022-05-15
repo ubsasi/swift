@@ -225,6 +225,30 @@ isThickRepresentation(Repr repr) {
   return !isThinRepresentation(repr);
 }
 
+/// Returns true if the function with this convention doesn't carry a context.
+constexpr bool
+isKeyPathAccessorRepresentation(SILFunctionTypeRepresentation rep) {
+  switch (rep) {
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
+      return true;
+    case SILFunctionTypeRepresentation::Thick:
+    case SILFunctionTypeRepresentation::Block:
+    case SILFunctionTypeRepresentation::Thin:
+    case SILFunctionTypeRepresentation::Method:
+    case SILFunctionTypeRepresentation::ObjCMethod:
+    case SILFunctionTypeRepresentation::WitnessMethod:
+    case SILFunctionTypeRepresentation::CFunctionPointer:
+    case SILFunctionTypeRepresentation::Closure:
+    case SILFunctionTypeRepresentation::CXXMethod:
+      return false;
+  }
+  llvm_unreachable("Unhandled SILFunctionTypeRepresentation in switch.");
+}
+
+
 constexpr SILFunctionTypeRepresentation
 convertRepresentation(FunctionTypeRepresentation rep) {
   switch (rep) {

@@ -14,7 +14,7 @@ sil @$generic_computed_property_indices : $@convention(method) <T> (@in_guarante
 // CHECK-SAME: %swift.opaque* noalias nocapture sret(%swift.opaque) %0,
 // CHECK-SAME: %T27convention_keypath_accessor4BlahV* noalias nocapture %1,
 // CHECK-SAME: i8* %2, i64 %3)
-sil public [thunk] @$generic_computed_property_indices_TK : $@convention(keypath_accessor) <T where T : Hashable> (@in_guaranteed Blah, @in_guaranteed T) -> @out T {
+sil public [thunk] @$generic_computed_property_indices_TK : $@convention(keypath_accessor_getter) <T where T : Hashable> (@in_guaranteed Blah, @in_guaranteed T) -> @out T {
 bb0(%0 : $*T, %cur_val : $*Blah, %index : $*T):
   %3 = load %cur_val : $*Blah
   %4 = alloc_stack $T
