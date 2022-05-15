@@ -2999,6 +2999,7 @@ Callee LoweredValue::getCallee(IRGenFunction &IGF,
     case SILFunctionType::Representation::Thin:
     case SILFunctionType::Representation::Closure:
     case SILFunctionType::Representation::Method:
+    case SILFunctionType::Representation::KeyPathAccessor:
       return getSwiftFunctionPointerCallee(IGF, functionValue, selfValue,
                                            std::move(calleeInfo), false);
 
@@ -3060,6 +3061,7 @@ static std::unique_ptr<CallEmission> getCallEmissionForLoweredValue(
   case SILFunctionType::Representation::CFunctionPointer:
   case SILFunctionType::Representation::Method:
   case SILFunctionType::Representation::Closure:
+  case SILFunctionType::Representation::KeyPathAccessor:
     break;
   }
 
@@ -3438,6 +3440,7 @@ getPartialApplicationFunction(IRGenSILFunction &IGF, SILValue v,
     case SILFunctionTypeRepresentation::Thin:
     case SILFunctionTypeRepresentation::Method:
     case SILFunctionTypeRepresentation::Closure:
+    case SILFunctionTypeRepresentation::KeyPathAccessor:
       break;
     }
 

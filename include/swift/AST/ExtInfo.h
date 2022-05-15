@@ -172,6 +172,10 @@ enum class SILFunctionTypeRepresentation : uint8_t {
   /// constructor). Except for
   /// handling the "this" argument, has the same behavior as "CFunctionPointer".
   CXXMethod,
+
+  /// A KeyPath accessor function, which is thin and also uses the variadic length
+  /// generic components serialization in trailing buffer.
+  KeyPathAccessor,
 };
 
 /// Returns true if the function with this convention doesn't carry a context.
@@ -202,6 +206,7 @@ isThinRepresentation(SILFunctionTypeRepresentation rep) {
   case SILFunctionTypeRepresentation::CFunctionPointer:
   case SILFunctionTypeRepresentation::Closure:
   case SILFunctionTypeRepresentation::CXXMethod:
+  case SILFunctionTypeRepresentation::KeyPathAccessor:
     return true;
   }
   llvm_unreachable("Unhandled SILFunctionTypeRepresentation in switch.");
@@ -225,6 +230,7 @@ convertRepresentation(FunctionTypeRepresentation rep) {
     return SILFunctionTypeRepresentation::Thin;
   case FunctionTypeRepresentation::CFunctionPointer:
     return SILFunctionTypeRepresentation::CFunctionPointer;
+    return SILFunctionTypeRepresentation::Thin;
   }
   llvm_unreachable("Unhandled FunctionTypeRepresentation!");
 }
@@ -245,6 +251,7 @@ convertRepresentation(SILFunctionTypeRepresentation rep) {
   case SILFunctionTypeRepresentation::ObjCMethod:
   case SILFunctionTypeRepresentation::WitnessMethod:
   case SILFunctionTypeRepresentation::Closure:
+  case SILFunctionTypeRepresentation::KeyPathAccessor:
     return None;
   }
   llvm_unreachable("Unhandled SILFunctionTypeRepresentation!");
@@ -264,6 +271,7 @@ constexpr bool canBeCalledIndirectly(SILFunctionTypeRepresentation rep) {
   case SILFunctionTypeRepresentation::ObjCMethod:
   case SILFunctionTypeRepresentation::Method:
   case SILFunctionTypeRepresentation::WitnessMethod:
+  case SILFunctionTypeRepresentation::KeyPathAccessor:
     return true;
   }
 
@@ -285,6 +293,7 @@ template <typename Repr> constexpr bool shouldStoreClangType(Repr repr) {
   case SILFunctionTypeRepresentation::Method:
   case SILFunctionTypeRepresentation::WitnessMethod:
   case SILFunctionTypeRepresentation::Closure:
+  case SILFunctionTypeRepresentation::KeyPathAccessor:
     return false;
   }
   llvm_unreachable("Unhandled SILFunctionTypeRepresentation.");
@@ -395,6 +404,7 @@ public:
     case SILFunctionTypeRepresentation::Thin:
     case SILFunctionTypeRepresentation::CFunctionPointer:
     case SILFunctionTypeRepresentation::Closure:
+    case SILFunctionTypeRepresentation::KeyPathAccessor:
       return false;
     case SILFunctionTypeRepresentation::ObjCMethod:
     case SILFunctionTypeRepresentation::Method:
@@ -633,6 +643,7 @@ SILFunctionLanguage getSILFunctionLanguage(SILFunctionTypeRepresentation rep) {
   case SILFunctionTypeRepresentation::Method:
   case SILFunctionTypeRepresentation::WitnessMethod:
   case SILFunctionTypeRepresentation::Closure:
+  case SILFunctionTypeRepresentation::KeyPathAccessor:
     return SILFunctionLanguage::Swift;
   }
 
@@ -755,6 +766,7 @@ public:
     case Representation::Thin:
     case Representation::CFunctionPointer:
     case Representation::Closure:
+    case Representation::KeyPathAccessor:
       return false;
     case Representation::ObjCMethod:
     case Representation::Method:
@@ -778,6 +790,7 @@ public:
     case Representation::WitnessMethod:
     case Representation::Closure:
     case SILFunctionTypeRepresentation::CXXMethod:
+    case Representation::KeyPathAccessor:
       return false;
     }
     llvm_unreachable("Unhandled Representation in switch.");

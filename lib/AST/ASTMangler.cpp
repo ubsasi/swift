@@ -1872,6 +1872,9 @@ void ASTMangler::appendImplFunctionType(SILFunctionType *fn,
     case SILFunctionTypeRepresentation::WitnessMethod:
       OpArgs.push_back('W');
       break;
+    case SILFunctionTypeRepresentation::KeyPathAccessor:
+      OpArgs.push_back('P');
+      break;
   }
 
   // Coroutine kind.  This is mangled in all pointer auth modes.

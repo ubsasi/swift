@@ -2544,6 +2544,7 @@ TypeResolver::resolveAttributedType(TypeAttributes &attrs, TypeRepr *repr,
                       SILFunctionType::Representation::ObjCMethod)
                 .Case("witness_method",
                       SILFunctionType::Representation::WitnessMethod)
+                .Case("keypath_accessor", SILFunctionType::Representation::KeyPathAccessor)
                 .Default(None);
         if (!parsedRep) {
           diagnoseInvalid(repr, attrs.getLoc(TAK_convention),

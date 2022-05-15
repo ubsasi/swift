@@ -5785,6 +5785,9 @@ public:
       case SILFunctionType::Representation::Closure:
         Printer << "closure";
         break;
+      case SILFunctionType::Representation::KeyPathAccessor:
+        Printer << "keypath_accessor";
+        break;
       }
       Printer << ")";
       Printer.printStructurePost(PrintStructureKind::BuiltinAttribute);
@@ -5868,6 +5871,9 @@ public:
         break;
       case SILFunctionType::Representation::Closure:
         Printer << "closure";
+        break;
+      case SILFunctionType::Representation::KeyPathAccessor:
+        Printer << "keypath_accessor";
         break;
       }
       Printer << ")";

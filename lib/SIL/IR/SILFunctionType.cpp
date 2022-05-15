@@ -2359,6 +2359,7 @@ static CanSILFunctionType getNativeSILFunctionType(
   case SILFunctionType::Representation::Thick:
   case SILFunctionType::Representation::Method:
   case SILFunctionType::Representation::Closure:
+  case SILFunctionType::Representation::KeyPathAccessor:
   case SILFunctionType::Representation::WitnessMethod: {
     switch (origConstant ? origConstant->kind : SILDeclRef::Kind::Func) {
     case SILDeclRef::Kind::Initializer:
@@ -4469,6 +4470,7 @@ TypeConverter::getLoweredFormalTypes(SILDeclRef constant,
   case SILFunctionTypeRepresentation::Method:
   case SILFunctionTypeRepresentation::Closure:
   case SILFunctionTypeRepresentation::WitnessMethod:
+  case SILFunctionTypeRepresentation::KeyPathAccessor:
     // Native functions don't need bridging.
     bridgedParams.append(methodParams.begin(), methodParams.end());
     bridgedResultType = resultType;

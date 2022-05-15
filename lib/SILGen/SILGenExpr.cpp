@@ -1671,6 +1671,7 @@ static ManagedValue convertFunctionRepresentation(SILGenFunction &SGF,
     case SILFunctionType::Representation::ObjCMethod:
     case SILFunctionType::Representation::WitnessMethod:
     case SILFunctionType::Representation::CXXMethod:
+    case SILFunctionType::Representation::KeyPathAccessor:
       llvm_unreachable("should not do function conversion from method rep");
     }
     llvm_unreachable("bad representation");
@@ -1701,6 +1702,7 @@ static ManagedValue convertFunctionRepresentation(SILGenFunction &SGF,
     case SILFunctionType::Representation::ObjCMethod:
     case SILFunctionType::Representation::WitnessMethod:
     case SILFunctionType::Representation::CXXMethod:
+    case SILFunctionType::Representation::KeyPathAccessor:
       llvm_unreachable("should not do function conversion from method rep");
     }
     llvm_unreachable("bad representation");

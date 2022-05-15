@@ -278,6 +278,7 @@ enum class SILFunctionTypeRepresentation : uint8_t {
   WitnessMethod,
   Closure,
   CXXMethod,
+  KeyPathAccessor,
 };
 using SILFunctionTypeRepresentationField = BCFixed<4>;
 

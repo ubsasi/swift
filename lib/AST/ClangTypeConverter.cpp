@@ -223,6 +223,7 @@ const clang::Type *ClangTypeConverter::getFunctionType(
   case SILFunctionType::Representation::ObjCMethod:
   case SILFunctionType::Representation::WitnessMethod:
   case SILFunctionType::Representation::Closure:
+  case SILFunctionType::Representation::KeyPathAccessor:
     llvm_unreachable("Expected a C-compatible representation.");
   }
   llvm_unreachable("unhandled representation!");

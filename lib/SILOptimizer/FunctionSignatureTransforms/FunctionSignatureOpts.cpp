@@ -85,6 +85,7 @@ static bool isSpecializableRepresentation(SILFunctionTypeRepresentation Rep,
   case SILFunctionTypeRepresentation::Thick:
   case SILFunctionTypeRepresentation::CFunctionPointer:
   case SILFunctionTypeRepresentation::CXXMethod:
+  case SILFunctionTypeRepresentation::KeyPathAccessor:
     return true;
   case SILFunctionTypeRepresentation::WitnessMethod:
     return OptForPartialApply;

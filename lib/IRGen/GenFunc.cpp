@@ -533,6 +533,7 @@ const TypeInfo *TypeConverter::convertFunctionType(SILFunctionType *T) {
   case SILFunctionType::Representation::ObjCMethod:
   case SILFunctionType::Representation::CFunctionPointer:
   case SILFunctionType::Representation::Closure:
+  case SILFunctionType::Representation::KeyPathAccessor:
     return ThinFuncTypeInfo::create(CanSILFunctionType(T),
                                     IGM.FunctionPtrTy,
                                     IGM.getPointerSize(),
@@ -588,6 +589,7 @@ getFuncSignatureInfoForLowered(IRGenModule &IGM, CanSILFunctionType type) {
   case SILFunctionType::Representation::WitnessMethod:
   case SILFunctionType::Representation::ObjCMethod:
   case SILFunctionType::Representation::Closure:
+  case SILFunctionType::Representation::KeyPathAccessor:
     return ti.as<ThinFuncTypeInfo>();
   case SILFunctionType::Representation::Thick:
     return ti.as<FuncTypeInfo>();

@@ -136,6 +136,7 @@ getSILFunctionTypeRepresentationString(SILFunctionType::Representation value) {
   case SILFunctionType::Representation::ObjCMethod: return "objc_method";
   case SILFunctionType::Representation::WitnessMethod: return "witness_method";
   case SILFunctionType::Representation::Closure: return "closure";
+  case SILFunctionType::Representation::KeyPathAccessor: return "keypath_accessor";
   }
 
   llvm_unreachable("Unhandled SILFunctionTypeRepresentation in switch.");
