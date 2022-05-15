@@ -1,0 +1,28 @@
+// RUN: %target-swift-frontend -emit-ir %s | %FileCheck %s
+
+sil_stage canonical
+import Swift
+
+public struct Blah {
+  public subscript<T>(x: T) -> T { get }
+}
+
+
+sil @$generic_computed_property_indices : $@convention(method) <T> (@in_guaranteed T, Blah) -> @out T
+
+// CHECK: define {{.*}} swiftcc void @"$generic_computed_property_indices_TK"(
+// CHECK-SAME: %swift.opaque* noalias nocapture sret(%swift.opaque) %0,
+// CHECK-SAME: %T27convention_keypath_accessor4BlahV* noalias nocapture %1,
+// CHECK-SAME: i8* %2, i64 %3)
+sil public [thunk] @$generic_computed_property_indices_TK : $@convention(keypath_accessor) <T where T : Hashable> (@in_guaranteed Blah, @in_guaranteed T) -> @out T {
+bb0(%0 : $*T, %cur_val : $*Blah, %index : $*T):
+  %3 = load %cur_val : $*Blah
+  %4 = alloc_stack $T
+  %5 = function_ref @$generic_computed_property_indices : $@convention(method) <τ_0_0> (@in_guaranteed τ_0_0, Blah) -> @out τ_0_0
+  %6 = apply %5<T>(%4, %index, %3) : $@convention(method) <τ_0_0> (@in_guaranteed τ_0_0, Blah) -> @out τ_0_0
+  copy_addr [take] %4 to [initialization] %0 : $*T
+  dealloc_stack %4 : $*T
+  %7 = tuple ()
+  return %7 : $()
+}
+
