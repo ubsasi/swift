@@ -15,9 +15,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "GenericRequirement.h"
 #include "swift/AST/ExtInfo.h"
-#include "llvm/Support/ErrorHandling.h"
 #define DEBUG_TYPE "irgensil"
 
 #include "swift/AST/ASTContext.h"
@@ -2052,13 +2050,30 @@ static void emitEntryPointArgumentsNativeCC(IRGenSILFunction &IGF,
       enumerateGenericSignatureRequirements(genericSig,
         [&](GenericRequirement reqt) { requirements.push_back(reqt); });
     }
-    auto componentArgsBufSize = allParamValues.takeLast();
-    auto componentArgsBuf = allParamValues.takeLast();
+    llvm::Value *componentArgsBufSize = allParamValues.takeLast();
+    llvm::Value *componentArgsBuf = allParamValues.takeLast();
+
     bool hasSubscriptIndices;
     switch (funcTy->getRepresentation()) {
-    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter: {
       hasSubscriptIndices = params.size() >= 2;
+      if (hasSubscriptIndices) {
+        SILArgument *indicesTuple = params.back();
+        unsigned indicesTupleIdx = 1;
+        params = params.drop_back();
+        bindParameter(IGF, *emission, indicesTupleIdx, indicesTuple,
+                      conv.getSILArgumentType(
+                        indicesTupleIdx, IGF.IGM.getMaximalTypeExpansionContext()),
+                      [&](unsigned index, unsigned size) {
+                        assert(index == 1 && "unepxected index in keypath getter argument");
+                        assert(size == 1 && "unepxected size in keypath getter argument");
+                        Explosion indicesTemp;
+                        indicesTemp.add(componentArgsBuf);
+                        return indicesTemp;
+                      });
+      }
       break;
+    }
     case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
       hasSubscriptIndices = params.size() >= 3;
       break;
@@ -2091,7 +2106,8 @@ static void emitEntryPointArgumentsNativeCC(IRGenSILFunction &IGF,
 
   // Bind polymorphic arguments.  This can only be done after binding
   // all the value parameters.
-  if (hasPolymorphicParameters(funcTy)) {
+  if (hasPolymorphicParameters(funcTy)
+      && !isKeyPathAccessorRepresentation(funcTy->getRepresentation())) {
     emitPolymorphicParameters(
         IGF, *IGF.CurSILFn, *emission, &witnessMetadata,
         [&](unsigned paramIndex) -> llvm::Value * {
