@@ -5,6 +5,91 @@ _**Note:** This is in reverse chronological order, so newer entries are added to
 
 ## Swift 5.7
 
+* [SE-0338][]:
+
+  Non-isolated async functions now always execute on the global concurrent pool,
+  so calling a non-isolated async function from actor-isolated code will leave
+  the actor. For example:
+
+  ```swift
+  class C { }
+
+  func f(_: C) async { /* always executes on the global concurrent pool */ }
+
+  actor A {
+    func g(c: C) async {
+      /* always executes on the actor */
+      print("on the actor")
+
+      await f(c)
+    }
+  }
+  ```
+
+  Prior to this change, the call from `f` to `g` might have started execution of
+  `g` on the actor, which could lead to actors being busy longer than strictly
+  necessary. Now, the non-isolated async function will always hop to the global
+  cooperative pool, not run on the actor. This can result in a behavior change
+  for programs that assumed that a non-isolated async function called from a
+  `@MainActor` context will be executed on the main actor, although such
+  programs were already technically incorrect.
+
+  Additionally, when leaving an actor to execution on the global cooperative
+  pool, `Sendable` checking will be performed, so the compiler will emit a
+  diagnostic in the call to `f` if `c` is not of `Sendable` type.
+
+* [SE-0353][]:
+
+  Protocols with primary associated types can now be used in existential types,
+  enabling same-type constraints on those associated types.
+
+  ```
+  let strings: any Collection<String> = [ "Hello" ]
+  ```
+
+  Note that language features requiring runtime support like dynamic casts
+  (`is`, `as?`, `as!`), as well as generic usages of parameterized existentials
+  in generic types (e.g. `Array<any Collection<Int>>`) involve additional
+  availability checks to use. Back-deploying usages in generic position can be
+  worked around with a generic type-erasing wrapper struct, which is now much
+  simpler to implement:
+
+  ```swift
+  struct AnyCollection<T> {
+    var wrapped: any Collection<T>
+  }
+
+  let arrayOfCollections: [AnyCollection<T>] = [ /**/ ]
+  ```
+  
+* [SE-0329][]:
+  New types representing time and clocks were introduced. This includes a protocol `Clock` defining clocks which allow for defining a concept of now and a way to wake up after a given instant. Additionally a new protocol `InstantProtocol` for defining instants in time was added. Furthermore a new protocol `DurationProtocol` was added to define an elapsed duration between two given `InstantProtocol` types. Most commonly the `Clock` types for general use are the `SuspendingClock` and `ContinuousClock` which represent the most fundamental clocks for the system. The `SuspendingClock` type does not progress while the machine is suspended whereas the `ContinuousClock` progresses no matter the state of the machine. 
+
+* [SE-0309][]:
+
+  Protocols with associated types and `Self` requirements can now be used as the
+  types of values with the `any` keyword.
+
+  Protocol methods that return associated types can be called on an `any` type;
+  the result is type-erased to the associated type's upper bound, which is another
+  `any` type having the same constraints as the associated type. For example:
+
+  ```swift
+    func delayedHello() async throws {
+      try await Task.sleep(until: .now + .milliseconds(123), clock: .continuous)
+      print("hello delayed world")
+    }
+  ```
+
+  `Clock` also has methods to measure the elapsed duration of the execution of work. In the case of the `SuspendingClock` and `ContinuousClock` this measures with high resolution and is suitable for benchmarks.
+
+  ```swift
+  let clock = ContinuousClock()
+  let elapsed = clock.measure {
+    someLongRunningWork()
+  }
+  ```
+
 * References to `optional` methods on a protocol metatype, as well as references to dynamically looked up methods on the `AnyObject` metatype are now supported. These references always have the type of a function that accepts a single argument and returns an optional value of function type:
 
   ```swift
@@ -9257,12 +9342,14 @@ Swift 1.0
 [SE-0326]: <https://github.com/apple/swift-evolution/blob/main/proposals/0326-extending-multi-statement-closure-inference.md>
 [SE-0327]: <https://github.com/apple/swift-evolution/blob/main/proposals/0327-actor-initializers.md>
 [SE-0328]: <https://github.com/apple/swift-evolution/blob/main/proposals/0328-structural-opaque-result-types.md>
+[SE-0329]: <https://github.com/apple/swift-evolution/blob/main/proposals/0329-clock-instant-duration.md>
 [SE-0331]: <https://github.com/apple/swift-evolution/blob/main/proposals/0331-remove-sendable-from-unsafepointer.md>
 [SE-0333]: <https://github.com/apple/swift-evolution/blob/main/proposals/0333-with-memory-rebound.md>
 [SE-0334]: <https://github.com/apple/swift-evolution/blob/main/proposals/0334-pointer-usability-improvements.md>
 [SE-0335]: <https://github.com/apple/swift-evolution/blob/main/proposals/0335-existential-any.md>
 [SE-0336]: <https://github.com/apple/swift-evolution/blob/main/proposals/0336-distributed-actor-isolation.md>
 [SE-0337]: <https://github.com/apple/swift-evolution/blob/main/proposals/0337-support-incremental-migration-to-concurrency-checking.md>
+[SE-0338]: <https://github.com/apple/swift-evolution/blob/main/proposals/0338-clarify-execution-non-actor-async.md>
 [SE-0340]: <https://github.com/apple/swift-evolution/blob/main/proposals/0340-swift-noasync.md>
 [SE-0341]: <https://github.com/apple/swift-evolution/blob/main/proposals/0341-opaque-parameters.md>
 [SE-0343]: <https://github.com/apple/swift-evolution/blob/main/proposals/0343-top-level-concurrency.md>
