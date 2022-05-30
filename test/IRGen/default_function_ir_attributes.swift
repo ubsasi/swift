@@ -118,10 +118,6 @@ func test_computed_key_path_sil_thunks() -> KeyPath<S, Int> {
   \S.computed
 }
 
-//   helper function: IR-generated key path getter
-// CHECK-LABEL: define {{.*}} swiftcc {{.*}} @keypath_get(
-// CHECK-SAME: [[ATTRS_SIMPLE]]
-
 //   helper function: IR-generated key path setter
 // CHECK-LABEL: define {{.*}} swiftcc {{.*}} @keypath_set(
 // CHECK-SAME: [[ATTRS_SIMPLE]]
