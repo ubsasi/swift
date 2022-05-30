@@ -2758,7 +2758,7 @@ static PreparedArguments
 loadIndexValuesForKeyPathComponent(SILGenFunction &SGF, SILLocation loc,
                                    AbstractStorageDecl *storage,
                                    ArrayRef<IndexTypePair> indexes,
-                                   SILValue pointer) {
+                                   SILValue pointer, bool skipTupleCast = false) {
   // If not a subscript, do nothing.
   if (!isa<SubscriptDecl>(storage))
     return PreparedArguments();
@@ -2779,9 +2779,14 @@ loadIndexValuesForKeyPathComponent(SILGenFunction &SGF, SILLocation loc,
     SGF.getLoweredType(
       AnyFunctionType::composeTuple(SGF.getASTContext(), indexParams));
 
-  auto addr = SGF.B.createPointerToAddress(loc, pointer,
-                                           indexLoweredTy.getAddressType(),
-                                           /*isStrict*/ false);
+  SILValue addr;
+  if (skipTupleCast) {
+    addr = pointer;
+  } else {
+    addr = SGF.B.createPointerToAddress(loc, pointer,
+                                        indexLoweredTy.getAddressType(),
+                                        /*isStrict*/ false);
+  }
 
   for (unsigned i : indices(indexes)) {
     SILValue eltAddr = addr;
@@ -2857,14 +2862,21 @@ static SILFunction *getOrCreateKeyPathGetter(SILGenModule &SGM,
     SmallVector<SILParameterInfo, 2> params;
     params.push_back({loweredBaseTy, paramConvention});
     auto &C = SGM.getASTContext();
-    if (!indexes.empty())
-      params.push_back({C.getUnsafeRawPointerType()->getCanonicalType(),
-                        ParameterConvention::Direct_Unowned});
-    
+
+    if (!indexes.empty()) {
+      SmallVector<AnyFunctionType::Param, 8> indicesElements;
+      for (auto &elt : indexes) {
+        indicesElements.emplace_back(elt.first);
+      }
+      auto indexCanTy = AnyFunctionType::composeTuple(C, indicesElements)->getCanonicalType();
+      params.push_back({indexCanTy, paramConvention});
+    }
+
     SILResultInfo result(loweredPropTy, ResultConvention::Indirect);
     
     return SILFunctionType::get(genericSig,
-      SILFunctionType::ExtInfo::getThin(),
+      SILFunctionType::ExtInfo().withRepresentation(
+        SILFunctionType::Representation::KeyPathAccessorGetter),
       SILCoroutineKind::None,
       ParameterConvention::Direct_Unowned,
       params, {}, result, None,
@@ -2917,6 +2929,8 @@ static SILFunction *getOrCreateKeyPathGetter(SILGenModule &SGM,
   if (!indexes.empty()) {
     auto indexArgTy = signature->getParameters()[1].getSILStorageType(
         SGM.M, signature, subSGF.F.getTypeExpansionContext());
+    if (genericEnv)
+      indexArgTy = genericEnv->mapTypeIntoContext(SGM.M, indexArgTy);
     indexPtrArg = entry->createFunctionArgument(indexArgTy);
   }
   
@@ -2927,7 +2941,7 @@ static SILFunction *getOrCreateKeyPathGetter(SILGenModule &SGM,
                                                baseType, subs);
   auto subscriptIndices =
     loadIndexValuesForKeyPathComponent(subSGF, loc, property,
-                                       indexes, indexPtrArg);
+                                       indexes, indexPtrArg, true);
 
   ManagedValue resultSubst;
   {

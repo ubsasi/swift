@@ -286,8 +286,8 @@ void verifyKeyPathComponent(SILModule &M,
       auto substGetterType = getter->getLoweredFunctionType()->substGenericArgs(
           M, patternSubs, TypeExpansionContext::minimal());
       require(substGetterType->getRepresentation() ==
-                SILFunctionTypeRepresentation::Thin,
-              "getter should be a thin function");
+                SILFunctionTypeRepresentation::KeyPathAccessorGetter,
+              "getter should be a keypath getter convention");
       
       require(substGetterType->getNumParameters() == 1 + hasIndices,
               "getter should have one parameter");
@@ -302,13 +302,8 @@ void verifyKeyPathComponent(SILModule &M,
       if (hasIndices) {
         auto indicesParam = substGetterType->getParameters()[1];
         require(indicesParam.getConvention()
-                  == ParameterConvention::Direct_Unowned,
-                "indices pointer should be trivial");
-        require(
-            indicesParam
-                    .getArgumentType(M, substGetterType, typeExpansionContext)
-                    ->isUnsafeRawPointer(),
-            "indices pointer should be an UnsafeRawPointer");
+                  == ParameterConvention::Indirect_In_Guaranteed,
+                "indices should be in_guaranteed");
       }
 
       require(substGetterType->getNumResults() == 1,
