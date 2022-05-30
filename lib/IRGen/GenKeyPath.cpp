@@ -1109,9 +1109,7 @@ emitKeyPathComponent(IRGenModule &IGM,
 
     // Push the accessors, possibly thunked to marshal generic environment.
     fields.addCompactFunctionReference(
-      getAccessorForComputedComponent(IGM, component, Getter,
-                                      genericEnv, requirements,
-                                      hasSubscriptIndices));
+      IGM.getAddrOfSILFunction(component.getComputedPropertyGetter(), NotForDefinition));
     if (settable)
       fields.addCompactFunctionReference(
         getAccessorForComputedComponent(IGM, component, Setter,
