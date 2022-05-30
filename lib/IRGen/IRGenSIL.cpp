@@ -2050,42 +2050,61 @@ static void emitEntryPointArgumentsNativeCC(IRGenSILFunction &IGF,
       enumerateGenericSignatureRequirements(genericSig,
         [&](GenericRequirement reqt) { requirements.push_back(reqt); });
     }
-    llvm::Value *componentArgsBufSize = allParamValues.takeLast();
-    llvm::Value *componentArgsBuf = allParamValues.takeLast();
 
-    bool hasSubscriptIndices;
+    unsigned baseIndexOfIndicesArguments;
+    unsigned numberOfIndicesArguments;
     switch (funcTy->getRepresentation()) {
-    case SILFunctionTypeRepresentation::KeyPathAccessorGetter: {
-      hasSubscriptIndices = params.size() >= 2;
-      if (hasSubscriptIndices) {
-        SILArgument *indicesTuple = params.back();
-        unsigned indicesTupleIdx = 1;
-        params = params.drop_back();
-        bindParameter(IGF, *emission, indicesTupleIdx, indicesTuple,
-                      conv.getSILArgumentType(
-                        indicesTupleIdx, IGF.IGM.getMaximalTypeExpansionContext()),
-                      [&](unsigned index, unsigned size) {
-                        assert(index == 1 && "unepxected index in keypath getter argument");
-                        assert(size == 1 && "unepxected size in keypath getter argument");
-                        Explosion indicesTemp;
-                        auto castedIndices =
-                          IGF.Builder.CreateBitCast(
-                            componentArgsBuf, IGF.getTypeInfo(indicesTuple->getType()).getStorageType()->getPointerTo());
-                        indicesTemp.add(castedIndices);
-                        return indicesTemp;
-                      });
-      }
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+      baseIndexOfIndicesArguments = 1;
+      numberOfIndicesArguments = 1;
       break;
-    }
     case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
-      hasSubscriptIndices = params.size() >= 3;
+      baseIndexOfIndicesArguments = 2;
+      numberOfIndicesArguments = 1;
       break;
     case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+      baseIndexOfIndicesArguments = 0;
+      numberOfIndicesArguments = 2;
+      break;
     case SILFunctionTypeRepresentation::KeyPathAccessorHash:
-      hasSubscriptIndices = true;
+      baseIndexOfIndicesArguments = 0;
+      numberOfIndicesArguments = 1;
       break;
     default:
       llvm_unreachable("unhandled keypath accessor representation");
+    }
+
+    llvm::Value *componentArgsBufSize = allParamValues.takeLast();
+    llvm::Value *componentArgsBuf;
+    bool hasSubscriptIndices = params.size() > baseIndexOfIndicesArguments;
+
+    // Bind the indices arguments if present.
+    if (hasSubscriptIndices) {
+      assert(baseIndexOfIndicesArguments + numberOfIndicesArguments == params.size());
+
+      for (unsigned i = 0; i < numberOfIndicesArguments; ++i) {
+        SILArgument *indicesArg = params[baseIndexOfIndicesArguments + i];
+        componentArgsBuf = allParamValues.takeLast();
+        bindParameter(
+            IGF, *emission, baseIndexOfIndicesArguments + i, indicesArg,
+            conv.getSILArgumentType(baseIndexOfIndicesArguments + i,
+                                    IGF.IGM.getMaximalTypeExpansionContext()),
+            [&](unsigned startIndex, unsigned size) {
+              assert(size == 1);
+              Explosion indicesTemp;
+              auto castedIndices =
+                IGF.Builder.CreateBitCast(
+                  componentArgsBuf, IGF.getTypeInfo(indicesArg->getType()).getStorageType()->getPointerTo());
+              indicesTemp.add(castedIndices);
+              return indicesTemp;
+            });
+      }
+      params = params.drop_back(numberOfIndicesArguments);
+    } else {
+      // Discard the trailing unbound LLVM IR arguments.
+      for (unsigned i = 0; i < numberOfIndicesArguments; ++i) {
+        componentArgsBuf = allParamValues.takeLast();
+      }
     }
     bindPolymorphicArgumentsFromComponentIndices(IGF, genericEnv,
                                                  requirements,
