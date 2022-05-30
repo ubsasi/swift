@@ -185,7 +185,7 @@ sil_vtable C2 {}
 // CHECK-SAME: <i32 0x0240_0000>,
 // CHECK-SAME: @"$s8keypaths1CCMn"
 // CHECK-SAME: void (%TSi*, %T8keypaths1CC**, i8*, i64)* @l_get
-// CHECK-SAME: void (%TSi*, %T8keypaths1CC**)* @l_set{{.*}}
+// CHECK-SAME: void (%TSi*, %T8keypaths1CC**, i8*, i64)* @l_set{{.*}}
 
 // -- %m: computed
 // CHECK: [[KP_M:@keypath(\..*)?]] = private global <{ {{.*}} }> <{
@@ -198,7 +198,7 @@ sil_vtable C2 {}
 // CHECK-SAME: <i32 0x02e0_0000>,
 // CHECK-SAME: [[WORD]]
 // CHECK-SAME: void (%swift.function*, %T8keypaths1SV*, i8*, i64)* {{.*}}@m_get
-// CHECK-SAME: void (%swift.function*, %T8keypaths1SV*)* {{.*}}@m_set{{.*}}
+// CHECK-SAME: void (%swift.function*, %T8keypaths1SV*, i8*, i64)* {{.*}}@m_set{{.*}}
 
 // -- %m2: reabstracted
 // Note: the contents here aren't interesting. The test triggered infinite
@@ -337,9 +337,9 @@ entry:
   %h = keypath $KeyPath<C, Int>, (root $C; stored_property #C.z : $S; stored_property #S.x : $Int)
 
   %k = keypath $KeyPath<S, Int>, (root $S; gettable_property $Int, id @k_id : $@convention(thin) () -> (), getter @k_get : $@convention(keypath_accessor_getter) (@in_guaranteed S) -> @out Int)
-  %l = keypath $KeyPath<C, Int>, (root $C; settable_property $Int, id #C.w!getter, getter @l_get : $@convention(keypath_accessor_getter) (@in_guaranteed C) -> @out Int, setter @l_set : $@convention(thin) (@in_guaranteed Int, @in_guaranteed C) -> ())
-  %m = keypath $KeyPath<S, () -> ()>, (root $S; settable_property $() -> (), id ##S.reabstracted, getter @m_get : $@convention(keypath_accessor_getter) (@in_guaranteed S) -> @out @callee_guaranteed @substituted <A> () -> @out A for <()>, setter @m_set : $@convention(thin) (@in_guaranteed @callee_guaranteed @substituted <A> () -> @out A for <()>, @inout S) -> ())
-  %m2 = keypath $KeyPath<C2, () -> ()>, (root $C2; settable_property $() -> (), id ##C2.reabstracted, getter @m2_get : $@convention(keypath_accessor_getter) (@in_guaranteed C2) -> @out @callee_guaranteed @substituted <A> () -> @out A for <()>, setter @m2_set : $@convention(thin) (@in_guaranteed @callee_guaranteed @substituted <A> () -> @out A for <()>, @inout C2) -> ())
+  %l = keypath $KeyPath<C, Int>, (root $C; settable_property $Int, id #C.w!getter, getter @l_get : $@convention(keypath_accessor_getter) (@in_guaranteed C) -> @out Int, setter @l_set : $@convention(keypath_accessor_setter) (@in_guaranteed Int, @in_guaranteed C) -> ())
+  %m = keypath $KeyPath<S, () -> ()>, (root $S; settable_property $() -> (), id ##S.reabstracted, getter @m_get : $@convention(keypath_accessor_getter) (@in_guaranteed S) -> @out @callee_guaranteed @substituted <A> () -> @out A for <()>, setter @m_set : $@convention(keypath_accessor_setter) (@in_guaranteed @callee_guaranteed @substituted <A> () -> @out A for <()>, @inout S) -> ())
+  %m2 = keypath $KeyPath<C2, () -> ()>, (root $C2; settable_property $() -> (), id ##C2.reabstracted, getter @m2_get : $@convention(keypath_accessor_getter) (@in_guaranteed C2) -> @out @callee_guaranteed @substituted <A> () -> @out A for <()>, setter @m2_set : $@convention(keypath_accessor_setter) (@in_guaranteed @callee_guaranteed @substituted <A> () -> @out A for <()>, @inout C2) -> ())
 
   // CHECK: call %swift.refcounted* @swift_getKeyPath(i8* bitcast ({{.*}} [[KP_T0]] to i8*), i8* undef)
   %t0 = keypath $KeyPath<T, Int>, (root $T; stored_property #T.a : $(Int, String); tuple_element #0 : $Int)
@@ -361,7 +361,7 @@ bb0(%0 : $*Int, %1 : $*C):
   unreachable
 }
 
-sil @l_set : $@convention(thin) (@in_guaranteed Int, @in_guaranteed C) -> () {
+sil @l_set : $@convention(keypath_accessor_setter) (@in_guaranteed Int, @in_guaranteed C) -> () {
 bb0(%0 : $*Int, %1 : $*C):
   unreachable
 }
@@ -371,13 +371,13 @@ bb0(%0 : $*@callee_guaranteed @substituted <A> () -> @out A for <()>, %1 : $*S):
   unreachable
 }
 
-sil @m_set : $@convention(thin) (@in_guaranteed @callee_guaranteed @substituted <A> () -> @out A for <()>, @inout S) -> () {
+sil @m_set : $@convention(keypath_accessor_setter) (@in_guaranteed @callee_guaranteed @substituted <A> () -> @out A for <()>, @inout S) -> () {
 bb0(%0 : $*@callee_guaranteed @substituted <A> () -> @out A for <()>, %1 : $*S):
   unreachable
 }
 
 sil @m2_get : $@convention(keypath_accessor_getter) (@in_guaranteed C2) -> @out @callee_guaranteed @substituted <A> () -> @out A for <()>
-sil @m2_set : $@convention(thin) (@in_guaranteed @callee_guaranteed @substituted <A> () -> @out A for <()>, @inout C2) -> ()
+sil @m2_set : $@convention(keypath_accessor_setter) (@in_guaranteed @callee_guaranteed @substituted <A> () -> @out A for <()>, @inout C2) -> ()
 
 struct Gen<T, U> {
   var x: T
@@ -443,13 +443,13 @@ entry:
 // CHECK-LABEL: define{{( dllexport)?}}{{( protected)?}} swiftcc void @computed_property_generics
 sil @computed_property_generics : $@convention(thin) <T, U> () -> () {
 entry:
-  %n = keypath $WritableKeyPath<T, U>, <UUU, TTT> (root $TTT; settable_property $UUU, id @n_get : $@convention(keypath_accessor_getter) <UU, TT> (@in_guaranteed TT) -> @out UU, getter @n_get : $@convention(keypath_accessor_getter) <UU, TT> (@in_guaranteed TT) -> @out UU, setter @n_set : $@convention(thin) <UU, TT> (@in_guaranteed UU, @in_guaranteed TT) -> ()) <U, T>
+  %n = keypath $WritableKeyPath<T, U>, <UUU, TTT> (root $TTT; settable_property $UUU, id @n_get : $@convention(keypath_accessor_getter) <UU, TT> (@in_guaranteed TT) -> @out UU, getter @n_get : $@convention(keypath_accessor_getter) <UU, TT> (@in_guaranteed TT) -> @out UU, setter @n_set : $@convention(keypath_accessor_setter) <UU, TT> (@in_guaranteed UU, @in_guaranteed TT) -> ()) <U, T>
 
   return undef : $()
 }
 
 sil @n_get : $@convention(keypath_accessor_getter) <UU, TT> (@in_guaranteed TT) -> @out UU
-sil @n_set : $@convention(thin) <UU, TT> (@in_guaranteed UU, @in_guaranteed TT) -> ()
+sil @n_set : $@convention(keypath_accessor_setter) <UU, TT> (@in_guaranteed UU, @in_guaranteed TT) -> ()
 
 sil @computed_property_indices : $@convention(thin) (C, S, C, S, C, S) -> () {
 entry(%0 : $C, %1 : $S, %2 : $C, %3 : $S, %4 : $C, %5 : $S):
@@ -458,7 +458,7 @@ entry(%0 : $C, %1 : $S, %2 : $C, %3 : $S, %4 : $C, %5 : $S):
     settable_property $C,
       id @o_get : $@convention(keypath_accessor_getter) (@in_guaranteed S, @in_guaranteed Int) -> @out C,
       getter @o_get : $@convention(keypath_accessor_getter) (@in_guaranteed S, @in_guaranteed Int) -> @out C,
-      setter @o_set : $@convention(thin) (@in_guaranteed C, @in_guaranteed S, UnsafeRawPointer) -> (),
+      setter @o_set : $@convention(keypath_accessor_setter) (@in_guaranteed C, @in_guaranteed S, @in_guaranteed Int) -> (),
       indices [%$0 : $C : $C],
       indices_equals @o_equals : $@convention(thin) (UnsafeRawPointer, UnsafeRawPointer) -> Bool,
       indices_hash @o_hash : $@convention(thin) (UnsafeRawPointer) -> Int
@@ -468,7 +468,7 @@ entry(%0 : $C, %1 : $S, %2 : $C, %3 : $S, %4 : $C, %5 : $S):
     settable_property $C,
       id @o_get : $@convention(keypath_accessor_getter) (@in_guaranteed S, @in_guaranteed Int) -> @out C,
       getter @o_get : $@convention(keypath_accessor_getter) (@in_guaranteed S, @in_guaranteed Int) -> @out C,
-      setter @o_set : $@convention(thin) (@in_guaranteed C, @in_guaranteed S, UnsafeRawPointer) -> (),
+      setter @o_set : $@convention(keypath_accessor_setter) (@in_guaranteed C, @in_guaranteed S, @in_guaranteed Int) -> (),
       indices [%$0 : $S : $S, %$1 : $C : $C],
       indices_equals @o_equals : $@convention(thin) (UnsafeRawPointer, UnsafeRawPointer) -> Bool,
       indices_hash @o_hash : $@convention(thin) (UnsafeRawPointer) -> Int
@@ -478,14 +478,14 @@ entry(%0 : $C, %1 : $S, %2 : $C, %3 : $S, %4 : $C, %5 : $S):
     settable_property $C,
       id @o_get : $@convention(keypath_accessor_getter) (@in_guaranteed S, @in_guaranteed Int) -> @out C,
       getter @o_get : $@convention(keypath_accessor_getter) (@in_guaranteed S, @in_guaranteed Int) -> @out C,
-      setter @o_set : $@convention(thin) (@in_guaranteed C, @in_guaranteed S, UnsafeRawPointer) -> (),
+      setter @o_set : $@convention(keypath_accessor_setter) (@in_guaranteed C, @in_guaranteed S, @in_guaranteed Int) -> (),
       indices [%$0 : $S : $S, %$1 : $C : $C],
       indices_equals @o_equals : $@convention(thin) (UnsafeRawPointer, UnsafeRawPointer) -> Bool,
       indices_hash @o_hash : $@convention(thin) (UnsafeRawPointer) -> Int;
     settable_property $S,
       id @r_get : $@convention(keypath_accessor_getter) (@in_guaranteed C, @in_guaranteed Int) -> @out S,
       getter @r_get : $@convention(keypath_accessor_getter) (@in_guaranteed C, @in_guaranteed Int) -> @out S,
-      setter @r_set : $@convention(thin) (@in_guaranteed S, @in_guaranteed C, UnsafeRawPointer) -> (),
+      setter @r_set : $@convention(keypath_accessor_setter) (@in_guaranteed S, @in_guaranteed C, @in_guaranteed Int) -> (),
       indices [%$2 : $S : $S],
       indices_equals @o_equals : $@convention(thin) (UnsafeRawPointer, UnsafeRawPointer) -> Bool,
       indices_hash @o_hash : $@convention(thin) (UnsafeRawPointer) -> Int
@@ -495,12 +495,12 @@ entry(%0 : $C, %1 : $S, %2 : $C, %3 : $S, %4 : $C, %5 : $S):
 }
 
 sil @o_get : $@convention(keypath_accessor_getter) (@in_guaranteed S, @in_guaranteed Int) -> @out C
-sil @o_set : $@convention(thin) (@in_guaranteed C, @in_guaranteed S, UnsafeRawPointer) -> ()
+sil @o_set : $@convention(keypath_accessor_setter) (@in_guaranteed C, @in_guaranteed S, @in_guaranteed Int) -> ()
 sil @o_equals : $@convention(thin) (UnsafeRawPointer, UnsafeRawPointer) -> Bool
 sil @o_hash : $@convention(thin) (UnsafeRawPointer) -> Int
 
 sil @r_get : $@convention(keypath_accessor_getter) (@in_guaranteed C, @in_guaranteed Int) -> @out S
-sil @r_set : $@convention(thin) (@in_guaranteed S, @in_guaranteed C, UnsafeRawPointer) -> ()
+sil @r_set : $@convention(keypath_accessor_setter) (@in_guaranteed S, @in_guaranteed C, @in_guaranteed Int) -> ()
 
 sil @generic_computed_property_indices : $@convention(thin) <A: Hashable, B: Hashable> (@in_guaranteed A, @in_guaranteed B, @in_guaranteed A, @in_guaranteed B, @in_guaranteed A, @in_guaranteed B) -> () {
 entry(%0 : $*A, %1 : $*B, %2 : $*A, %3 : $*B, %4 : $*A, %5 : $*B):
@@ -509,7 +509,7 @@ entry(%0 : $*A, %1 : $*B, %2 : $*A, %3 : $*B, %4 : $*A, %5 : $*B):
     settable_property $Y,
       id @s_get : $@convention(keypath_accessor_getter) <T: Hashable, U: Hashable> (@in_guaranteed T, @in_guaranteed Int) -> @out U,
       getter @s_get : $@convention(keypath_accessor_getter) <T: Hashable, U: Hashable> (@in_guaranteed T, @in_guaranteed Int) -> @out U,
-      setter @s_set : $@convention(thin) <T: Hashable, U: Hashable> (@in_guaranteed U, @in_guaranteed T, UnsafeRawPointer) -> (),
+      setter @s_set : $@convention(keypath_accessor_setter) <T: Hashable, U: Hashable> (@in_guaranteed U, @in_guaranteed T, @in_guaranteed Int) -> (),
       indices [%$0 : $X : $*X],
       indices_equals @s_equals : $@convention(thin) <T: Hashable, U: Hashable> (UnsafeRawPointer, UnsafeRawPointer) -> Bool,
       indices_hash @s_hash : $@convention(thin) <T: Hashable, U: Hashable> (UnsafeRawPointer) -> Int
@@ -519,7 +519,7 @@ entry(%0 : $*A, %1 : $*B, %2 : $*A, %3 : $*B, %4 : $*A, %5 : $*B):
     settable_property $Y,
       id @s_get : $@convention(keypath_accessor_getter) <T: Hashable, U: Hashable> (@in_guaranteed T, @in_guaranteed Int) -> @out U,
       getter @s_get : $@convention(keypath_accessor_getter) <T: Hashable, U: Hashable> (@in_guaranteed T, @in_guaranteed Int) -> @out U,
-      setter @s_set : $@convention(thin) <T: Hashable, U: Hashable> (@in_guaranteed U, @in_guaranteed T, UnsafeRawPointer) -> (),
+      setter @s_set : $@convention(keypath_accessor_setter) <T: Hashable, U: Hashable> (@in_guaranteed U, @in_guaranteed T, @in_guaranteed Int) -> (),
       indices [%$0 : $Y : $*Y, %$1 : $X : $*X],
       indices_equals @s_equals : $@convention(thin) <T: Hashable, U: Hashable> (UnsafeRawPointer, UnsafeRawPointer) -> Bool,
       indices_hash @s_hash : $@convention(thin) <T: Hashable, U: Hashable> (UnsafeRawPointer) -> Int
@@ -529,14 +529,14 @@ entry(%0 : $*A, %1 : $*B, %2 : $*A, %3 : $*B, %4 : $*A, %5 : $*B):
     settable_property $Y,
       id @s_get : $@convention(keypath_accessor_getter) <T: Hashable, U: Hashable> (@in_guaranteed T, @in_guaranteed Int) -> @out U,
       getter @s_get : $@convention(keypath_accessor_getter) <T: Hashable, U: Hashable> (@in_guaranteed T, @in_guaranteed Int) -> @out U,
-      setter @s_set : $@convention(thin) <T: Hashable, U: Hashable> (@in_guaranteed U, @in_guaranteed T, UnsafeRawPointer) -> (),
+      setter @s_set : $@convention(keypath_accessor_setter) <T: Hashable, U: Hashable> (@in_guaranteed U, @in_guaranteed T, @in_guaranteed Int) -> (),
       indices [%$0 : $Y : $*Y, %$1 : $X : $*X],
       indices_equals @s_equals : $@convention(thin) <T: Hashable, U: Hashable> (UnsafeRawPointer, UnsafeRawPointer) -> Bool,
       indices_hash @s_hash : $@convention(thin) <T: Hashable, U: Hashable> (UnsafeRawPointer) -> Int;
     settable_property $X,
       id @v_get : $@convention(keypath_accessor_getter) <T: Hashable, U: Hashable> (@in_guaranteed U, @in_guaranteed Int) -> @out T,
       getter @v_get : $@convention(keypath_accessor_getter) <T: Hashable, U: Hashable> (@in_guaranteed U, @in_guaranteed Int) -> @out T,
-      setter @v_set : $@convention(thin) <T: Hashable, U: Hashable> (@in_guaranteed T, @in_guaranteed U, UnsafeRawPointer) -> (),
+      setter @v_set : $@convention(keypath_accessor_setter) <T: Hashable, U: Hashable> (@in_guaranteed T, @in_guaranteed U, @in_guaranteed Int) -> (),
       indices [%$2 : $Y : $*Y],
       indices_equals @s_equals : $@convention(thin) <T: Hashable, U: Hashable> (UnsafeRawPointer, UnsafeRawPointer) -> Bool,
       indices_hash @s_hash : $@convention(thin) <T: Hashable, U: Hashable> (UnsafeRawPointer) -> Int
@@ -573,9 +573,9 @@ bb0:
 }
 
 sil @s_get : $@convention(keypath_accessor_getter) <A: Hashable, B: Hashable> (@in_guaranteed A, @in_guaranteed Int) -> @out B
-sil @s_set : $@convention(thin) <A: Hashable, B: Hashable> (@in_guaranteed B, @in_guaranteed A, UnsafeRawPointer) -> ()
+sil @s_set : $@convention(keypath_accessor_setter) <A: Hashable, B: Hashable> (@in_guaranteed B, @in_guaranteed A, @in_guaranteed Int) -> ()
 sil @s_equals : $@convention(thin) <A: Hashable, B: Hashable> (UnsafeRawPointer, UnsafeRawPointer) -> Bool
 sil @s_hash : $@convention(thin) <A: Hashable, B: Hashable> (UnsafeRawPointer) -> Int
 
 sil @v_get : $@convention(keypath_accessor_getter) <A: Hashable, B: Hashable> (@in_guaranteed B, @in_guaranteed Int) -> @out A
-sil @v_set : $@convention(thin) <A: Hashable, B: Hashable> (@in_guaranteed A, @in_guaranteed B, UnsafeRawPointer) -> ()
+sil @v_set : $@convention(keypath_accessor_setter) <A: Hashable, B: Hashable> (@in_guaranteed A, @in_guaranteed B, @in_guaranteed Int) -> ()
