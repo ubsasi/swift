@@ -99,6 +99,73 @@ irgen::bindPolymorphicArgumentsFromComponentIndices(IRGenFunction &IGF,
 }
 
 static llvm::Function *
+getAccessorThunkIfRequired(IRGenModule &IGM,
+                           const KeyPathPatternComponent &component,
+                           KeyPathAccessor whichAccessor) {
+  SILFunction *accessor;
+  switch (whichAccessor) {
+  case Getter:
+    accessor = component.getComputedPropertyGetter();
+    break;
+  case Setter:
+    accessor = component.getComputedPropertySetter();
+    break;
+  case Equals:
+    accessor = component.getSubscriptIndexEquals();
+    break;
+  case Hash:
+    accessor = component.getSubscriptIndexHash();
+    break;
+  }
+  // If the accessor is locally available, we can use it as is.
+  // If it's only externally available, we need a local thunk to relative-
+  // reference.
+  if (!isAvailableExternally(accessor->getLinkage()) &&
+      &IGM == IGM.IRGen.getGenModule(accessor)) {
+    return IGM.getAddrOfSILFunction(accessor, NotForDefinition);
+  }
+
+  const char *thunkName;
+  switch (whichAccessor) {
+  case Getter:
+    thunkName = "keypath_get";
+    break;
+  case Setter:
+    thunkName = "keypath_set";
+    break;
+  case Equals:
+    thunkName = "keypath_equals";
+    break;
+  case Hash:
+    thunkName = "keypath_hash";
+    break;
+  }
+
+  auto accessorFn = IGM.getAddrOfSILFunction(accessor, NotForDefinition);
+  auto accessorThunk = llvm::Function::Create(accessorFn->getFunctionType(),
+    llvm::GlobalValue::PrivateLinkage, thunkName, IGM.getModule());
+  accessorThunk->setAttributes(IGM.constructInitialAttributes());
+  accessorThunk->setCallingConv(IGM.SwiftCC);
+  accessorThunk->setAttributes(accessorFn->getAttributes());
+  {
+    IRGenFunction IGF(IGM, accessorThunk);
+    if (IGM.DebugInfo)
+      IGM.DebugInfo->emitArtificialFunction(IGF, accessorThunk);
+    Explosion forwardedArgs = IGF.collectParameters();
+    auto fnPtr =
+        FunctionPointer::forDirect(IGM, accessorFn, /*secondaryValue*/ nullptr,
+                                   accessor->getLoweredFunctionType());
+    auto call = IGF.Builder.CreateCall(fnPtr, forwardedArgs.claimAll());
+    if (call->getType()->isVoidTy())
+      IGF.Builder.CreateRetVoid();
+    else
+      IGF.Builder.CreateRet(call);
+  }
+  
+  return accessorThunk;
+}
+
+static llvm::Function *
 getAccessorForComputedComponent(IRGenModule &IGM,
                                 const KeyPathPatternComponent &component,
                                 KeyPathAccessor whichAccessor,
@@ -1109,7 +1176,7 @@ emitKeyPathComponent(IRGenModule &IGM,
 
     // Push the accessors, possibly thunked to marshal generic environment.
     fields.addCompactFunctionReference(
-      IGM.getAddrOfSILFunction(component.getComputedPropertyGetter(), NotForDefinition));
+      getAccessorThunkIfRequired(IGM, component, Getter));
     if (settable)
       fields.addCompactFunctionReference(
         getAccessorForComputedComponent(IGM, component, Setter,
