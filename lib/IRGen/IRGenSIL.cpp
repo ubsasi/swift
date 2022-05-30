@@ -2068,7 +2068,10 @@ static void emitEntryPointArgumentsNativeCC(IRGenSILFunction &IGF,
                         assert(index == 1 && "unepxected index in keypath getter argument");
                         assert(size == 1 && "unepxected size in keypath getter argument");
                         Explosion indicesTemp;
-                        indicesTemp.add(componentArgsBuf);
+                        auto castedIndices =
+                          IGF.Builder.CreateBitCast(
+                            componentArgsBuf, IGF.getTypeInfo(indicesTuple->getType()).getStorageType()->getPointerTo());
+                        indicesTemp.add(castedIndices);
                         return indicesTemp;
                       });
       }
