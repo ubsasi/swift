@@ -333,8 +333,8 @@ void verifyKeyPathComponent(SILModule &M,
         ->substGenericArgs(M, patternSubs, TypeExpansionContext::minimal());
       
       require(substSetterType->getRepresentation() ==
-                SILFunctionTypeRepresentation::Thin,
-              "setter should be a thin function");
+                SILFunctionTypeRepresentation::KeyPathAccessorSetter,
+              "setter should be keypath setter convention");
       
       require(substSetterType->getNumParameters() == 2 + hasIndices,
               "setter should have two parameters");
@@ -355,13 +355,8 @@ void verifyKeyPathComponent(SILModule &M,
       if (hasIndices) {
         auto indicesParam = substSetterType->getParameters()[2];
         require(indicesParam.getConvention()
-                  == ParameterConvention::Direct_Unowned,
-                "indices pointer should be trivial");
-        require(
-            indicesParam
-                    .getArgumentType(M, substSetterType, typeExpansionContext)
-                    ->isUnsafeRawPointer(),
-            "indices pointer should be an UnsafeRawPointer");
+                  == ParameterConvention::Indirect_In_Guaranteed,
+                "indices pointer should be in_guaranteed");
       }
 
       require(getTypeInExpansionContext(newValueParam.getArgumentType(

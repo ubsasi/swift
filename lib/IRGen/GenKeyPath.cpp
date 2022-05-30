@@ -1179,9 +1179,7 @@ emitKeyPathComponent(IRGenModule &IGM,
       getAccessorThunkIfRequired(IGM, component, Getter));
     if (settable)
       fields.addCompactFunctionReference(
-        getAccessorForComputedComponent(IGM, component, Setter,
-                                        genericEnv, requirements,
-                                        hasSubscriptIndices));
+        getAccessorThunkIfRequired(IGM, component, Setter));
 
     if (!isInstantiableOnce) {
       // If there's generic context or subscript indexes, embed as

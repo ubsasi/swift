@@ -3044,12 +3044,18 @@ static SILFunction *getOrCreateKeyPathSetter(SILGenModule &SGM,
                         ? ParameterConvention::Indirect_Inout
                         : paramConvention});
     // indexes
-    if (!indexes.empty())
-      params.push_back({C.getUnsafeRawPointerType()->getCanonicalType(),
-                        ParameterConvention::Direct_Unowned});
+    if (!indexes.empty()) {
+      SmallVector<AnyFunctionType::Param, 8> indicesElements;
+      for (auto &elt : indexes) {
+        indicesElements.emplace_back(elt.first);
+      }
+      auto indexCanTy = AnyFunctionType::composeTuple(C, indicesElements)->getCanonicalType();
+      params.push_back({indexCanTy, paramConvention});
+    }
     
     return SILFunctionType::get(genericSig,
-      SILFunctionType::ExtInfo::getThin(),
+      SILFunctionType::ExtInfo().withRepresentation(
+        SILFunctionType::Representation::KeyPathAccessorSetter),
       SILCoroutineKind::None,
       ParameterConvention::Direct_Unowned,
       params, {}, {}, None,
@@ -3103,6 +3109,8 @@ static SILFunction *getOrCreateKeyPathSetter(SILGenModule &SGM,
   if (!indexes.empty()) {
     auto indexArgTy = signature->getParameters()[2].getSILStorageType(
         SGM.M, signature, subSGF.getTypeExpansionContext());
+    if (genericEnv)
+      indexArgTy = genericEnv->mapTypeIntoContext(SGM.M, indexArgTy);
     indexPtrArg = entry->createFunctionArgument(indexArgTy);
   }
 
@@ -3110,7 +3118,7 @@ static SILFunction *getOrCreateKeyPathSetter(SILGenModule &SGM,
 
   auto subscriptIndices =
     loadIndexValuesForKeyPathComponent(subSGF, loc, property,
-                                       indexes, indexPtrArg);
+                                       indexes, indexPtrArg, true);
   
   auto valueOrig = ManagedValue::forBorrowedRValue(valueArg)
       .copy(subSGF, loc);
