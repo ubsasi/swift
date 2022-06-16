@@ -1266,7 +1266,24 @@ SourceRange MemberAccessOnOptionalBaseFailure::getSourceRange() const {
 bool MemberAccessOnOptionalBaseFailure::diagnoseAsError() {
   auto baseType = getMemberBaseType();
   auto locator = getLocator();
-  
+
+  // If this is an issue with `makeIterator` having an optional
+  // result, it would be diagnosed by fix on the base type.
+  if (auto anchor = locator->getAnchor()) {
+    if (auto *UDE = getAsExpr<UnresolvedDotExpr>(anchor)) {
+      if (UDE->isImplicit()) {
+        auto &solution = getSolution();
+        auto *baseLoc = solution.getConstraintLocator(
+            UDE->getBase(),
+            LocatorPathElt::ContextualType(CTP_ForEachSequence));
+
+        if (hasFixFor(solution, baseLoc))
+          return false;
+      }
+    }
+  }
+
+
   bool resultIsOptional = ResultTypeIsOptional;
 
   // If we've resolved the member overload to one that returns an optional
@@ -8155,4 +8172,13 @@ void MissingExplicitExistentialCoercion::fixIt(
   diagnostic.fixItInsertAfter(callRange.End,
                               "as " + ErasedResultType->getString(printOpts) +
                                   (requiresParens ? ")" : ""));
+}
+
+bool ConflictingPatternVariables::diagnoseAsError() {
+  for (auto *var : Vars) {
+    emitDiagnosticAt(var->getStartLoc(),
+                     diag::type_mismatch_multiple_pattern_list, getType(var),
+                     ExpectedType);
+  }
+  return true;
 }

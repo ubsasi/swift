@@ -1524,6 +1524,9 @@ WARNING(access_control_non_objc_open_member,none,
 
 ERROR(invalid_decl_attribute,none,
       "'%0' attribute cannot be applied to this declaration", (DeclAttribute))
+ERROR(attr_invalid_on_decl_kind,none,
+      "'%0' attribute cannot be applied to %1 declarations",
+      (DeclAttribute, DescriptiveDeclKind))
 ERROR(invalid_decl_modifier,none,
       "%0 modifier cannot be applied to this declaration", (DeclAttribute))
 ERROR(attribute_does_not_apply_to_type,none,
@@ -4598,6 +4601,9 @@ ERROR(effectful_keypath_component,none,
 ERROR(local_function_executed_concurrently,none,
       "concurrently-executed %0 %1 must be marked as '@Sendable'",
       (DescriptiveDeclKind, DeclName))
+ERROR(sendable_isolated_sync_function,none,
+      "%0 synchronous %1 %2 cannot be marked as '@Sendable'",
+      (ActorIsolation, DescriptiveDeclKind, DeclName))
 ERROR(concurrent_access_of_local_capture,none,
       "%select{mutation of|reference to}0 captured %1 %2 in "
       "concurrently-executing code",
@@ -4633,6 +4639,9 @@ ERROR(distributed_actor_func_param_not_codable,none,
 ERROR(distributed_actor_target_result_not_codable,none,
       "result type %0 of %1 %2 does not conform to serialization requirement '%3'",
       (Type, DescriptiveDeclKind, Identifier, StringRef))
+ERROR(distributed_actor_system_serialization_req_must_be_protocol,none,
+      "'SerializationRequirement' type witness %0 must be a protocol type",
+      (Type))
 ERROR(distributed_actor_remote_func_implemented_manually,none,
       "distributed instance method's %0 remote counterpart %1 cannot not be implemented manually.",
       (Identifier, Identifier))
@@ -5581,6 +5590,16 @@ NOTE(availability_decl_more_than_enclosing_enclosing_here, none,
 ERROR(availability_decl_only_version_newer, none,
       "%0 is only available in %1 %2 or newer",
       (DeclName, StringRef, llvm::VersionTuple))
+
+ERROR(availability_decl_only_version_newer_for_clients, none,
+      "%0 is only available in %1 %2 or newer; clients of %3 may have a lower"
+      " deployment target",
+      (DeclName, StringRef, llvm::VersionTuple, ModuleDecl *))
+
+WARNING(availability_decl_only_version_newer_for_clients_warn, none,
+        "%0 is only available in %1 %2 or newer; clients of %3 may have a lower"
+        " deployment target",
+        (DeclName, StringRef, llvm::VersionTuple, ModuleDecl *))
 
 ERROR(availability_opaque_types_only_version_newer, none,
       "'some' return types are only available in %0 %1 or newer",

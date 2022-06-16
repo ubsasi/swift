@@ -10,6 +10,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+import SwiftShims
+
 //===----------------------------------------------------------------------===//
 // Unicode.NFD
 //===----------------------------------------------------------------------===//
@@ -121,5 +123,79 @@ extension Substring {
   @available(SwiftStdlib 5.7, *)
   public var _nfc: Unicode._NFC {
     Unicode._NFC(base: unicodeScalars)
+  }
+}
+
+//===----------------------------------------------------------------------===//
+// Unicode.Script
+//===----------------------------------------------------------------------===//
+
+extension Unicode.Scalar.Properties {
+  @_spi(_Unicode)
+  @available(SwiftStdlib 5.7, *)
+  public var _script: UInt8 {
+    let rawValue = _swift_stdlib_getScript(_scalar.value)
+
+    _internalInvariant(rawValue != .max, "Unknown script rawValue")
+
+    return rawValue
+  }
+
+  @_spi(_Unicode)
+  @available(SwiftStdlib 5.7, *)
+  public var _scriptExtensions: [UInt8] {
+    var count: UInt8 = 0
+    let pointer = _swift_stdlib_getScriptExtensions(_scalar.value, &count)
+
+    guard let pointer = pointer else {
+      return [_script]
+    }
+
+    var result: [UInt8] = []
+    result.reserveCapacity(Int(count))
+
+    for i in 0 ..< count {
+      let rawValue = pointer[Int(i)]
+
+      _internalInvariant(rawValue != .max, "Unknown script rawValue")
+
+      result.append(rawValue)
+    }
+
+    return result
+  }
+}
+
+//===----------------------------------------------------------------------===//
+// Case folding
+//===----------------------------------------------------------------------===//
+
+extension Unicode.Scalar.Properties {
+  @_spi(_Unicode)
+  @available(SwiftStdlib 5.7, *)
+  public var _caseFolded: String {
+    var buffer: (UInt32, UInt32, UInt32) = (.max, .max, .max)
+
+    withUnsafeMutableBytes(of: &buffer) {
+      // This is safe because the memory is already UInt32
+      let ptr = $0.baseAddress!.assumingMemoryBound(to: UInt32.self)
+      _swift_stdlib_getCaseMapping(_scalar.value, ptr)
+    }
+
+    var result = ""
+    // Max mapping is 3 scalars and the max UTF8 bytes of a scalar is 4.
+    result.reserveCapacity(12)
+
+    withUnsafeBytes(of: &buffer) {
+      for scalar in $0.bindMemory(to: UInt32.self) {
+        guard scalar != .max else {
+          break
+        }
+
+        result.unicodeScalars.append(Unicode.Scalar(scalar)!)
+      }
+    }
+
+    return result
   }
 }
