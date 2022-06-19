@@ -581,9 +581,7 @@ getWitnessTableForComputedComponent(IRGenModule &IGM,
     }
   }
   
-  auto equals = getAccessorForComputedComponent(IGM, component, Equals,
-                                      genericEnv, requirements,
-                                      !component.getSubscriptIndices().empty());
+  auto equals = getAccessorThunkIfRequired(IGM, component, Equals);
   auto hash = getAccessorThunkIfRequired(IGM, component, Hash);
   
   ConstantInitBuilder builder(IGM);
