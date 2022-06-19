@@ -707,17 +707,17 @@ class SILExtInfoBuilder {
   // and NumMaskBits must be updated, and they must match.
 
   //   |representation|pseudogeneric| noescape | concurrent | async |differentiability|
-  //   |    0 .. 3    |      4      |     5    |     6      |   7   |     8 .. 10     |
+  //   |    0 .. 4    |      5      |     6    |     7      |   8   |     9 .. 11     |
   //
   enum : unsigned {
-    RepresentationMask = 0xF << 0,
-    PseudogenericMask = 1 << 4,
-    NoEscapeMask = 1 << 5,
-    SendableMask = 1 << 6,
-    AsyncMask = 1 << 7,
-    DifferentiabilityMaskOffset = 8,
+    RepresentationMask = 0x1F << 0,
+    PseudogenericMask = 1 << 5,
+    NoEscapeMask = 1 << 6,
+    SendableMask = 1 << 7,
+    AsyncMask = 1 << 8,
+    DifferentiabilityMaskOffset = 9,
     DifferentiabilityMask = 0x7 << DifferentiabilityMaskOffset,
-    NumMaskBits = 11
+    NumMaskBits = 12
   };
 
   unsigned bits; // Naturally sized for speed.
