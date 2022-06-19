@@ -37,7 +37,6 @@
 #include "swift/AST/ParameterList.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/AST/SubstitutionMap.h"
-#include "swift/AST/Type.h"
 #include "swift/AST/Types.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/Basic/type_traits.h"
@@ -2815,15 +2814,6 @@ getRepresentativeAccessorForKeyPath(AbstractStorageDecl *storage) {
   return storage->getOpaqueAccessor(AccessorKind::Read);
 }
 
-static CanType
-buildKeyPathIndicesTuple(ASTContext &C, ArrayRef<IndexTypePair> indexes) {
-  SmallVector<TupleTypeElt, 8> indicesElements;
-  for (auto &elt : indexes) {
-    indicesElements.emplace_back(elt.first);
-  }
-  return TupleType::get(indicesElements, C)->getCanonicalType();
-}
-
 static SILFunction *getOrCreateKeyPathGetter(SILGenModule &SGM,
                          AbstractStorageDecl *property,
                          SubstitutionMap subs,
@@ -2874,7 +2864,12 @@ static SILFunction *getOrCreateKeyPathGetter(SILGenModule &SGM,
     auto &C = SGM.getASTContext();
 
     if (!indexes.empty()) {
-      params.push_back({buildKeyPathIndicesTuple(C, indexes), paramConvention});
+      SmallVector<AnyFunctionType::Param, 8> indicesElements;
+      for (auto &elt : indexes) {
+        indicesElements.emplace_back(elt.first);
+      }
+      auto indexCanTy = AnyFunctionType::composeTuple(C, indicesElements)->getCanonicalType();
+      params.push_back({indexCanTy, paramConvention});
     }
 
     SILResultInfo result(loweredPropTy, ResultConvention::Indirect);
@@ -3050,7 +3045,12 @@ static SILFunction *getOrCreateKeyPathSetter(SILGenModule &SGM,
                         : paramConvention});
     // indexes
     if (!indexes.empty()) {
-      params.push_back({buildKeyPathIndicesTuple(C, indexes), paramConvention});
+      SmallVector<AnyFunctionType::Param, 8> indicesElements;
+      for (auto &elt : indexes) {
+        indicesElements.emplace_back(elt.first);
+      }
+      auto indexCanTy = AnyFunctionType::composeTuple(C, indicesElements)->getCanonicalType();
+      params.push_back({indexCanTy, paramConvention});
     }
     
     return SILFunctionType::get(genericSig,
@@ -3200,6 +3200,7 @@ getOrCreateKeyPathEqualsAndHash(SILGenModule &SGM,
   }
 
   auto &C = SGM.getASTContext();
+  auto unsafeRawPointerTy = C.getUnsafeRawPointerType()->getCanonicalType();
   auto boolTy = C.getBoolType()->getCanonicalType();
   auto intTy = C.getIntType()->getCanonicalType();
 
@@ -3212,14 +3213,12 @@ getOrCreateKeyPathEqualsAndHash(SILGenModule &SGM,
 
   SmallVector<TupleTypeElt, 2> indexElts;
   for (auto &elt : indexes) {
-    indexElts.push_back(elt.FormalType);
+    indexElts.push_back(GenericEnvironment::mapTypeIntoContext(genericEnv,
+                                                               elt.FormalType));
   }
 
-  CanType interfaceIndexTupleTy = TupleType::get(indexElts, SGM.getASTContext())->getCanonicalType();
-  CanType indexTupleTy = interfaceIndexTupleTy;
-  if (genericEnv)
-    indexTupleTy = genericEnv->mapTypeIntoContext(indexTupleTy)
-      ->getCanonicalType();
+  auto indexTupleTy = TupleType::get(indexElts, SGM.getASTContext())
+                        ->getCanonicalType();
   RValue indexValue(indexTupleTy);
 
   auto indexLoweredTy =
@@ -3227,21 +3226,20 @@ getOrCreateKeyPathEqualsAndHash(SILGenModule &SGM,
           TypeExpansionContext::minimal(), indexTupleTy));
 
   // Get or create the equals witness
-  [interfaceIndexTupleTy, boolTy, genericSig, &C, &indexTypes, &equals, loc,
+  [unsafeRawPointerTy, boolTy, genericSig, &C, &indexTypes, &equals, loc,
    &SGM, genericEnv, expansion, indexLoweredTy, indexes]{
-    // (lhs: (X, Y, ...), rhs: (X, Y, ...)) -> Bool
+    // (RawPointer, RawPointer) -> Bool
     SmallVector<SILParameterInfo, 2> params;
-    params.push_back({interfaceIndexTupleTy,
-                      ParameterConvention::Indirect_In_Guaranteed});
-    params.push_back({interfaceIndexTupleTy,
-                      ParameterConvention::Indirect_In_Guaranteed});
+    params.push_back({unsafeRawPointerTy,
+                      ParameterConvention::Direct_Unowned});
+    params.push_back({unsafeRawPointerTy,
+                      ParameterConvention::Direct_Unowned});
     
     SmallVector<SILResultInfo, 1> results;
     results.push_back({boolTy, ResultConvention::Unowned});
     
     auto signature = SILFunctionType::get(genericSig,
-      SILFunctionType::ExtInfo().withRepresentation(
-        SILFunctionType::Representation::KeyPathAccessorEquals),
+      SILFunctionType::ExtInfo::getThin(),
       SILCoroutineKind::None,
       ParameterConvention::Direct_Unowned,
       params, /*yields*/ {}, results, None,
@@ -3406,19 +3404,18 @@ getOrCreateKeyPathEqualsAndHash(SILGenModule &SGM,
   }();
 
   // Get or create the hash witness
-  [interfaceIndexTupleTy, intTy, genericSig, &C, indexTypes, &hash, &loc,
+  [unsafeRawPointerTy, intTy, genericSig, &C, indexTypes, &hash, &loc,
    &SGM, genericEnv, expansion, indexLoweredTy, hashableProto, indexes]{
-    // (indices: (X, Y, ...)) -> Int
+    // (RawPointer) -> Int
     SmallVector<SILParameterInfo, 1> params;
-    params.push_back({interfaceIndexTupleTy,
-                      ParameterConvention::Indirect_In_Guaranteed});
+    params.push_back({unsafeRawPointerTy,
+                      ParameterConvention::Direct_Unowned});
     
     SmallVector<SILResultInfo, 1> results;
     results.push_back({intTy, ResultConvention::Unowned});
     
     auto signature = SILFunctionType::get(genericSig,
-      SILFunctionType::ExtInfo().withRepresentation(
-        SILFunctionType::Representation::KeyPathAccessorHash),
+      SILFunctionType::ExtInfo::getThin(),
       SILCoroutineKind::None,
       ParameterConvention::Direct_Unowned,
       params, /*yields*/ {}, results, None,
