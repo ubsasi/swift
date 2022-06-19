@@ -203,15 +203,16 @@ void verifyKeyPathComponent(SILModule &M,
         auto substHashType = hash->getLoweredFunctionType()
           ->substGenericArgs(M, patternSubs, TypeExpansionContext::minimal());
         
+        require(substHashType->getRepresentation() ==
+                  SILFunctionTypeRepresentation::KeyPathAccessorHash,
+                "hash should be a keypath hash convention");
         require(substHashType->getParameters().size() == 1,
                 "must have two arguments");
         auto param = substHashType->getParameters()[0];
         require(param.getConvention()
-                  == ParameterConvention::Direct_Unowned,
-                "indices pointer should be trivial");
-        require(param.getInterfaceType()->isUnsafeRawPointer(),
-                "indices pointer should be an UnsafeRawPointer");
-        
+                  == ParameterConvention::Indirect_In_Guaranteed,
+                "indices pointer should be in_guaranteed");
+
         require(substHashType->getResults().size() == 1,
                 "must have one result");
         

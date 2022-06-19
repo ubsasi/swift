@@ -3182,6 +3182,7 @@ getOrCreateKeyPathEqualsAndHash(SILGenModule &SGM,
                               GenericEnvironment *genericEnv,
                               ResilienceExpansion expansion,
                               ArrayRef<KeyPathPatternComponent::Index> indexes,
+                              ArrayRef<IndexTypePair> newIndexes,
                               SILFunction *&equals,
                               SILFunction *&hash) {
   if (indexes.empty()) {
@@ -3405,17 +3406,17 @@ getOrCreateKeyPathEqualsAndHash(SILGenModule &SGM,
 
   // Get or create the hash witness
   [unsafeRawPointerTy, intTy, genericSig, &C, indexTypes, &hash, &loc,
-   &SGM, genericEnv, expansion, indexLoweredTy, hashableProto, indexes]{
-    // (RawPointer) -> Int
+   &SGM, genericEnv, expansion, indexLoweredTy, hashableProto, indexes, newIndexes]{
+    // (indices: (X, Y, ...)) -> Int
     SmallVector<SILParameterInfo, 1> params;
-    params.push_back({unsafeRawPointerTy,
-                      ParameterConvention::Direct_Unowned});
+    params.push_back({buildKeyPathIndicesTuple(C, newIndexes), ParameterConvention::Indirect_In_Guaranteed});
     
     SmallVector<SILResultInfo, 1> results;
     results.push_back({intTy, ResultConvention::Unowned});
     
     auto signature = SILFunctionType::get(genericSig,
-      SILFunctionType::ExtInfo::getThin(),
+      SILFunctionType::ExtInfo().withRepresentation(
+        SILFunctionType::Representation::KeyPathAccessorHash),
       SILCoroutineKind::None,
       ParameterConvention::Direct_Unowned,
       params, /*yields*/ {}, results, None,
@@ -3440,8 +3441,11 @@ getOrCreateKeyPathEqualsAndHash(SILGenModule &SGM,
     SILGenFunction subSGF(SGM, *hash, SGM.SwiftModule);
     hash->setGenericEnvironment(genericEnv);
     auto entry = hash->begin();
-    auto indexPtr = entry->createFunctionArgument(params[0].getSILStorageType(
-        SGM.M, signature, subSGF.getTypeExpansionContext()));
+    auto indexArgTy = params[0].getSILStorageType(
+        SGM.M, signature, subSGF.getTypeExpansionContext());
+    if (genericEnv)
+      indexArgTy = genericEnv->mapTypeIntoContext(SGM.M, indexArgTy);
+    auto indexPtr = entry->createFunctionArgument(indexArgTy);
 
     SILValue hashCode;
 
@@ -3453,9 +3457,7 @@ getOrCreateKeyPathEqualsAndHash(SILGenModule &SGM,
       auto &index = indexes[0];
       
       // Extract the index value.
-      SILValue indexAddr = subSGF.B.createPointerToAddress(loc, indexPtr,
-                                             indexLoweredTy,
-                                             /*isStrict*/ false);
+      SILValue indexAddr = indexPtr;
       if (indexes.size() > 1) {
         indexAddr = subSGF.B.createTupleElementAddr(loc, indexAddr, 0);
       }
@@ -3785,7 +3787,7 @@ SILGenModule::emitKeyPathComponentForDecl(SILLocation loc,
       getOrCreateKeyPathEqualsAndHash(*this, loc,
                needsGenericContext ? genericEnv : nullptr,
                expansion,
-               indexPatterns,
+               indexPatterns, indexTypes,
                indexEquals, indexHash);
     }
     
