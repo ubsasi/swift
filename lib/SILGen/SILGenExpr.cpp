@@ -2892,7 +2892,7 @@ static SILFunction *getOrCreateKeyPathGetter(SILGenModule &SGM,
 
   SILGenFunctionBuilder builder(SGM);
   auto thunk = builder.getOrCreateSharedFunction(
-      loc, name, signature, IsBare, IsTransparent,
+      loc, name, signature, IsBare, IsNotTransparent,
       (expansion == ResilienceExpansion::Minimal
        ? IsSerialized
        : IsNotSerialized),
@@ -3071,7 +3071,7 @@ static SILFunction *getOrCreateKeyPathSetter(SILGenModule &SGM,
 
   SILGenFunctionBuilder builder(SGM);
   auto thunk = builder.getOrCreateSharedFunction(
-      loc, name, signature, IsBare, IsTransparent,
+      loc, name, signature, IsBare, IsNotTransparent,
       (expansion == ResilienceExpansion::Minimal
        ? IsSerialized
        : IsNotSerialized),
@@ -3251,7 +3251,7 @@ getOrCreateKeyPathEqualsAndHash(SILGenModule &SGM,
       .mangleKeyPathEqualsHelper(indexTypes, genericSig, expansion);
     SILGenFunctionBuilder builder(SGM);
     equals = builder.getOrCreateSharedFunction(
-        loc, name, signature, IsBare, IsTransparent,
+        loc, name, signature, IsBare, IsNotTransparent,
         (expansion == ResilienceExpansion::Minimal
          ? IsSerialized
          : IsNotSerialized),
