@@ -37,6 +37,7 @@
 #include "swift/AST/ParameterList.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/AST/SubstitutionMap.h"
+#include "swift/AST/Type.h"
 #include "swift/AST/Types.h"
 #include "swift/Basic/SourceManager.h"
 #include "swift/Basic/type_traits.h"
@@ -2814,6 +2815,15 @@ getRepresentativeAccessorForKeyPath(AbstractStorageDecl *storage) {
   return storage->getOpaqueAccessor(AccessorKind::Read);
 }
 
+static CanType
+buildKeyPathIndicesTuple(ASTContext &C, ArrayRef<IndexTypePair> indexes) {
+  SmallVector<TupleTypeElt, 8> indicesElements;
+  for (auto &elt : indexes) {
+    indicesElements.emplace_back(elt.first);
+  }
+  return TupleType::get(indicesElements, C)->getCanonicalType();
+}
+
 static SILFunction *getOrCreateKeyPathGetter(SILGenModule &SGM,
                          AbstractStorageDecl *property,
                          SubstitutionMap subs,
@@ -2864,12 +2874,7 @@ static SILFunction *getOrCreateKeyPathGetter(SILGenModule &SGM,
     auto &C = SGM.getASTContext();
 
     if (!indexes.empty()) {
-      SmallVector<AnyFunctionType::Param, 8> indicesElements;
-      for (auto &elt : indexes) {
-        indicesElements.emplace_back(elt.first);
-      }
-      auto indexCanTy = AnyFunctionType::composeTuple(C, indicesElements)->getCanonicalType();
-      params.push_back({indexCanTy, paramConvention});
+      params.push_back({buildKeyPathIndicesTuple(C, indexes), paramConvention});
     }
 
     SILResultInfo result(loweredPropTy, ResultConvention::Indirect);
@@ -3045,12 +3050,7 @@ static SILFunction *getOrCreateKeyPathSetter(SILGenModule &SGM,
                         : paramConvention});
     // indexes
     if (!indexes.empty()) {
-      SmallVector<AnyFunctionType::Param, 8> indicesElements;
-      for (auto &elt : indexes) {
-        indicesElements.emplace_back(elt.first);
-      }
-      auto indexCanTy = AnyFunctionType::composeTuple(C, indicesElements)->getCanonicalType();
-      params.push_back({indexCanTy, paramConvention});
+      params.push_back({buildKeyPathIndicesTuple(C, indexes), paramConvention});
     }
     
     return SILFunctionType::get(genericSig,
