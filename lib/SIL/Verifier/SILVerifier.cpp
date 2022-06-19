@@ -173,15 +173,17 @@ void verifyKeyPathComponent(SILModule &M,
         auto substEqualsType = equals->getLoweredFunctionType()
           ->substGenericArgs(M, patternSubs, TypeExpansionContext::minimal());
         
+        require(substEqualsType->getRepresentation() ==
+                  SILFunctionTypeRepresentation::KeyPathAccessorEquals,
+                "equals should be a keypath equals convention");
+
         require(substEqualsType->getParameters().size() == 2,
                 "must have two arguments");
         for (unsigned i = 0; i < 2; ++i) {
           auto param = substEqualsType->getParameters()[i];
           require(param.getConvention()
-                    == ParameterConvention::Direct_Unowned,
-                  "indices pointer should be trivial");
-          require(param.getInterfaceType()->isUnsafeRawPointer(),
-                  "indices pointer should be an UnsafeRawPointer");
+                    == ParameterConvention::Indirect_In_Guaranteed,
+                  "indices pointer should be in_guaranteed");
         }
         
         require(substEqualsType->getResults().size() == 1,

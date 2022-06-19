@@ -3228,19 +3228,19 @@ getOrCreateKeyPathEqualsAndHash(SILGenModule &SGM,
 
   // Get or create the equals witness
   [unsafeRawPointerTy, boolTy, genericSig, &C, &indexTypes, &equals, loc,
-   &SGM, genericEnv, expansion, indexLoweredTy, indexes]{
-    // (RawPointer, RawPointer) -> Bool
+   &SGM, genericEnv, expansion, indexLoweredTy, indexes, newIndexes]{
+    // (lhs: (X, Y, ...), rhs: (X, Y, ...)) -> Bool
     SmallVector<SILParameterInfo, 2> params;
-    params.push_back({unsafeRawPointerTy,
-                      ParameterConvention::Direct_Unowned});
-    params.push_back({unsafeRawPointerTy,
-                      ParameterConvention::Direct_Unowned});
+    auto indicesTuple = buildKeyPathIndicesTuple(C, newIndexes);
+    params.push_back({indicesTuple, ParameterConvention::Indirect_In_Guaranteed});
+    params.push_back({indicesTuple, ParameterConvention::Indirect_In_Guaranteed});
     
     SmallVector<SILResultInfo, 1> results;
     results.push_back({boolTy, ResultConvention::Unowned});
     
     auto signature = SILFunctionType::get(genericSig,
-      SILFunctionType::ExtInfo::getThin(),
+      SILFunctionType::ExtInfo().withRepresentation(
+        SILFunctionType::Representation::KeyPathAccessorEquals),
       SILCoroutineKind::None,
       ParameterConvention::Direct_Unowned,
       params, /*yields*/ {}, results, None,
@@ -3264,19 +3264,21 @@ getOrCreateKeyPathEqualsAndHash(SILGenModule &SGM,
     SILGenFunction subSGF(SGM, *equals, SGM.SwiftModule);
     equals->setGenericEnvironment(genericEnv);
     auto entry = equals->begin();
-    auto lhsPtr = entry->createFunctionArgument(params[0].getSILStorageType(
-        SGM.M, signature, subSGF.getTypeExpansionContext()));
-    auto rhsPtr = entry->createFunctionArgument(params[1].getSILStorageType(
-        SGM.M, signature, subSGF.getTypeExpansionContext()));
+    auto lhsArgTy = params[0].getSILStorageType(
+        SGM.M, signature, subSGF.getTypeExpansionContext());
+    auto rhsArgTy = params[1].getSILStorageType(
+        SGM.M, signature, subSGF.getTypeExpansionContext());
+    if (genericEnv) {
+      lhsArgTy = genericEnv->mapTypeIntoContext(SGM.M, lhsArgTy);
+      rhsArgTy = genericEnv->mapTypeIntoContext(SGM.M, rhsArgTy);
+    }
+    auto lhsPtr = entry->createFunctionArgument(lhsArgTy);
+    auto rhsPtr = entry->createFunctionArgument(rhsArgTy);
 
     Scope scope(subSGF, loc);
 
-    auto lhsAddr = subSGF.B.createPointerToAddress(loc, lhsPtr,
-                                             indexLoweredTy,
-                                             /*isStrict*/ false);
-    auto rhsAddr = subSGF.B.createPointerToAddress(loc, rhsPtr,
-                                             indexLoweredTy,
-                                             /*isStrict*/ false);
+    auto lhsAddr = lhsPtr;
+    auto rhsAddr = rhsPtr;
 
     // Compare each pair of index values using the == witness from the
     // conformance.

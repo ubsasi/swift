@@ -25,7 +25,7 @@ entry(%0 : $*A, %1 : $*B, %2 : $*A, %3 : $*B, %4 : $*A, %5 : $*B):
       id @g_subscript_get : $@convention(keypath_accessor_getter) <A: Hashable, B: Hashable> (@in_guaranteed G<B>, @in_guaranteed Int) -> @out B,
       getter @g_subscript_get : $@convention(keypath_accessor_getter) <A: Hashable, B: Hashable> (@in_guaranteed G<B>, @in_guaranteed Int) -> @out B,
       indices [%$0 : $X : $*X],
-      indices_equals @s_equals : $@convention(thin) <A: Hashable, B: Hashable> (UnsafeRawPointer, UnsafeRawPointer) -> Bool,
+      indices_equals @s_equals : $@convention(keypath_accessor_equals) <A: Hashable, B: Hashable> (@in_guaranteed Int, @in_guaranteed Int) -> Bool,
       indices_hash @s_hash : $@convention(keypath_accessor_hash) <A: Hashable, B: Hashable> (@in_guaranteed Int) -> Int,
       external #G.subscript<Y, X>
   ) <B, A> (%1)
@@ -37,7 +37,7 @@ sil @g_x_get : $@convention(keypath_accessor_getter) <Z> (@in_guaranteed G<Z>) -
 sil @g_subscript_get : $@convention(keypath_accessor_getter) <A: Hashable, B: Hashable> (@in_guaranteed G<B>, @in_guaranteed Int) ->
 @out B
 
-sil @s_equals : $@convention(thin) <A: Hashable, B: Hashable> (UnsafeRawPointer, UnsafeRawPointer) -> Bool
+sil @s_equals : $@convention(keypath_accessor_equals) <A: Hashable, B: Hashable> (@in_guaranteed Int, @in_guaranteed Int) -> Bool
 sil @s_hash : $@convention(keypath_accessor_hash) <A: Hashable, B: Hashable> (@in_guaranteed Int) -> Int
 
 // -- %t
