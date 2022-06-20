@@ -19,6 +19,7 @@
 #include "swift/ABI/MetadataValues.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/GenericEnvironment.h"
+#include "swift/Basic/Range.h"
 #include "swift/Runtime/Config.h"
 #include "swift/IRGen/Linking.h"
 #include "swift/SIL/SILModule.h"
@@ -28,6 +29,7 @@
 #include "clang/Basic/TargetInfo.h"
 #include "clang/CodeGen/CodeGenABITypes.h"
 #include "clang/CodeGen/ModuleBuilder.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalPtrAuthInfo.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -2338,9 +2340,110 @@ public:
     case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
     case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
     case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
-    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
-      llvm_unreachable("TODO(katei): setArgs");
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash: {
+      // CurCallee.getFunctionPointer().getRawPointer()->dump();
+      // IGF.Builder.GetInsertBlock()->getParent()->dump();
+      // origCalleeType->getInvocationGenericSignature()->dump();
+
+      auto &IGM = IGF.IGM;
+      auto params = origCalleeType->getParameters();
+
+      switch (getCallee().getRepresentation()) {
+      case SILFunctionTypeRepresentation::KeyPathAccessorGetter: {
+        // add base value
+        addNativeArgument(IGF, original, origCalleeType, params[0], adjusted,
+                          isOutlined);
+        params = params.drop_back();
+        break;
+      }
+      case SILFunctionTypeRepresentation::KeyPathAccessorSetter: {
+        // add base value
+        addNativeArgument(IGF, original, origCalleeType, params[0], adjusted,
+                          isOutlined);
+        // add new value
+        addNativeArgument(IGF, original, origCalleeType, params[1], adjusted,
+                          isOutlined);
+        params = params.drop_back(2);
+        break;
+      }
+      default:
+        llvm_unreachable("unexpected representation");
+      }
+      original.dump();
+
+      auto sig = origCalleeType->getInvocationGenericSignature();
+      SmallVector<GenericRequirement, 4> requirements;
+      enumerateGenericSignatureRequirements(
+          sig, [&](GenericRequirement reqt) { requirements.push_back(reqt); });
+
+      llvm::Value *argsBufSize;
+      llvm::Value *argsBufAlign;
+
+      if (!requirements.empty()) {
+        argsBufSize = llvm::ConstantInt::get(
+            IGM.SizeTy, IGM.getPointerSize().getValue() * requirements.size());
+        argsBufAlign = llvm::ConstantInt::get(
+            IGM.SizeTy, IGM.getPointerAlignment().getMaskValue());
+      } else {
+        argsBufSize = llvm::ConstantInt::get(IGM.SizeTy, 0);
+        argsBufAlign = llvm::ConstantInt::get(IGM.SizeTy, 0);
+      }
+
+      SmallVector<llvm::Value *, 4> operandOffsets;
+
+      for (auto i : indices(params)) {
+        auto ty = getParameterType(i);
+        auto &ti = IGF.getTypeInfo(ty);
+        auto alignMask = ti.getAlignmentMask(IGF, ty);
+        if (i != 0) {
+          auto notAlignMask = IGF.Builder.CreateNot(alignMask);
+          argsBufSize = IGF.Builder.CreateAdd(argsBufSize, alignMask);
+          argsBufSize = IGF.Builder.CreateAnd(argsBufSize, notAlignMask);
+        }
+        operandOffsets.push_back(argsBufSize);
+        auto size = ti.getSize(IGF, ty);
+        argsBufSize = IGF.Builder.CreateAdd(argsBufSize, size);
+        argsBufAlign = IGF.Builder.CreateOr(argsBufAlign, alignMask);
+      }
+
+      auto dynamicArgsBuf = IGF.emitDynamicAlloca(IGF.IGM.Int8Ty, argsBufSize, Alignment(16));
+      Address argsBuf = dynamicArgsBuf.getAddress();
+
+      assert(original.size() == requirements.size() + params.size() &&
+             "wrong number of arguments?");
+
+      for (unsigned i : indices(params)) {
+        auto ty = getParameterType(i);
+        auto &ti = IGF.getTypeInfo(ty);
+        auto ptr = IGF.Builder.CreateInBoundsGEP(argsBuf.getAddress()
+                                                     ->getType()
+                                                     ->getScalarType()
+                                                     ->getPointerElementType(),
+                                                 argsBuf.getAddress(),
+                                                 operandOffsets[i]);
+        auto addr = ti.getAddressForPointer(IGF.Builder.CreateBitCast(
+            ptr, ti.getStorageType()->getPointerTo()));
+        if (ty.isAddress()) {
+          ti.initializeWithTake(IGF, addr,
+                                ti.getAddressForPointer(original.claimNext()),
+                                ty, false);
+        } else {
+          Explosion operandValue;
+          operandValue.add(original.claimNext());
+          cast<LoadableTypeInfo>(ti).initialize(IGF, operandValue, addr, false);
+        }
+      }
+
+      emitInitOfGenericRequirementsBuffer(
+          IGF, requirements, argsBuf,
+          [&](GenericRequirement reqt) -> llvm::Value * {
+            return original.claimNext();
+          });
+
+      adjusted.add(argsBuf.getAddress());
+      adjusted.add(argsBufSize);
       break;
+    }
     case SILFunctionTypeRepresentation::WitnessMethod:
       assert(witnessMetadata);
       assert(witnessMetadata->SelfMetadata->getType() ==
