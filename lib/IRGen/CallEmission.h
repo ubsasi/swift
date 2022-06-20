@@ -17,6 +17,7 @@
 #ifndef SWIFT_IRGEN_CALLEMISSION_H
 #define SWIFT_IRGEN_CALLEMISSION_H
 
+#include "Address.h"
 #include "Temporary.h"
 #include "Callee.h"
 
@@ -48,6 +49,8 @@ protected:
 
   /// Temporaries required by the call.
   TemporarySet Temporaries;
+
+  SmallVector<StackAddress, 8> RawTempraries;
 
   /// The function we're going to call.
   Callee CurCallee;

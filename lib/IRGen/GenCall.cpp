@@ -2370,7 +2370,6 @@ public:
       default:
         llvm_unreachable("unexpected representation");
       }
-      original.dump();
 
       Optional<StackAddress> dynamicArgsBuf;
       SmallVector<SILType, 4> indiceTypes;
@@ -2385,7 +2384,7 @@ public:
             return original.claimNext();
           });
       if (dynamicArgsBuf) {
-        Temporaries.add({dynamicArgsBuf.getValue(), dynamicArgsBuf->getType()});
+        RawTempraries.push_back(*dynamicArgsBuf);
       }
 
       // add arg buffer
@@ -3016,9 +3015,14 @@ llvm::CallInst *CallEmission::emitCallSite() {
   if (!IsCoroutine) {
     Temporaries.destroyAll(IGF);
 
+    for (auto &stackAddr : RawTempraries) {
+      IGF.emitDeallocateDynamicAlloca(stackAddr);
+    }
+
     // Clear the temporary set so that we can assert that there are no
     // temporaries later.
     Temporaries.clear();
+    RawTempraries.clear();
   }
 
   // Return.
@@ -3295,6 +3299,7 @@ CallEmission::~CallEmission() {
   assert(LastArgWritten == 0);
   assert(EmittedCall);
   assert(Temporaries.hasBeenCleared());
+  assert(RawTempraries.empty());
   assert(state == State::Finished);
 }
 
