@@ -2409,7 +2409,7 @@ public:
       auto dynamicArgsBuf = IGF.emitDynamicAlloca(IGF.IGM.Int8Ty, argsBufSize, Alignment(16));
       Address argsBuf = dynamicArgsBuf.getAddress();
 
-      assert(original.size() == requirements.size() + params.size() &&
+      assert(requirements.size() + params.size() <= original.size() &&
              "wrong number of arguments?");
 
       for (unsigned i : indices(params)) {
@@ -2428,9 +2428,7 @@ public:
                                 ti.getAddressForPointer(original.claimNext()),
                                 ty, false);
         } else {
-          Explosion operandValue;
-          operandValue.add(original.claimNext());
-          cast<LoadableTypeInfo>(ti).initialize(IGF, operandValue, addr, false);
+          cast<LoadableTypeInfo>(ti).initialize(IGF, original, addr, false);
         }
       }
 
