@@ -6522,13 +6522,23 @@ void IRGenSILFunction::visitKeyPathInst(swift::KeyPathInst *I) {
   auto pattern = IGM.getAddrOfKeyPathPattern(I->getPattern(), I->getLoc());
   // Build up the argument vector to instantiate the pattern here.
   Optional<StackAddress> dynamicArgsBuf;
-  llvm::Value *args = getKeyPathInstantiationArgument(
-      *this, I->getSubstitutions(), I->getAllOperands(), I->getPattern(),
-      [&](auto v) { return this->getLoweredAddress(v); },
-      [&](auto v) { return this->getLoweredExplosion(v); }, dynamicArgsBuf);
+
+  SmallVector<SILType, 4> indiceTypes;
+  Explosion indiceValues;
+  for (auto &operand : I->getAllOperands()) {
+    indiceTypes.push_back(operand.get()->getType());
+    getLoweredExplosion(operand.get(), indiceValues);
+  }
+  auto sig = I->getPattern()->getGenericSignature();
+  auto subs = I->getSubstitutions();
+  auto args = getKeyPathInstantiationArgument(
+      *this, subs, sig, indiceTypes, indiceValues, dynamicArgsBuf,
+      [&](GenericRequirement reqt) -> llvm::Value * {
+        return emitGenericRequirementFromSubstitutions(*this, sig, reqt, subs);
+      });
 
   auto patternPtr = llvm::ConstantExpr::getBitCast(pattern, IGM.Int8PtrTy);
-  auto call = Builder.CreateCall(IGM.getGetKeyPathFn(), {patternPtr, args});
+  auto call = Builder.CreateCall(IGM.getGetKeyPathFn(), {patternPtr, args.first});
   call->setDoesNotThrow();
 
   if (dynamicArgsBuf) {

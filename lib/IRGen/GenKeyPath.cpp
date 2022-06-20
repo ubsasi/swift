@@ -39,10 +39,12 @@
 #include "TypeInfo.h"
 #include "GenKeyPath.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Function.h"
 #include "swift/SIL/SILInstruction.h"
 #include "swift/SIL/SILLocation.h"
+#include "swift/SIL/SILType.h"
 #include "swift/SIL/TypeLowering.h"
 #include "swift/ABI/KeyPath.h"
 #include "swift/ABI/HeapObject.h"
@@ -1538,16 +1540,15 @@ void IRGenModule::emitSILProperty(SILProperty *prop) {
 // void KeyPathArgumentEmission::emitArgument() {
 
 // }
-llvm::Value *irgen::getKeyPathInstantiationArgument(
-    IRGenFunction &IGF, SubstitutionMap subs, ArrayRef<Operand> indiceOperands,
-    const KeyPathPattern *pattern,
-    std::function<Address(SILValue)> getLoweredAddress,
-    std::function<Explosion(SILValue)> getLoweredExplosion,
-    Optional<StackAddress> &dynamicArgsBuf) {
+std::pair<llvm::Value *, llvm::Value *>
+irgen::getKeyPathInstantiationArgument(
+    IRGenFunction &IGF, SubstitutionMap subs, const CanGenericSignature &sig,
+    ArrayRef<SILType> indiceTypes, Explosion &indiceValues,
+    Optional<StackAddress> &dynamicArgsBuf,
+    EmitGenericRequirementFn emitRequirement) {
   auto &IGM = IGF.IGM;
 
-  if (!subs.empty() || !indiceOperands.empty()) {
-    auto sig = pattern->getGenericSignature();
+  if (!subs.empty() || !indiceTypes.empty()) {
 
     SmallVector<GenericRequirement, 4> requirements;
     enumerateGenericSignatureRequirements(
@@ -1567,10 +1568,9 @@ llvm::Value *irgen::getKeyPathInstantiationArgument(
     }
 
     SmallVector<llvm::Value *, 4> operandOffsets;
-    for (unsigned i : indices(indiceOperands)) {
-      auto operand = indiceOperands[i].get();
-      auto &ti = IGF.getTypeInfo(operand->getType());
-      auto ty = operand->getType();
+    for (unsigned i : indices(indiceTypes)) {
+      auto ty = indiceTypes[i];
+      auto &ti = IGF.getTypeInfo(ty);
       auto alignMask = ti.getAlignmentMask(IGF, ty);
       if (i != 0) {
         auto notAlignMask = IGF.Builder.CreateNot(alignMask);
@@ -1589,17 +1589,13 @@ llvm::Value *irgen::getKeyPathInstantiationArgument(
     Address argsBuf = dynamicArgsBuf->getAddress();
 
     if (!subs.empty()) {
-      emitInitOfGenericRequirementsBuffer(
-          IGF, requirements, argsBuf,
-          [&](GenericRequirement reqt) -> llvm::Value * {
-            return emitGenericRequirementFromSubstitutions(IGF, sig, reqt,
-                                                           subs);
-          });
+      emitInitOfGenericRequirementsBuffer(IGF, requirements, argsBuf,
+                                          emitRequirement);
     }
 
-    for (unsigned i : indices(indiceOperands)) {
-      auto operand = indiceOperands[i].get();
-      auto &ti = IGF.getTypeInfo(operand->getType());
+    for (unsigned i : indices(indiceTypes)) {
+      auto ty = indiceTypes[i];
+      auto &ti = IGF.getTypeInfo(ty);
       auto ptr = IGF.Builder.CreateInBoundsGEP(argsBuf.getAddress()
                                                    ->getType()
                                                    ->getScalarType()
@@ -1608,19 +1604,20 @@ llvm::Value *irgen::getKeyPathInstantiationArgument(
                                                operandOffsets[i]);
       auto addr = ti.getAddressForPointer(
           IGF.Builder.CreateBitCast(ptr, ti.getStorageType()->getPointerTo()));
-      if (operand->getType().isAddress()) {
-        ti.initializeWithTake(IGF, addr, getLoweredAddress(operand),
-                              operand->getType(), false);
+      if (ty.isAddress()) {
+        ti.initializeWithTake(IGF, addr,
+                              ti.getAddressForPointer(indiceValues.claimNext()),
+                              ty, false);
       } else {
-        Explosion operandValue = getLoweredExplosion(operand);
-        cast<LoadableTypeInfo>(ti).initialize(IGF, operandValue, addr, false);
+        cast<LoadableTypeInfo>(ti).initialize(IGF, indiceValues, addr, false);
       }
     }
-    return argsBuf.getAddress();
+    return std::make_pair(argsBuf.getAddress(), argsBufSize);
   } else {
     // No arguments necessary, so the argument ought to be ignored by any
     // callbacks in the pattern.
-    assert(indiceOperands.empty() && "indices not implemented");
-    return llvm::UndefValue::get(IGM.Int8PtrTy);
+    assert(indiceTypes.empty() && "indices not implemented");
+    return std::make_pair(llvm::UndefValue::get(IGM.Int8PtrTy),
+                          llvm::ConstantInt::get(IGM.SizeTy, 0));
   }
 }

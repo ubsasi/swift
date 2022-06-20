@@ -18,6 +18,7 @@
 #define SWIFT_IRGEN_GENKEYPATH_H
 
 #include "Address.h"
+#include "GenericRequirement.h"
 #include "swift/AST/SubstitutionMap.h"
 #include "swift/Basic/LLVM.h"
 #include "swift/SIL/SILValue.h"
@@ -43,12 +44,11 @@ namespace irgen {
     llvm::Value *begin(SubstitutionMap subs, ArrayRef<Operand> indiceOperands);
     void emitArgument();
   };
-  llvm::Value *getKeyPathInstantiationArgument(
-      IRGenFunction &IGF, SubstitutionMap subs,
-      ArrayRef<Operand> indiceOperands, const KeyPathPattern *pattern,
-      std::function<Address(SILValue)> getLoweredAddress,
-      std::function<Explosion(SILValue)> getLoweredExplosion,
-      Optional<StackAddress> &dynamicArgsBuf);
+  std::pair<llvm::Value *, llvm::Value *> getKeyPathInstantiationArgument(
+      IRGenFunction &IGF, SubstitutionMap subs, const CanGenericSignature &sig,
+      ArrayRef<SILType> indiceTypes, Explosion &indiceValues,
+      Optional<StackAddress> &dynamicArgsBuf,
+      EmitGenericRequirementFn emitRequirement);
 } // end namespace irgen
 } // end namespace swift
 

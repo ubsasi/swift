@@ -16,6 +16,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "GenKeyPath.h"
+#include "Temporary.h"
 #include "swift/ABI/MetadataValues.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/GenericEnvironment.h"
@@ -2345,7 +2347,6 @@ public:
       // IGF.Builder.GetInsertBlock()->getParent()->dump();
       // origCalleeType->getInvocationGenericSignature()->dump();
 
-      auto &IGM = IGF.IGM;
       auto params = origCalleeType->getParameters();
 
       switch (getCallee().getRepresentation()) {
@@ -2371,75 +2372,27 @@ public:
       }
       original.dump();
 
-      auto sig = origCalleeType->getInvocationGenericSignature();
-      SmallVector<GenericRequirement, 4> requirements;
-      enumerateGenericSignatureRequirements(
-          sig, [&](GenericRequirement reqt) { requirements.push_back(reqt); });
-
-      llvm::Value *argsBufSize;
-      llvm::Value *argsBufAlign;
-
-      if (!requirements.empty()) {
-        argsBufSize = llvm::ConstantInt::get(
-            IGM.SizeTy, IGM.getPointerSize().getValue() * requirements.size());
-        argsBufAlign = llvm::ConstantInt::get(
-            IGM.SizeTy, IGM.getPointerAlignment().getMaskValue());
-      } else {
-        argsBufSize = llvm::ConstantInt::get(IGM.SizeTy, 0);
-        argsBufAlign = llvm::ConstantInt::get(IGM.SizeTy, 0);
-      }
-
-      SmallVector<llvm::Value *, 4> operandOffsets;
-
+      Optional<StackAddress> dynamicArgsBuf;
+      SmallVector<SILType, 4> indiceTypes;
       for (auto i : indices(params)) {
         auto ty = getParameterType(i);
-        auto &ti = IGF.getTypeInfo(ty);
-        auto alignMask = ti.getAlignmentMask(IGF, ty);
-        if (i != 0) {
-          auto notAlignMask = IGF.Builder.CreateNot(alignMask);
-          argsBufSize = IGF.Builder.CreateAdd(argsBufSize, alignMask);
-          argsBufSize = IGF.Builder.CreateAnd(argsBufSize, notAlignMask);
-        }
-        operandOffsets.push_back(argsBufSize);
-        auto size = ti.getSize(IGF, ty);
-        argsBufSize = IGF.Builder.CreateAdd(argsBufSize, size);
-        argsBufAlign = IGF.Builder.CreateOr(argsBufAlign, alignMask);
+        indiceTypes.push_back(ty);
       }
-
-      auto dynamicArgsBuf = IGF.emitDynamicAlloca(IGF.IGM.Int8Ty, argsBufSize, Alignment(16));
-      Address argsBuf = dynamicArgsBuf.getAddress();
-
-      assert(requirements.size() + params.size() <= original.size() &&
-             "wrong number of arguments?");
-
-      for (unsigned i : indices(params)) {
-        auto ty = getParameterType(i);
-        auto &ti = IGF.getTypeInfo(ty);
-        auto ptr = IGF.Builder.CreateInBoundsGEP(argsBuf.getAddress()
-                                                     ->getType()
-                                                     ->getScalarType()
-                                                     ->getPointerElementType(),
-                                                 argsBuf.getAddress(),
-                                                 operandOffsets[i]);
-        auto addr = ti.getAddressForPointer(IGF.Builder.CreateBitCast(
-            ptr, ti.getStorageType()->getPointerTo()));
-        if (ty.isAddress()) {
-          ti.initializeWithTake(IGF, addr,
-                                ti.getAddressForPointer(original.claimNext()),
-                                ty, false);
-        } else {
-          cast<LoadableTypeInfo>(ti).initialize(IGF, original, addr, false);
-        }
-      }
-
-      emitInitOfGenericRequirementsBuffer(
-          IGF, requirements, argsBuf,
+      auto sig = origCalleeType->getInvocationGenericSignature();
+      auto args = getKeyPathInstantiationArgument(
+          IGF, origCalleeType->getInvocationSubstitutions(), sig, indiceTypes,
+          original, dynamicArgsBuf,
           [&](GenericRequirement reqt) -> llvm::Value * {
             return original.claimNext();
           });
+      if (dynamicArgsBuf) {
+        Temporaries.add({dynamicArgsBuf.getValue(), dynamicArgsBuf->getType()});
+      }
 
-      adjusted.add(argsBuf.getAddress());
-      adjusted.add(argsBufSize);
+      // add arg buffer
+      adjusted.add(args.first);
+      // add arg buffer size
+      adjusted.add(args.second);
       break;
     }
     case SILFunctionTypeRepresentation::WitnessMethod:
