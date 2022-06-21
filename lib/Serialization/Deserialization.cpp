@@ -5149,6 +5149,10 @@ getActualSILFunctionTypeRepresentation(uint8_t rep) {
   CASE(ObjCMethod)
   CASE(WitnessMethod)
   CASE(CXXMethod)
+  CASE(KeyPathAccessorGetter)
+  CASE(KeyPathAccessorSetter)
+  CASE(KeyPathAccessorEquals)
+  CASE(KeyPathAccessorHash)
 #undef CASE
   default:
     return None;

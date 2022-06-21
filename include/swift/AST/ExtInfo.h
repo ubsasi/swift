@@ -172,6 +172,13 @@ enum class SILFunctionTypeRepresentation : uint8_t {
   /// constructor). Except for
   /// handling the "this" argument, has the same behavior as "CFunctionPointer".
   CXXMethod,
+
+  /// A KeyPath accessor function, which is thin and also uses the variadic length
+  /// generic components serialization in trailing buffer.
+  KeyPathAccessorGetter,
+  KeyPathAccessorSetter,
+  KeyPathAccessorEquals,
+  KeyPathAccessorHash,
 };
 
 /// Returns true if the function with this convention doesn't carry a context.
@@ -202,6 +209,10 @@ isThinRepresentation(SILFunctionTypeRepresentation rep) {
   case SILFunctionTypeRepresentation::CFunctionPointer:
   case SILFunctionTypeRepresentation::Closure:
   case SILFunctionTypeRepresentation::CXXMethod:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     return true;
   }
   llvm_unreachable("Unhandled SILFunctionTypeRepresentation in switch.");
@@ -214,6 +225,30 @@ isThickRepresentation(Repr repr) {
   return !isThinRepresentation(repr);
 }
 
+/// Returns true if the function with this convention doesn't carry a context.
+constexpr bool
+isKeyPathAccessorRepresentation(SILFunctionTypeRepresentation rep) {
+  switch (rep) {
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
+      return true;
+    case SILFunctionTypeRepresentation::Thick:
+    case SILFunctionTypeRepresentation::Block:
+    case SILFunctionTypeRepresentation::Thin:
+    case SILFunctionTypeRepresentation::Method:
+    case SILFunctionTypeRepresentation::ObjCMethod:
+    case SILFunctionTypeRepresentation::WitnessMethod:
+    case SILFunctionTypeRepresentation::CFunctionPointer:
+    case SILFunctionTypeRepresentation::Closure:
+    case SILFunctionTypeRepresentation::CXXMethod:
+      return false;
+  }
+  llvm_unreachable("Unhandled SILFunctionTypeRepresentation in switch.");
+}
+
+
 constexpr SILFunctionTypeRepresentation
 convertRepresentation(FunctionTypeRepresentation rep) {
   switch (rep) {
@@ -225,6 +260,7 @@ convertRepresentation(FunctionTypeRepresentation rep) {
     return SILFunctionTypeRepresentation::Thin;
   case FunctionTypeRepresentation::CFunctionPointer:
     return SILFunctionTypeRepresentation::CFunctionPointer;
+    return SILFunctionTypeRepresentation::Thin;
   }
   llvm_unreachable("Unhandled FunctionTypeRepresentation!");
 }
@@ -245,6 +281,10 @@ convertRepresentation(SILFunctionTypeRepresentation rep) {
   case SILFunctionTypeRepresentation::ObjCMethod:
   case SILFunctionTypeRepresentation::WitnessMethod:
   case SILFunctionTypeRepresentation::Closure:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     return None;
   }
   llvm_unreachable("Unhandled SILFunctionTypeRepresentation!");
@@ -264,6 +304,10 @@ constexpr bool canBeCalledIndirectly(SILFunctionTypeRepresentation rep) {
   case SILFunctionTypeRepresentation::ObjCMethod:
   case SILFunctionTypeRepresentation::Method:
   case SILFunctionTypeRepresentation::WitnessMethod:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     return true;
   }
 
@@ -285,6 +329,10 @@ template <typename Repr> constexpr bool shouldStoreClangType(Repr repr) {
   case SILFunctionTypeRepresentation::Method:
   case SILFunctionTypeRepresentation::WitnessMethod:
   case SILFunctionTypeRepresentation::Closure:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     return false;
   }
   llvm_unreachable("Unhandled SILFunctionTypeRepresentation.");
@@ -395,6 +443,10 @@ public:
     case SILFunctionTypeRepresentation::Thin:
     case SILFunctionTypeRepresentation::CFunctionPointer:
     case SILFunctionTypeRepresentation::Closure:
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
       return false;
     case SILFunctionTypeRepresentation::ObjCMethod:
     case SILFunctionTypeRepresentation::Method:
@@ -633,6 +685,10 @@ SILFunctionLanguage getSILFunctionLanguage(SILFunctionTypeRepresentation rep) {
   case SILFunctionTypeRepresentation::Method:
   case SILFunctionTypeRepresentation::WitnessMethod:
   case SILFunctionTypeRepresentation::Closure:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     return SILFunctionLanguage::Swift;
   }
 
@@ -651,17 +707,17 @@ class SILExtInfoBuilder {
   // and NumMaskBits must be updated, and they must match.
 
   //   |representation|pseudogeneric| noescape | concurrent | async |differentiability|
-  //   |    0 .. 3    |      4      |     5    |     6      |   7   |     8 .. 10     |
+  //   |    0 .. 4    |      5      |     6    |     7      |   8   |     9 .. 11     |
   //
   enum : unsigned {
-    RepresentationMask = 0xF << 0,
-    PseudogenericMask = 1 << 4,
-    NoEscapeMask = 1 << 5,
-    SendableMask = 1 << 6,
-    AsyncMask = 1 << 7,
-    DifferentiabilityMaskOffset = 8,
+    RepresentationMask = 0x1F << 0,
+    PseudogenericMask = 1 << 5,
+    NoEscapeMask = 1 << 6,
+    SendableMask = 1 << 7,
+    AsyncMask = 1 << 8,
+    DifferentiabilityMaskOffset = 9,
     DifferentiabilityMask = 0x7 << DifferentiabilityMaskOffset,
-    NumMaskBits = 11
+    NumMaskBits = 12
   };
 
   unsigned bits; // Naturally sized for speed.
@@ -755,6 +811,10 @@ public:
     case Representation::Thin:
     case Representation::CFunctionPointer:
     case Representation::Closure:
+    case Representation::KeyPathAccessorGetter:
+    case Representation::KeyPathAccessorSetter:
+    case Representation::KeyPathAccessorEquals:
+    case Representation::KeyPathAccessorHash:
       return false;
     case Representation::ObjCMethod:
     case Representation::Method:
@@ -778,6 +838,10 @@ public:
     case Representation::WitnessMethod:
     case Representation::Closure:
     case SILFunctionTypeRepresentation::CXXMethod:
+    case Representation::KeyPathAccessorGetter:
+    case Representation::KeyPathAccessorSetter:
+    case Representation::KeyPathAccessorEquals:
+    case Representation::KeyPathAccessorHash:
       return false;
     }
     llvm_unreachable("Unhandled Representation in switch.");

@@ -32,15 +32,19 @@
 #include "IRGenFunction.h"
 #include "IRGenMangler.h"
 #include "IRGenModule.h"
+#include "LoadableTypeInfo.h"
 #include "MetadataLayout.h"
 #include "ProtocolInfo.h"
 #include "StructLayout.h"
 #include "TypeInfo.h"
+#include "GenKeyPath.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Function.h"
 #include "swift/SIL/SILInstruction.h"
 #include "swift/SIL/SILLocation.h"
+#include "swift/SIL/SILType.h"
 #include "swift/SIL/TypeLowering.h"
 #include "swift/ABI/KeyPath.h"
 #include "swift/ABI/HeapObject.h"
@@ -68,9 +72,8 @@ enum KeyPathAccessor {
   Hash,
 };
 
-static void
-bindPolymorphicArgumentsFromComponentIndices(IRGenFunction &IGF,
-                                     const KeyPathPatternComponent &component,
+void
+irgen::bindPolymorphicArgumentsFromComponentIndices(IRGenFunction &IGF,
                                      GenericEnvironment *genericEnv,
                                      ArrayRef<GenericRequirement> requirements,
                                      llvm::Value *args,
@@ -97,6 +100,73 @@ bindPolymorphicArgumentsFromComponentIndices(IRGenFunction &IGF,
     [&](CanType t) {
       return genericEnv->mapTypeIntoContext(t)->getCanonicalType();
     });
+}
+
+static llvm::Function *
+getAccessorThunkIfRequired(IRGenModule &IGM,
+                           const KeyPathPatternComponent &component,
+                           KeyPathAccessor whichAccessor) {
+  SILFunction *accessor;
+  switch (whichAccessor) {
+  case Getter:
+    accessor = component.getComputedPropertyGetter();
+    break;
+  case Setter:
+    accessor = component.getComputedPropertySetter();
+    break;
+  case Equals:
+    accessor = component.getSubscriptIndexEquals();
+    break;
+  case Hash:
+    accessor = component.getSubscriptIndexHash();
+    break;
+  }
+  // If the accessor is locally available, we can use it as is.
+  // If it's only externally available, we need a local thunk to relative-
+  // reference.
+  if (!isAvailableExternally(accessor->getLinkage()) &&
+      &IGM == IGM.IRGen.getGenModule(accessor)) {
+    return IGM.getAddrOfSILFunction(accessor, NotForDefinition);
+  }
+
+  const char *thunkName;
+  switch (whichAccessor) {
+  case Getter:
+    thunkName = "keypath_get";
+    break;
+  case Setter:
+    thunkName = "keypath_set";
+    break;
+  case Equals:
+    thunkName = "keypath_equals";
+    break;
+  case Hash:
+    thunkName = "keypath_hash";
+    break;
+  }
+
+  auto accessorFn = IGM.getAddrOfSILFunction(accessor, NotForDefinition);
+  auto accessorThunk = llvm::Function::Create(accessorFn->getFunctionType(),
+    llvm::GlobalValue::PrivateLinkage, thunkName, IGM.getModule());
+  accessorThunk->setAttributes(IGM.constructInitialAttributes());
+  accessorThunk->setCallingConv(IGM.SwiftCC);
+  accessorThunk->setAttributes(accessorFn->getAttributes());
+  {
+    IRGenFunction IGF(IGM, accessorThunk);
+    if (IGM.DebugInfo)
+      IGM.DebugInfo->emitArtificialFunction(IGF, accessorThunk);
+    Explosion forwardedArgs = IGF.collectParameters();
+    auto fnPtr =
+        FunctionPointer::forDirect(IGM, accessorFn, /*secondaryValue*/ nullptr,
+                                   accessor->getLoweredFunctionType());
+    auto call = IGF.Builder.CreateCall(fnPtr, forwardedArgs.claimAll());
+    if (call->getType()->isVoidTy())
+      IGF.Builder.CreateRetVoid();
+    else
+      IGF.Builder.CreateRet(call);
+  }
+  
+  return accessorThunk;
 }
 
 static llvm::Function *
@@ -238,7 +308,7 @@ getAccessorForComputedComponent(IRGenModule &IGM,
       break;
     }
     auto componentArgsBufSize = params.claimNext();
-    bindPolymorphicArgumentsFromComponentIndices(IGF, component,
+    bindPolymorphicArgumentsFromComponentIndices(IGF,
                                                  genericEnv, requirements,
                                                  componentArgsBuf,
                                                  componentArgsBufSize,
@@ -400,7 +470,7 @@ getWitnessTableForComputedComponent(IRGenModule &IGM,
       auto params = IGF.collectParameters();
       auto componentArgsBuf = params.claimNext();
       auto componentArgsBufSize = params.claimNext();
-      bindPolymorphicArgumentsFromComponentIndices(IGF, component,
+      bindPolymorphicArgumentsFromComponentIndices(IGF,
                                      genericEnv, requirements,
                                      componentArgsBuf,
                                      componentArgsBufSize,
@@ -455,7 +525,7 @@ getWitnessTableForComputedComponent(IRGenModule &IGM,
       auto sourceArgsBuf = params.claimNext();
       auto destArgsBuf = params.claimNext();
       auto componentArgsBufSize = params.claimNext();
-      bindPolymorphicArgumentsFromComponentIndices(IGF, component,
+      bindPolymorphicArgumentsFromComponentIndices(IGF,
                                      genericEnv, requirements,
                                      sourceArgsBuf,
                                      componentArgsBufSize,
@@ -521,12 +591,8 @@ getWitnessTableForComputedComponent(IRGenModule &IGM,
     }
   }
   
-  auto equals = getAccessorForComputedComponent(IGM, component, Equals,
-                                      genericEnv, requirements,
-                                      !component.getSubscriptIndices().empty());
-  auto hash = getAccessorForComputedComponent(IGM, component, Hash,
-                                      genericEnv, requirements,
-                                      !component.getSubscriptIndices().empty());
+  auto equals = getAccessorThunkIfRequired(IGM, component, Equals);
+  auto hash = getAccessorThunkIfRequired(IGM, component, Hash);
   
   ConstantInitBuilder builder(IGM);
   ConstantStructBuilder fields = builder.beginStruct();
@@ -1116,14 +1182,10 @@ emitKeyPathComponent(IRGenModule &IGM,
 
     // Push the accessors, possibly thunked to marshal generic environment.
     fields.addCompactFunctionReference(
-      getAccessorForComputedComponent(IGM, component, Getter,
-                                      genericEnv, requirements,
-                                      hasSubscriptIndices));
+      getAccessorThunkIfRequired(IGM, component, Getter));
     if (settable)
       fields.addCompactFunctionReference(
-        getAccessorForComputedComponent(IGM, component, Setter,
-                                        genericEnv, requirements,
-                                        hasSubscriptIndices));
+        getAccessorThunkIfRequired(IGM, component, Setter));
 
     if (!isInstantiableOnce) {
       // If there's generic context or subscript indexes, embed as
@@ -1419,4 +1481,86 @@ void IRGenModule::emitSILProperty(SILProperty *prop) {
   var->setConstant(true);
   var->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
   var->setAlignment(llvm::MaybeAlign(4));
+}
+
+std::pair<llvm::Value *, llvm::Value *>
+irgen::emitKeyPathInstantiationArgument(
+    IRGenFunction &IGF, SubstitutionMap subs, const CanGenericSignature &sig,
+    ArrayRef<SILType> indiceTypes, Explosion &indiceValues,
+    Optional<StackAddress> &dynamicArgsBuf,
+    EmitGenericRequirementFn emitRequirement) {
+  auto &IGM = IGF.IGM;
+
+  if (!subs.empty() || !indiceTypes.empty()) {
+
+    SmallVector<GenericRequirement, 4> requirements;
+    enumerateGenericSignatureRequirements(
+        sig, [&](GenericRequirement reqt) { requirements.push_back(reqt); });
+
+    llvm::Value *argsBufSize;
+    llvm::Value *argsBufAlign;
+
+    if (!subs.empty()) {
+      argsBufSize = llvm::ConstantInt::get(
+          IGM.SizeTy, IGM.getPointerSize().getValue() * requirements.size());
+      argsBufAlign = llvm::ConstantInt::get(
+          IGM.SizeTy, IGM.getPointerAlignment().getMaskValue());
+    } else {
+      argsBufSize = llvm::ConstantInt::get(IGM.SizeTy, 0);
+      argsBufAlign = llvm::ConstantInt::get(IGM.SizeTy, 0);
+    }
+
+    SmallVector<llvm::Value *, 4> operandOffsets;
+    for (unsigned i : indices(indiceTypes)) {
+      auto ty = indiceTypes[i];
+      auto &ti = IGF.getTypeInfo(ty);
+      auto alignMask = ti.getAlignmentMask(IGF, ty);
+      if (i != 0) {
+        auto notAlignMask = IGF.Builder.CreateNot(alignMask);
+        argsBufSize = IGF.Builder.CreateAdd(argsBufSize, alignMask);
+        argsBufSize = IGF.Builder.CreateAnd(argsBufSize, notAlignMask);
+      }
+      operandOffsets.push_back(argsBufSize);
+      auto size = ti.getSize(IGF, ty);
+      argsBufSize = IGF.Builder.CreateAdd(argsBufSize, size);
+      argsBufAlign = IGF.Builder.CreateOr(argsBufAlign, alignMask);
+    }
+
+    dynamicArgsBuf =
+        IGF.emitDynamicAlloca(IGM.Int8Ty, argsBufSize, Alignment(16));
+
+    Address argsBuf = dynamicArgsBuf->getAddress();
+
+    if (!subs.empty()) {
+      emitInitOfGenericRequirementsBuffer(IGF, requirements, argsBuf,
+                                          emitRequirement);
+    }
+
+    for (unsigned i : indices(indiceTypes)) {
+      auto ty = indiceTypes[i];
+      auto &ti = IGF.getTypeInfo(ty);
+      auto ptr = IGF.Builder.CreateInBoundsGEP(argsBuf.getAddress()
+                                                   ->getType()
+                                                   ->getScalarType()
+                                                   ->getPointerElementType(),
+                                               argsBuf.getAddress(),
+                                               operandOffsets[i]);
+      auto addr = ti.getAddressForPointer(
+          IGF.Builder.CreateBitCast(ptr, ti.getStorageType()->getPointerTo()));
+      if (ty.isAddress()) {
+        ti.initializeWithTake(IGF, addr,
+                              ti.getAddressForPointer(indiceValues.claimNext()),
+                              ty, false);
+      } else {
+        cast<LoadableTypeInfo>(ti).initialize(IGF, indiceValues, addr, false);
+      }
+    }
+    return std::make_pair(argsBuf.getAddress(), argsBufSize);
+  } else {
+    // No arguments necessary, so the argument ought to be ignored by any
+    // callbacks in the pattern.
+    assert(indiceTypes.empty() && "indices not implemented");
+    return std::make_pair(llvm::UndefValue::get(IGM.Int8PtrTy),
+                          llvm::ConstantInt::get(IGM.SizeTy, 0));
+  }
 }

@@ -16,9 +16,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "GenKeyPath.h"
+#include "Temporary.h"
 #include "swift/ABI/MetadataValues.h"
 #include "swift/AST/ASTContext.h"
 #include "swift/AST/GenericEnvironment.h"
+#include "swift/Basic/Range.h"
 #include "swift/Runtime/Config.h"
 #include "swift/IRGen/Linking.h"
 #include "swift/SIL/SILModule.h"
@@ -28,8 +31,10 @@
 #include "clang/Basic/TargetInfo.h"
 #include "clang/CodeGen/CodeGenABITypes.h"
 #include "clang/CodeGen/ModuleBuilder.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalPtrAuthInfo.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include "CallEmission.h"
 #include "EntryPointArgumentEmission.h"
@@ -307,6 +312,10 @@ llvm::CallingConv::ID irgen::expandCallingConv(IRGenModule &IGM,
   case SILFunctionTypeRepresentation::Closure:
   case SILFunctionTypeRepresentation::Thin:
   case SILFunctionTypeRepresentation::Thick:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     if (isAsync)
       return IGM.SwiftAsyncCC;
     return getFreestandingConvention(IGM);
@@ -466,6 +475,7 @@ namespace {
     llvm::Type *expandDirectResult();
     void expandIndirectResults();
     void expandParameters();
+    void expandKeyPathAccessorParameters();
     void expandExternalSignatureTypes();
 
     void expandCoroutineResult(bool forContinuation);
@@ -1342,6 +1352,10 @@ void SignatureExpansion::expandExternalSignatureTypes() {
   case SILFunctionTypeRepresentation::Method:
   case SILFunctionTypeRepresentation::WitnessMethod:
   case SILFunctionTypeRepresentation::Closure:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     llvm_unreachable("not a C representation");
   }
 
@@ -1590,6 +1604,60 @@ bool irgen::hasSelfContextParameter(CanSILFunctionType fnType) {
   return false;
 }
 
+void SignatureExpansion::expandKeyPathAccessorParameters() {
+  auto params = FnType->getParameters();
+  unsigned numArgsToExpand;
+  SmallVector<llvm::Type *, 4> tailParams;
+
+  switch (FnType->getRepresentation()) {
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    // from: (base: CurValue, indices: (X, Y, ...))
+    // to:   (base: CurValue, argument: UnsafeRawPointer, size: Int)
+    numArgsToExpand = 1;
+    tailParams.push_back(IGM.Int8PtrTy);
+    tailParams.push_back(IGM.SizeTy);
+    break;
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+    // from: (value: NewValue, base: CurValue, indices: (X, Y, ...))
+    // to:   (value: NewValue, base: CurValue, argument: UnsafeRawPointer, size: Int)
+    numArgsToExpand = 2;
+    tailParams.push_back(IGM.Int8PtrTy);
+    tailParams.push_back(IGM.SizeTy);
+    break;
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    // from: (lhsIndices: (X, Y, ...), rhsIndices: (X, Y, ...))
+    // to:   (lhsArguments: UnsafeRawPointer, rhsArguments: UnsafeRawPointer, size: Int)
+    numArgsToExpand = 0;
+    tailParams.push_back(IGM.Int8PtrTy);
+    tailParams.push_back(IGM.Int8PtrTy);
+    tailParams.push_back(IGM.SizeTy);
+    break;
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
+    // from: (indices: (X, Y, ...))
+    // to:   (instanceArguments: UnsafeRawPointer, size: Int)
+    numArgsToExpand = 0;
+    tailParams.push_back(IGM.Int8PtrTy);
+    tailParams.push_back(IGM.SizeTy);
+    break;
+  case SILFunctionTypeRepresentation::Thick:
+  case SILFunctionTypeRepresentation::Block:
+  case SILFunctionTypeRepresentation::Thin:
+  case SILFunctionTypeRepresentation::Method:
+  case SILFunctionTypeRepresentation::ObjCMethod:
+  case SILFunctionTypeRepresentation::WitnessMethod:
+  case SILFunctionTypeRepresentation::CFunctionPointer:
+  case SILFunctionTypeRepresentation::Closure:
+  case SILFunctionTypeRepresentation::CXXMethod:
+    llvm_unreachable("non keypath accessor convention");
+  }
+  for (unsigned i = 0; i < numArgsToExpand; i++) {
+    expand(params[i]);
+  }
+  for (auto tailParam : tailParams) {
+    ParamIRTypes.push_back(tailParam);
+  }
+}
+
 /// Expand the abstract parameters of a SIL function type into the physical
 /// parameters of an LLVM function type (results have already been expanded).
 void SignatureExpansion::expandParameters() {
@@ -1661,6 +1729,12 @@ void SignatureExpansion::expandParameters() {
       case SILFunctionType::Representation::Closure:
         return FnType->hasErrorResult();
 
+      // KeyPath accessor always has no context.
+      case SILFunctionType::Representation::KeyPathAccessorGetter:
+      case SILFunctionType::Representation::KeyPathAccessorSetter:
+      case SILFunctionType::Representation::KeyPathAccessorEquals:
+      case SILFunctionType::Representation::KeyPathAccessorHash:
+        return false;
       case SILFunctionType::Representation::Thick:
         return true;
       }
@@ -1703,7 +1777,18 @@ void SignatureExpansion::expandFunctionType() {
       return;
     }
     expandResult();
-    expandParameters();
+
+    switch (FnType->getRepresentation()) {
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
+      expandKeyPathAccessorParameters();
+      break;
+    default:
+      expandParameters();
+      break;
+    }
     return;
   }
   case SILFunctionLanguage::C:
@@ -1826,6 +1911,10 @@ void SignatureExpansion::expandAsyncEntryType() {
       case SILFunctionType::Representation::Thin:
       case SILFunctionType::Representation::Closure:
       case SILFunctionType::Representation::CXXMethod:
+      case SILFunctionType::Representation::KeyPathAccessorGetter:
+      case SILFunctionType::Representation::KeyPathAccessorSetter:
+      case SILFunctionType::Representation::KeyPathAccessorEquals:
+      case SILFunctionType::Representation::KeyPathAccessorHash:
         return false;
 
       case SILFunctionType::Representation::Thick:
@@ -2250,6 +2339,60 @@ public:
                            isOutlined);
       break;
 
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash: {
+      // CurCallee.getFunctionPointer().getRawPointer()->dump();
+      // IGF.Builder.GetInsertBlock()->getParent()->dump();
+      // origCalleeType->getInvocationGenericSignature()->dump();
+
+      auto params = origCalleeType->getParameters();
+
+      switch (getCallee().getRepresentation()) {
+      case SILFunctionTypeRepresentation::KeyPathAccessorGetter: {
+        // add base value
+        addNativeArgument(IGF, original, origCalleeType, params[0], adjusted,
+                          isOutlined);
+        params = params.drop_back();
+        break;
+      }
+      case SILFunctionTypeRepresentation::KeyPathAccessorSetter: {
+        // add base value
+        addNativeArgument(IGF, original, origCalleeType, params[0], adjusted,
+                          isOutlined);
+        // add new value
+        addNativeArgument(IGF, original, origCalleeType, params[1], adjusted,
+                          isOutlined);
+        params = params.drop_back(2);
+        break;
+      }
+      default:
+        llvm_unreachable("unexpected representation");
+      }
+
+      Optional<StackAddress> dynamicArgsBuf;
+      SmallVector<SILType, 4> indiceTypes;
+      for (auto i : indices(params)) {
+        auto ty = getParameterType(i);
+        indiceTypes.push_back(ty);
+      }
+      auto sig = origCalleeType->getInvocationGenericSignature();
+      auto args = emitKeyPathInstantiationArgument(
+          IGF, getCallee().getSubstitutions(), sig, indiceTypes, original,
+          dynamicArgsBuf, [&](GenericRequirement reqt) -> llvm::Value * {
+            return original.claimNext();
+          });
+      if (dynamicArgsBuf) {
+        RawTempraries.push_back(*dynamicArgsBuf);
+      }
+
+      // add arg buffer
+      adjusted.add(args.first);
+      // add arg buffer size
+      adjusted.add(args.second);
+      break;
+    }
     case SILFunctionTypeRepresentation::WitnessMethod:
       assert(witnessMetadata);
       assert(witnessMetadata->SelfMetadata->getType() ==
@@ -2504,6 +2647,10 @@ public:
     case SILFunctionTypeRepresentation::Block:
     case SILFunctionTypeRepresentation::CFunctionPointer:
     case SILFunctionTypeRepresentation::CXXMethod:
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
       assert(false && "Should not reach this");
       break;
 
@@ -2868,9 +3015,14 @@ llvm::CallInst *CallEmission::emitCallSite() {
   if (!IsCoroutine) {
     Temporaries.destroyAll(IGF);
 
+    for (auto &stackAddr : RawTempraries) {
+      IGF.emitDeallocateDynamicAlloca(stackAddr);
+    }
+
     // Clear the temporary set so that we can assert that there are no
     // temporaries later.
     Temporaries.clear();
+    RawTempraries.clear();
   }
 
   // Return.
@@ -3147,6 +3299,7 @@ CallEmission::~CallEmission() {
   assert(LastArgWritten == 0);
   assert(EmittedCall);
   assert(Temporaries.hasBeenCleared());
+  assert(RawTempraries.empty());
   assert(state == State::Finished);
 }
 
@@ -3185,6 +3338,10 @@ Callee::Callee(CalleeInfo &&info, const FunctionPointer &fn,
   case SILFunctionTypeRepresentation::Thin:
   case SILFunctionTypeRepresentation::Closure:
   case SILFunctionTypeRepresentation::CFunctionPointer:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     assert(!FirstData && !SecondData);
     break;
   case SILFunctionTypeRepresentation::CXXMethod:
@@ -3203,6 +3360,10 @@ llvm::Value *Callee::getSwiftContext() const {
   case SILFunctionTypeRepresentation::Thin:
   case SILFunctionTypeRepresentation::Closure:
   case SILFunctionTypeRepresentation::CXXMethod:
+  case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+  case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+  case SILFunctionTypeRepresentation::KeyPathAccessorHash:
     return nullptr;
 
   case SILFunctionTypeRepresentation::WitnessMethod:

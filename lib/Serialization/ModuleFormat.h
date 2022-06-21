@@ -58,7 +58,7 @@ const uint16_t SWIFTMODULE_VERSION_MAJOR = 0;
 /// describe what change you made. The content of this comment isn't important;
 /// it just ensures a conflict if two people change the module format.
 /// Don't worry about adhering to the 80-column limit for this line.
-const uint16_t SWIFTMODULE_VERSION_MINOR = 694; // add @objc protocol methods to objc method tables
+const uint16_t SWIFTMODULE_VERSION_MINOR = 695; // Extend function representation bit width
 
 /// A standard hash seed used for all string hashes in a serialized module.
 ///
@@ -278,8 +278,13 @@ enum class SILFunctionTypeRepresentation : uint8_t {
   WitnessMethod,
   Closure,
   CXXMethod,
+  KeyPathAccessorGetter,
+  KeyPathAccessorSetter,
+  KeyPathAccessorEquals,
+  KeyPathAccessorHash,
 };
-using SILFunctionTypeRepresentationField = BCFixed<4>;
+// TODO(katei): Define SILFunctionTypeRepresentation::Last, and compute the bit width
+using SILFunctionTypeRepresentationField = BCFixed<5>;
 
 // These IDs must \em not be renumbered or reordered without incrementing
 // the module version.

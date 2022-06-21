@@ -15,6 +15,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "GenKeyPath.h"
+#include "swift/AST/ExtInfo.h"
 #define DEBUG_TYPE "irgensil"
 
 #include "swift/AST/ASTContext.h"
@@ -2040,6 +2042,76 @@ static void emitEntryPointArgumentsNativeCC(IRGenSILFunction &IGF,
     llvm::Value *contextPtr = emission->getContext();
     (void)contextPtr;
     assert(contextPtr->getType() == IGF.IGM.RefCountedPtrTy);
+  } else if (isKeyPathAccessorRepresentation(funcTy->getRepresentation())) {
+    auto genericEnv = IGF.CurSILFn->getGenericEnvironment();
+    SmallVector<GenericRequirement, 4> requirements;
+    CanGenericSignature genericSig;
+    if (genericEnv) {
+      genericSig = IGF.CurSILFn->getGenericSignature().getCanonicalSignature();
+      enumerateGenericSignatureRequirements(genericSig,
+        [&](GenericRequirement reqt) { requirements.push_back(reqt); });
+    }
+
+    unsigned baseIndexOfIndicesArguments;
+    unsigned numberOfIndicesArguments;
+    switch (funcTy->getRepresentation()) {
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+      baseIndexOfIndicesArguments = 1;
+      numberOfIndicesArguments = 1;
+      break;
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+      baseIndexOfIndicesArguments = 2;
+      numberOfIndicesArguments = 1;
+      break;
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+      baseIndexOfIndicesArguments = 0;
+      numberOfIndicesArguments = 2;
+      break;
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
+      baseIndexOfIndicesArguments = 0;
+      numberOfIndicesArguments = 1;
+      break;
+    default:
+      llvm_unreachable("unhandled keypath accessor representation");
+    }
+
+    llvm::Value *componentArgsBufSize = allParamValues.takeLast();
+    llvm::Value *componentArgsBuf;
+    bool hasSubscriptIndices = params.size() > baseIndexOfIndicesArguments;
+
+    // Bind the indices arguments if present.
+    if (hasSubscriptIndices) {
+      assert(baseIndexOfIndicesArguments + numberOfIndicesArguments == params.size());
+
+      for (unsigned i = 0; i < numberOfIndicesArguments; ++i) {
+        SILArgument *indicesArg = params[baseIndexOfIndicesArguments + i];
+        componentArgsBuf = allParamValues.takeLast();
+        bindParameter(
+            IGF, *emission, baseIndexOfIndicesArguments + i, indicesArg,
+            conv.getSILArgumentType(baseIndexOfIndicesArguments + i,
+                                    IGF.IGM.getMaximalTypeExpansionContext()),
+            [&](unsigned startIndex, unsigned size) {
+              assert(size == 1);
+              Explosion indicesTemp;
+              auto castedIndices =
+                IGF.Builder.CreateBitCast(
+                  componentArgsBuf, IGF.getTypeInfo(indicesArg->getType()).getStorageType()->getPointerTo());
+              indicesTemp.add(castedIndices);
+              return indicesTemp;
+            });
+      }
+      params = params.drop_back(numberOfIndicesArguments);
+    } else {
+      // Discard the trailing unbound LLVM IR arguments.
+      for (unsigned i = 0; i < numberOfIndicesArguments; ++i) {
+        componentArgsBuf = allParamValues.takeLast();
+      }
+    }
+    bindPolymorphicArgumentsFromComponentIndices(IGF, genericEnv,
+                                                 requirements,
+                                                 componentArgsBuf,
+                                                 componentArgsBufSize,
+                                                 hasSubscriptIndices);
   }
 
   // Map the remaining SIL parameters to LLVM parameters.
@@ -2057,7 +2129,8 @@ static void emitEntryPointArgumentsNativeCC(IRGenSILFunction &IGF,
 
   // Bind polymorphic arguments.  This can only be done after binding
   // all the value parameters.
-  if (hasPolymorphicParameters(funcTy)) {
+  if (hasPolymorphicParameters(funcTy)
+      && !isKeyPathAccessorRepresentation(funcTy->getRepresentation())) {
     emitPolymorphicParameters(
         IGF, *IGF.CurSILFn, *emission, &witnessMetadata,
         [&](unsigned paramIndex) -> llvm::Value * {
@@ -2999,6 +3072,10 @@ Callee LoweredValue::getCallee(IRGenFunction &IGF,
     case SILFunctionType::Representation::Thin:
     case SILFunctionType::Representation::Closure:
     case SILFunctionType::Representation::Method:
+    case SILFunctionType::Representation::KeyPathAccessorGetter:
+    case SILFunctionType::Representation::KeyPathAccessorSetter:
+    case SILFunctionType::Representation::KeyPathAccessorEquals:
+    case SILFunctionType::Representation::KeyPathAccessorHash:
       return getSwiftFunctionPointerCallee(IGF, functionValue, selfValue,
                                            std::move(calleeInfo), false);
 
@@ -3060,6 +3137,10 @@ static std::unique_ptr<CallEmission> getCallEmissionForLoweredValue(
   case SILFunctionType::Representation::CFunctionPointer:
   case SILFunctionType::Representation::Method:
   case SILFunctionType::Representation::Closure:
+  case SILFunctionType::Representation::KeyPathAccessorGetter:
+  case SILFunctionType::Representation::KeyPathAccessorSetter:
+  case SILFunctionType::Representation::KeyPathAccessorEquals:
+  case SILFunctionType::Representation::KeyPathAccessorHash:
     break;
   }
 
@@ -3438,6 +3519,10 @@ getPartialApplicationFunction(IRGenSILFunction &IGF, SILValue v,
     case SILFunctionTypeRepresentation::Thin:
     case SILFunctionTypeRepresentation::Method:
     case SILFunctionTypeRepresentation::Closure:
+    case SILFunctionTypeRepresentation::KeyPathAccessorGetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorSetter:
+    case SILFunctionTypeRepresentation::KeyPathAccessorEquals:
+    case SILFunctionTypeRepresentation::KeyPathAccessorHash:
       break;
     }
 
@@ -6437,85 +6522,23 @@ void IRGenSILFunction::visitKeyPathInst(swift::KeyPathInst *I) {
   auto pattern = IGM.getAddrOfKeyPathPattern(I->getPattern(), I->getLoc());
   // Build up the argument vector to instantiate the pattern here.
   Optional<StackAddress> dynamicArgsBuf;
-  llvm::Value *args;
-  if (!I->getSubstitutions().empty() || !I->getAllOperands().empty()) {
-    auto sig = I->getPattern()->getGenericSignature();
-    SubstitutionMap subs = I->getSubstitutions();
 
-    SmallVector<GenericRequirement, 4> requirements;
-    enumerateGenericSignatureRequirements(sig,
-            [&](GenericRequirement reqt) { requirements.push_back(reqt); });
-
-    llvm::Value *argsBufSize;
-    llvm::Value *argsBufAlign;
-    
-    if (!I->getSubstitutions().empty()) {
-      argsBufSize = llvm::ConstantInt::get(IGM.SizeTy,
-                       IGM.getPointerSize().getValue() * requirements.size());
-      argsBufAlign = llvm::ConstantInt::get(IGM.SizeTy,
-                       IGM.getPointerAlignment().getMaskValue());
-    } else {
-      argsBufSize = llvm::ConstantInt::get(IGM.SizeTy, 0);
-      argsBufAlign = llvm::ConstantInt::get(IGM.SizeTy, 0);
-    }
-
-    SmallVector<llvm::Value *, 4> operandOffsets;
-    for (unsigned i : indices(I->getAllOperands())) {
-      auto operand = I->getAllOperands()[i].get();
-      auto &ti = getTypeInfo(operand->getType());
-      auto ty = operand->getType();
-      auto alignMask = ti.getAlignmentMask(*this, ty);
-      if (i != 0) {
-        auto notAlignMask = Builder.CreateNot(alignMask);
-        argsBufSize = Builder.CreateAdd(argsBufSize, alignMask);
-        argsBufSize = Builder.CreateAnd(argsBufSize, notAlignMask);
-      }
-      operandOffsets.push_back(argsBufSize);
-      auto size = ti.getSize(*this, ty);
-      argsBufSize = Builder.CreateAdd(argsBufSize, size);
-      argsBufAlign = Builder.CreateOr(argsBufAlign, alignMask);
-    }
-
-    dynamicArgsBuf = emitDynamicAlloca(IGM.Int8Ty, argsBufSize, Alignment(16));
-    
-    Address argsBuf = dynamicArgsBuf->getAddress();
-    
-    if (!I->getSubstitutions().empty()) {
-      emitInitOfGenericRequirementsBuffer(*this, requirements, argsBuf,
-        [&](GenericRequirement reqt) -> llvm::Value * {
-          return emitGenericRequirementFromSubstitutions(*this, sig,
-                                                         reqt, subs);
-        });
-    }
-    
-    for (unsigned i : indices(I->getAllOperands())) {
-      auto operand = I->getAllOperands()[i].get();
-      auto &ti = getTypeInfo(operand->getType());
-      auto ptr =
-          Builder.CreateInBoundsGEP(argsBuf.getAddress()
-                                        ->getType()
-                                        ->getScalarType()
-                                        ->getPointerElementType(),
-                                    argsBuf.getAddress(), operandOffsets[i]);
-      auto addr = ti.getAddressForPointer(
-        Builder.CreateBitCast(ptr, ti.getStorageType()->getPointerTo()));
-      if (operand->getType().isAddress()) {
-        ti.initializeWithTake(*this, addr, getLoweredAddress(operand),
-                              operand->getType(), false);
-      } else {
-        Explosion operandValue = getLoweredExplosion(operand);
-        cast<LoadableTypeInfo>(ti).initialize(*this, operandValue, addr, false);
-      }
-    }
-    args = argsBuf.getAddress();
-  } else {
-    // No arguments necessary, so the argument ought to be ignored by any
-    // callbacks in the pattern.
-    assert(I->getAllOperands().empty() && "indices not implemented");
-    args = llvm::UndefValue::get(IGM.Int8PtrTy);
+  SmallVector<SILType, 4> indiceTypes;
+  Explosion indiceValues;
+  for (auto &operand : I->getAllOperands()) {
+    indiceTypes.push_back(operand.get()->getType());
+    getLoweredExplosion(operand.get(), indiceValues);
   }
+  auto sig = I->getPattern()->getGenericSignature();
+  auto subs = I->getSubstitutions();
+  auto args = emitKeyPathInstantiationArgument(
+      *this, subs, sig, indiceTypes, indiceValues, dynamicArgsBuf,
+      [&](GenericRequirement reqt) -> llvm::Value * {
+        return emitGenericRequirementFromSubstitutions(*this, sig, reqt, subs);
+      });
+
   auto patternPtr = llvm::ConstantExpr::getBitCast(pattern, IGM.Int8PtrTy);
-  auto call = Builder.CreateCall(IGM.getGetKeyPathFn(), {patternPtr, args});
+  auto call = Builder.CreateCall(IGM.getGetKeyPathFn(), {patternPtr, args.first});
   call->setDoesNotThrow();
 
   if (dynamicArgsBuf) {
