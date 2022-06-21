@@ -6531,7 +6531,7 @@ void IRGenSILFunction::visitKeyPathInst(swift::KeyPathInst *I) {
   }
   auto sig = I->getPattern()->getGenericSignature();
   auto subs = I->getSubstitutions();
-  auto args = getKeyPathInstantiationArgument(
+  auto args = emitKeyPathInstantiationArgument(
       *this, subs, sig, indiceTypes, indiceValues, dynamicArgsBuf,
       [&](GenericRequirement reqt) -> llvm::Value * {
         return emitGenericRequirementFromSubstitutions(*this, sig, reqt, subs);

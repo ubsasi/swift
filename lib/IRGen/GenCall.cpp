@@ -2378,7 +2378,7 @@ public:
         indiceTypes.push_back(ty);
       }
       auto sig = origCalleeType->getInvocationGenericSignature();
-      auto args = getKeyPathInstantiationArgument(
+      auto args = emitKeyPathInstantiationArgument(
           IGF, getCallee().getSubstitutions(), sig, indiceTypes, original,
           dynamicArgsBuf, [&](GenericRequirement reqt) -> llvm::Value * {
             return original.claimNext();

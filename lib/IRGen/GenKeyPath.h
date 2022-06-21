@@ -44,7 +44,7 @@ namespace irgen {
     llvm::Value *begin(SubstitutionMap subs, ArrayRef<Operand> indiceOperands);
     void emitArgument();
   };
-  std::pair<llvm::Value *, llvm::Value *> getKeyPathInstantiationArgument(
+  std::pair<llvm::Value *, llvm::Value *> emitKeyPathInstantiationArgument(
       IRGenFunction &IGF, SubstitutionMap subs, const CanGenericSignature &sig,
       ArrayRef<SILType> indiceTypes, Explosion &indiceValues,
       Optional<StackAddress> &dynamicArgsBuf,

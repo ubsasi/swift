@@ -1477,71 +1477,8 @@ void IRGenModule::emitSILProperty(SILProperty *prop) {
   var->setAlignment(llvm::MaybeAlign(4));
 }
 
-// llvm::Value *KeyPathArgumentEmission::begin(SubstitutionMap subs, ArrayRef<Operand> indiceOperands) {
-//   auto &IGM = IGF.IGM;
-
-//   if (!subs.empty() || !indiceOperands.empty()) {
-//     auto sig = pattern->getGenericSignature();
-
-//     SmallVector<GenericRequirement, 4> requirements;
-//     enumerateGenericSignatureRequirements(
-//         sig, [&](GenericRequirement reqt) { requirements.push_back(reqt); });
-
-//     llvm::Value *argsBufSize;
-//     llvm::Value *argsBufAlign;
-
-//     if (!subs.empty()) {
-//       argsBufSize = llvm::ConstantInt::get(
-//           IGM.SizeTy, IGM.getPointerSize().getValue() * requirements.size());
-//       argsBufAlign = llvm::ConstantInt::get(
-//           IGM.SizeTy, IGM.getPointerAlignment().getMaskValue());
-//     } else {
-//       argsBufSize = llvm::ConstantInt::get(IGM.SizeTy, 0);
-//       argsBufAlign = llvm::ConstantInt::get(IGM.SizeTy, 0);
-//     }
-
-//     SmallVector<llvm::Value *, 4> operandOffsets;
-//     for (unsigned i : indices(indiceOperands)) {
-//       auto operand = indiceOperands[i].get();
-//       auto &ti = IGF.getTypeInfo(operand->getType());
-//       auto ty = operand->getType();
-//       auto alignMask = ti.getAlignmentMask(IGF, ty);
-//       if (i != 0) {
-//         auto notAlignMask = IGF.Builder.CreateNot(alignMask);
-//         argsBufSize = IGF.Builder.CreateAdd(argsBufSize, alignMask);
-//         argsBufSize = IGF.Builder.CreateAnd(argsBufSize, notAlignMask);
-//       }
-//       operandOffsets.push_back(argsBufSize);
-//       auto size = ti.getSize(IGF, ty);
-//       argsBufSize = IGF.Builder.CreateAdd(argsBufSize, size);
-//       argsBufAlign = IGF.Builder.CreateOr(argsBufAlign, alignMask);
-//     }
-
-//     dynamicArgsBuf =
-//         IGF.emitDynamicAlloca(IGM.Int8Ty, argsBufSize, Alignment(16));
-
-//     Address argsBuf = dynamicArgsBuf->getAddress();
-
-//     if (!subs.empty()) {
-//       emitInitOfGenericRequirementsBuffer(
-//           IGF, requirements, argsBuf,
-//           [&](GenericRequirement reqt) -> llvm::Value * {
-//             return emitGenericRequirementFromSubstitutions(IGF, sig, reqt,
-//                                                            subs);
-//           });
-//     }
-//   } else {
-//     // No arguments necessary, so the argument ought to be ignored by any
-//     // callbacks in the pattern.
-//     assert(indiceOperands.empty() && "indices not implemented");
-//     return llvm::UndefValue::get(IGM.Int8PtrTy);
-//   }
-// }
-// void KeyPathArgumentEmission::emitArgument() {
-
-// }
 std::pair<llvm::Value *, llvm::Value *>
-irgen::getKeyPathInstantiationArgument(
+irgen::emitKeyPathInstantiationArgument(
     IRGenFunction &IGF, SubstitutionMap subs, const CanGenericSignature &sig,
     ArrayRef<SILType> indiceTypes, Explosion &indiceValues,
     Optional<StackAddress> &dynamicArgsBuf,
