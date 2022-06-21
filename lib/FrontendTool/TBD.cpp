@@ -66,10 +66,19 @@ bool swift::writeTBD(ModuleDecl *M, StringRef OutputFilename,
 ///   should be ignored (instead of potentially producing a diagnostic.)
 static bool isSymbolIgnored(const StringRef& name,
                             const llvm::Module &IRModule) {
-  if (llvm::Triple(IRModule.getTargetTriple()).isOSWindows()) {
+  llvm::Triple triple(IRModule.getTargetTriple());
+  if (triple.isOSWindows()) {
     // (SR-15938) Error when referencing #dsohandle in a Swift test on Windows
     // On Windows, ignore the lack of __ImageBase in the TBD file.
     if (name == "__ImageBase") {
+      return true;
+    }
+  }
+  if (triple.isWasm()) {
+    // `__main_void`, which is called by `_start` in crt1.o, is artificially
+    // aliased in IR module when `main` doesn't take any params.
+    // This alias will be hidden after https://reviews.llvm.org/D75277
+    if (name == "__main_void") {
       return true;
     }
   }
