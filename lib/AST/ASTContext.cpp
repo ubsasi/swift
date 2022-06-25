@@ -42,8 +42,8 @@
 #include "swift/AST/PropertyWrappers.h"
 #include "swift/AST/ProtocolConformance.h"
 #include "swift/AST/RawComment.h"
-#include "swift/AST/SearchPathOptions.h"
 #include "swift/AST/SILLayout.h"
+#include "swift/AST/SearchPathOptions.h"
 #include "swift/AST/SemanticAttrs.h"
 #include "swift/AST/SourceFile.h"
 #include "swift/AST/SubstitutionMap.h"
@@ -65,6 +65,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/FormatVariadic.h"
 #include <algorithm>
 #include <memory>
 
@@ -577,12 +578,12 @@ void ASTContext::operator delete(void *Data) throw() {
   AlignedFree(Data);
 }
 
-ASTContext *ASTContext::get(LangOptions &langOpts,
-                            TypeCheckerOptions &typeckOpts, SILOptions &silOpts,
-                            SearchPathOptions &SearchPathOpts,
-                            ClangImporterOptions &ClangImporterOpts,
-                            symbolgraphgen::SymbolGraphOptions &SymbolGraphOpts,
-                            SourceManager &SourceMgr, DiagnosticEngine &Diags) {
+ASTContext *ASTContext::get(
+    LangOptions &langOpts, TypeCheckerOptions &typeckOpts, SILOptions &silOpts,
+    SearchPathOptions &SearchPathOpts, ClangImporterOptions &ClangImporterOpts,
+    symbolgraphgen::SymbolGraphOptions &SymbolGraphOpts,
+    SourceManager &SourceMgr, DiagnosticEngine &Diags,
+    std::function<bool(llvm::StringRef, bool)> PreModuleImportCallback) {
   // If more than two data structures are concatentated, then the aggregate
   // size math needs to become more complicated due to per-struct alignment
   // constraints.
@@ -593,22 +594,24 @@ ASTContext *ASTContext::get(LangOptions &langOpts,
   impl = reinterpret_cast<void *>(
       llvm::alignAddr(impl, llvm::Align(alignof(Implementation))));
   new (impl) Implementation();
-  return new (mem)
-      ASTContext(langOpts, typeckOpts, silOpts, SearchPathOpts,
-                 ClangImporterOpts, SymbolGraphOpts, SourceMgr, Diags);
+  return new (mem) ASTContext(langOpts, typeckOpts, silOpts, SearchPathOpts,
+                              ClangImporterOpts, SymbolGraphOpts, SourceMgr,
+                              Diags, PreModuleImportCallback);
 }
 
-ASTContext::ASTContext(LangOptions &langOpts, TypeCheckerOptions &typeckOpts,
-                       SILOptions &silOpts, SearchPathOptions &SearchPathOpts,
-                       ClangImporterOptions &ClangImporterOpts,
-                       symbolgraphgen::SymbolGraphOptions &SymbolGraphOpts,
-                       SourceManager &SourceMgr, DiagnosticEngine &Diags)
+ASTContext::ASTContext(
+    LangOptions &langOpts, TypeCheckerOptions &typeckOpts, SILOptions &silOpts,
+    SearchPathOptions &SearchPathOpts, ClangImporterOptions &ClangImporterOpts,
+    symbolgraphgen::SymbolGraphOptions &SymbolGraphOpts,
+    SourceManager &SourceMgr, DiagnosticEngine &Diags,
+    std::function<bool(llvm::StringRef, bool)> PreModuleImportCallback)
     : LangOpts(langOpts), TypeCheckerOpts(typeckOpts), SILOpts(silOpts),
       SearchPathOpts(SearchPathOpts), ClangImporterOpts(ClangImporterOpts),
       SymbolGraphOpts(SymbolGraphOpts), SourceMgr(SourceMgr), Diags(Diags),
       evaluator(Diags, langOpts), TheBuiltinModule(createBuiltinModule(*this)),
       StdlibModuleName(getIdentifier(STDLIB_NAME)),
       SwiftShimsModuleName(getIdentifier(SWIFT_SHIMS_NAME)),
+      PreModuleImportCallback(PreModuleImportCallback),
       TheErrorType(new (*this, AllocationArena::Permanent) ErrorType(
           *this, Type(), RecursiveTypeProperties::HasError)),
       TheUnresolvedType(new (*this, AllocationArena::Permanent)
@@ -621,18 +624,18 @@ ASTContext::ASTContext(LangOptions &langOpts, TypeCheckerOptions &typeckOpts,
     The##SHORT_ID##Type(new (*this, AllocationArena::Permanent) \
                           ID##Type(*this)),
 #include "swift/AST/TypeNodes.def"
-    TheIEEE32Type(new (*this, AllocationArena::Permanent)
-                    BuiltinFloatType(BuiltinFloatType::IEEE32,*this)),
-    TheIEEE64Type(new (*this, AllocationArena::Permanent)
-                    BuiltinFloatType(BuiltinFloatType::IEEE64,*this)),
-    TheIEEE16Type(new (*this, AllocationArena::Permanent)
-                    BuiltinFloatType(BuiltinFloatType::IEEE16,*this)),
-    TheIEEE80Type(new (*this, AllocationArena::Permanent)
-                    BuiltinFloatType(BuiltinFloatType::IEEE80,*this)),
-    TheIEEE128Type(new (*this, AllocationArena::Permanent)
-                    BuiltinFloatType(BuiltinFloatType::IEEE128, *this)),
-    ThePPC128Type(new (*this, AllocationArena::Permanent)
-                    BuiltinFloatType(BuiltinFloatType::PPC128, *this)) {
+      TheIEEE32Type(new (*this, AllocationArena::Permanent)
+                        BuiltinFloatType(BuiltinFloatType::IEEE32, *this)),
+      TheIEEE64Type(new (*this, AllocationArena::Permanent)
+                        BuiltinFloatType(BuiltinFloatType::IEEE64, *this)),
+      TheIEEE16Type(new (*this, AllocationArena::Permanent)
+                        BuiltinFloatType(BuiltinFloatType::IEEE16, *this)),
+      TheIEEE80Type(new (*this, AllocationArena::Permanent)
+                        BuiltinFloatType(BuiltinFloatType::IEEE80, *this)),
+      TheIEEE128Type(new (*this, AllocationArena::Permanent)
+                         BuiltinFloatType(BuiltinFloatType::IEEE128, *this)),
+      ThePPC128Type(new (*this, AllocationArena::Permanent)
+                        BuiltinFloatType(BuiltinFloatType::PPC128, *this)) {
 
   // Initialize all of the known identifiers.
 #define IDENTIFIER_WITH_NAME(Name, IdStr) Id_##Name = getIdentifier(IdStr);
@@ -953,7 +956,11 @@ ASTContext::getPointerPointeePropertyDecl(PointerTypeKind ptrKind) const {
   llvm_unreachable("bad pointer kind");
 }
 
-CanType ASTContext::getAnyObjectType() const {
+CanType ASTContext::getAnyExistentialType() const {
+  return ExistentialType::get(TheAnyType)->getCanonicalType();
+}
+
+CanType ASTContext::getAnyObjectConstraint() const {
   if (getImpl().AnyObjectType) {
     return getImpl().AnyObjectType;
   }
@@ -962,6 +969,11 @@ CanType ASTContext::getAnyObjectType() const {
     ProtocolCompositionType::get(
       *this, {}, /*HasExplicitAnyObject=*/true));
   return getImpl().AnyObjectType;
+}
+
+CanType ASTContext::getAnyObjectType() const {
+  return ExistentialType::get(getAnyObjectConstraint())
+      ->getCanonicalType();
 }
 
 #define KNOWN_SDK_TYPE_DECL(MODULE, NAME, DECLTYPE, GENERIC_ARGS) \
@@ -1913,24 +1925,12 @@ void ASTContext::loadObjCMethods(
   PrettyStackTraceSelector stackTraceSelector("looking for", selector);
   PrettyStackTraceDecl stackTraceDecl("...in", tyDecl);
 
-  // @objc protocols cannot have @objc extension members, so if we've recorded
-  // everything in the protocol definition, we've recorded everything. And we
-  // only ever use the ObjCSelector version of `NominalTypeDecl::lookupDirect()`
-  // on protocols in primary file typechecking, so we don't care about protocols
-  // that need to be loaded from files.
-  // TODO: Rework `ModuleLoader::loadObjCMethods()` to support protocols too if
-  //       selector-based `NominalTypeDecl::lookupDirect()` ever needs to work
-  //       in more situations.
-  ClassDecl *classDecl = dyn_cast<ClassDecl>(tyDecl);
-  if (!classDecl)
-    return;
-
   for (auto &loader : getImpl().ModuleLoaders) {
     // Ignore the Clang importer if we've been asked for Swift-only results.
     if (swiftOnly && loader.get() == getClangModuleLoader())
       continue;
 
-    loader->loadObjCMethods(classDecl, selector, isInstanceMethod,
+    loader->loadObjCMethods(tyDecl, selector, isInstanceMethod,
                             previousGeneration, methods);
   }
 }
@@ -2210,6 +2210,8 @@ ASTContext::getModule(ImportPath::Module ModulePath) {
     return M;
 
   auto moduleID = ModulePath[0];
+  if (PreModuleImportCallback)
+    PreModuleImportCallback(moduleID.Item.str(), false /*=IsOverlay*/);
   for (auto &importer : getImpl().ModuleLoaders) {
     if (ModuleDecl *M = importer->loadModule(moduleID.Loc, ModulePath)) {
       if (LangOpts.EnableModuleLoadingRemarks) {
@@ -2234,12 +2236,17 @@ ModuleDecl *ASTContext::getOverlayModule(const FileUnit *FU) {
       return Existing;
   }
 
+  if (PreModuleImportCallback) {
+    SmallString<16> path;
+    ModPath.getString(path);
+    if (!path.empty())
+      PreModuleImportCallback(path.str(), /*IsOverlay=*/true);
+  }
   for (auto &importer : getImpl().ModuleLoaders) {
     if (importer.get() == getClangModuleLoader())
       continue;
-    if (ModuleDecl *M = importer->loadModule(SourceLoc(), ModPath)) {
+    if (ModuleDecl *M = importer->loadModule(SourceLoc(), ModPath))
       return M;
-    }
   }
 
   return nullptr;
@@ -3326,9 +3333,9 @@ ProtocolCompositionType::build(const ASTContext &C, ArrayRef<Type> Members,
   return compTy;
 }
 
-Type ParameterizedProtocolType::get(const ASTContext &C,
-                                    ProtocolType *baseTy,
-                                    ArrayRef<Type> args) {
+ParameterizedProtocolType *ParameterizedProtocolType::get(const ASTContext &C,
+                                                          ProtocolType *baseTy,
+                                                          ArrayRef<Type> args) {
   assert(args.size() > 0);
 
   bool isCanonical = baseTy->isCanonical();
@@ -4244,19 +4251,17 @@ ProtocolType::ProtocolType(ProtocolDecl *TheDecl, Type Parent,
                            RecursiveTypeProperties properties)
   : NominalType(TypeKind::Protocol, &Ctx, TheDecl, Parent, properties) { }
 
-Type ExistentialType::get(Type constraint, bool forceExistential) {
+Type ExistentialType::get(Type constraint) {
   auto &C = constraint->getASTContext();
-  if (!forceExistential) {
-    // FIXME: Any and AnyObject don't yet use ExistentialType.
-    if (constraint->isAny() || constraint->isAnyObject())
-      return constraint;
-
-    // ExistentialMetatypeType is already an existential type.
-    if (constraint->is<ExistentialMetatypeType>())
-      return constraint;
-  }
+  // ExistentialMetatypeType is already an existential type.
+  if (constraint->is<ExistentialMetatypeType>())
+    return constraint;
 
   assert(constraint->isConstraintType());
+
+  bool printWithAny = true;
+  if (constraint->isEqual(C.TheAnyType) || constraint->isAnyObject())
+    printWithAny = false;
 
   auto properties = constraint->getRecursiveProperties();
   if (constraint->is<ParameterizedProtocolType>())
@@ -4268,7 +4273,7 @@ Type ExistentialType::get(Type constraint, bool forceExistential) {
     return entry;
 
   const ASTContext *canonicalContext = constraint->isCanonical() ? &C : nullptr;
-  return entry = new (C, arena) ExistentialType(constraint,
+  return entry = new (C, arena) ExistentialType(constraint, printWithAny,
                                                 canonicalContext,
                                                 properties);
 }

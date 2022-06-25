@@ -242,21 +242,8 @@ bool TypeResolution::areSameType(Type type1, Type type2) const {
     }
   }
 
-  // Otherwise, perform a structural check.
   assert(stage == TypeResolutionStage::Structural);
-
-  // FIXME: We should be performing a deeper equality check here.
-  // If both refer to associated types with the same name, they'll implicitly
-  // be considered equivalent.
-  auto depMem1 = type1->getAs<DependentMemberType>();
-  if (!depMem1) return false;
-
-  auto depMem2 = type2->getAs<DependentMemberType>();
-  if (!depMem2) return false;
-
-  if (depMem1->getName() != depMem2->getName()) return false;
-
-  return areSameType(depMem1->getBase(), depMem2->getBase());
+  return false;
 }
 
 Type TypeChecker::getOptionalType(SourceLoc loc, Type elementType) {
@@ -430,7 +417,7 @@ Type TypeResolution::resolveTypeInContext(TypeDecl *typeDecl,
     selfType = foundDC->getSelfInterfaceType();
 
     if (selfType->is<GenericTypeParamType>()) {
-      if (typeDecl->getDeclContext()->getSelfProtocolDecl()) {
+      if (isa<ProtocolDecl>(typeDecl->getDeclContext())) {
         if (isa<AssociatedTypeDecl>(typeDecl) ||
             (isa<TypeAliasDecl>(typeDecl) &&
              !cast<TypeAliasDecl>(typeDecl)->isGeneric() &&
@@ -1434,6 +1421,23 @@ static Type resolveTopLevelIdentTypeComponent(TypeResolution resolution,
   auto globals = TypeChecker::lookupUnqualifiedType(DC, id, comp->getLoc(),
                                                     lookupOptions);
 
+  // If we're doing structural resolution and one of the results is an
+  // associated type, ignore any other results found from the same
+  // DeclContext; they are going to be protocol typealiases, possibly
+  // from constrained extensions, and trying to compute their type in
+  // resolveTypeInContext() might hit request cycles since structural
+  // resolution is performed while computing the requirement signature
+  // of the protocol.
+  DeclContext *assocTypeDC = nullptr;
+  if (resolution.getStage() == TypeResolutionStage::Structural) {
+    for (const auto &entry : globals) {
+      if (isa<AssociatedTypeDecl>(entry.getValueDecl())) {
+        assocTypeDC = entry.getDeclContext();
+        break;
+      }
+    }
+  }
+
   // Process the names we found.
   Type current;
   TypeDecl *currentDecl = nullptr;
@@ -1443,6 +1447,13 @@ static Type resolveTopLevelIdentTypeComponent(TypeResolution resolution,
     auto *foundDC = entry.getDeclContext();
     auto *typeDecl = cast<TypeDecl>(entry.getValueDecl());
 
+    // See the comment above.
+    if (assocTypeDC != nullptr &&
+        foundDC == assocTypeDC && !isa<AssociatedTypeDecl>(typeDecl))
+      continue;
+
+    // Compute the type of the found declaration when referenced from this
+    // location.
     Type type = resolveTypeDecl(typeDecl, foundDC, resolution, silParams, comp);
     if (type->is<ErrorType>())
       return type;
@@ -3561,7 +3572,27 @@ TypeResolver::resolveIdentifierType(IdentTypeRepr *IdType,
     auto *typeAlias = dyn_cast<TypeAliasType>(result.getPointer());
     if (typeAlias && typeAlias->is<ExistentialType>() &&
         typeAlias->getDecl()->hasClangNode()) {
-      return typeAlias->getAs<ExistentialType>()->getConstraintType();
+      auto constraint = typeAlias->getAs<ExistentialType>()->getConstraintType();
+
+      // FIXME: Hack! CFTypeRef, which is a typealias to AnyObject,
+      // has special handling when printing as ObjC, so the typealias
+      // sugar needs to be preserved. See `isCFTypeRef` in PrintAsClang.cpp.
+      //
+      // We can eliminate this hack by fixing the issues with PR #41147,
+      // which added logic to the ClangImporter for when to import as an
+      // existential versus a constraint, but it was reverted in #41207
+      // because it was missing some cases of wrapping in ExistentialType.
+      auto module = typeAlias->getDecl()->getDeclContext()->getParentModule();
+      if ((module->getName().is("Foundation") ||
+          module->getName().is("CoreFoundation")) &&
+          typeAlias->getDecl()->getName() == getASTContext().getIdentifier("CFTypeRef")) {
+        return TypeAliasType::get(typeAlias->getDecl(),
+                                  typeAlias->getParent(),
+                                  typeAlias->getSubstitutionMap(),
+                                  constraint);
+      }
+
+      return constraint;
     }
   }
 
@@ -3996,7 +4027,7 @@ TypeResolver::resolveExistentialType(ExistentialTypeRepr *repr,
   if (constraintType->hasError())
     return ErrorType::get(getASTContext());
 
-  if (!constraintType->isExistentialType()) {
+  if (!constraintType->isConstraintType()) {
     // Emit a tailored diagnostic for the incorrect optional
     // syntax 'any P?' with a fix-it to add parenthesis.
     auto wrapped = constraintType->getOptionalObjectType();
@@ -4010,14 +4041,18 @@ TypeResolver::resolveExistentialType(ExistentialTypeRepr *repr,
         .fixItReplace(repr->getSourceRange(), fix);
       return constraintType;
     }
+    
+    // Diagnose redundant `any` on an already existential type e.g. any (any P)
+    // with a fix-it to remove first any.
+    if (constraintType->is<ExistentialType>()) {
+      diagnose(repr->getLoc(), diag::redundant_any_in_existential, constraintType)
+          .fixItRemove(repr->getAnyLoc());
+      return constraintType;
+    }
 
-    auto anyStart = repr->getAnyLoc();
-    auto anyEnd = Lexer::getLocForEndOfToken(getASTContext().SourceMgr,
-                                             anyStart);
     diagnose(repr->getLoc(), diag::any_not_existential,
-             constraintType->isTypeParameter(),
-             constraintType)
-      .fixItRemove({anyStart, anyEnd});
+             constraintType->isTypeParameter(), constraintType)
+        .fixItRemove(repr->getAnyLoc());
     return constraintType;
   }
 

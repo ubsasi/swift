@@ -65,7 +65,8 @@ using namespace swift;
 /********************** Distributed Actor Properties **************************/
 /******************************************************************************/
 
-VarDecl* swift::lookupDistributedActorProperty(NominalTypeDecl *decl, DeclName name) {
+VarDecl*
+swift::lookupDistributedActorProperty(NominalTypeDecl *decl, DeclName name) {
   assert(decl && "decl was null");
   auto &C = decl->getASTContext();
 
@@ -355,12 +356,21 @@ swift::getDistributedSerializationRequirements(
   if (existentialRequirementTy->isAny())
     return true; // we're done here, any means there are no requirements
 
-  auto serialReqType = existentialRequirementTy->castTo<ExistentialType>()
-                           ->getConstraintType()
-                           ->getDesugaredType();
+  if (!existentialRequirementTy->isExistentialType()) {
+    // SerializationRequirement must be an existential type
+    return false;
+  }
+
+  ExistentialType *serialReqType = existentialRequirementTy
+                                       ->castTo<ExistentialType>();
+  if (!serialReqType || serialReqType->hasError()) {
+    return false;
+  }
+
+  auto desugaredTy = serialReqType->getConstraintType()->getDesugaredType();
   auto flattenedRequirements =
       flattenDistributedSerializationTypeToRequiredProtocols(
-          serialReqType);
+          desugaredTy);
   for (auto p : flattenedRequirements) {
     requirementProtos.insert(p);
   }
@@ -431,6 +441,11 @@ bool AbstractFunctionDecl::isDistributedActorSystemRemoteCall(bool isVoidReturn)
     return false;
   }
 
+  auto *func = dyn_cast<FuncDecl>(this);
+  if (!func) {
+    return false;
+  }
+
   // === Structural Checks
   // -- Must be throwing
   if (!hasThrows()) {
@@ -439,6 +454,11 @@ bool AbstractFunctionDecl::isDistributedActorSystemRemoteCall(bool isVoidReturn)
 
   // -- Must be async
   if (!hasAsync()) {
+    return false;
+  }
+
+  // -- Must not be mutating, use classes to implement a system instead
+  if (func->isMutating()) {
     return false;
   }
 
@@ -1190,6 +1210,11 @@ AbstractFunctionDecl::isDistributedTargetInvocationResultHandlerOnReturn() const
 
     // --- must be throwing
     if (!hasThrows()) {
+      return false;
+    }
+
+    // --- must not be mutating
+    if (func->isMutating()) {
       return false;
     }
 

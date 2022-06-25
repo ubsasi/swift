@@ -149,7 +149,6 @@ public:
   IGNORED_ATTR(OriginallyDefinedIn)
   IGNORED_ATTR(NoDerivative)
   IGNORED_ATTR(SpecializeExtension)
-  IGNORED_ATTR(Sendable)
   IGNORED_ATTR(NonSendable)
   IGNORED_ATTR(AtRethrows)
   IGNORED_ATTR(AtReasync)
@@ -321,6 +320,8 @@ public:
   void checkBackDeployAttrs(ArrayRef<BackDeployAttr *> Attrs);
 
   void visitKnownToBeLocalAttr(KnownToBeLocalAttr *attr);
+
+  void visitSendableAttr(SendableAttr *attr);
 };
 
 } // end anonymous namespace
@@ -3626,6 +3627,12 @@ void AttributeChecker::checkBackDeployAttrs(ArrayRef<BackDeployAttr *> Attrs) {
       }
     }
 
+    if (isa<DestructorDecl>(D) || isa<ConstructorDecl>(D)) {
+      diagnoseAndRemoveAttr(Attr, diag::attr_invalid_on_decl_kind, Attr,
+                            D->getDescriptiveKind());
+      continue;
+    }
+
     auto AtLoc = Attr->AtLoc;
     auto Platform = Attr->Platform;
 
@@ -5795,6 +5802,21 @@ void AttributeChecker::visitKnownToBeLocalAttr(KnownToBeLocalAttr *attr) {
   }
 }
 
+void AttributeChecker::visitSendableAttr(SendableAttr *attr) {
+
+  if ((isa<AbstractFunctionDecl>(D) || isa<AbstractStorageDecl>(D)) &&
+      !isAsyncDecl(cast<ValueDecl>(D))) {
+    auto value = cast<ValueDecl>(D);
+    ActorIsolation isolation = getActorIsolation(value);
+    if (isolation.isActorIsolated()) {
+      diagnoseAndRemoveAttr(
+          attr, diag::sendable_isolated_sync_function,
+          isolation, value->getDescriptiveKind(), value->getName())
+        .warnUntilSwiftVersion(6);
+    }
+  }
+}
+
 void AttributeChecker::visitNonisolatedAttr(NonisolatedAttr *attr) {
   // 'nonisolated' can be applied to global and static/class variables
   // that do not have storage.
@@ -6155,7 +6177,8 @@ static bool parametersMatch(const AbstractFunctionDecl *a,
 
 ValueDecl *RenamedDeclRequest::evaluate(Evaluator &evaluator,
                                         const ValueDecl *attached,
-                                        const AvailableAttr *attr) const {
+                                        const AvailableAttr *attr,
+                                        bool isKnownObjC) const {
   if (!attached || !attr)
     return nullptr;
 
@@ -6186,7 +6209,7 @@ ValueDecl *RenamedDeclRequest::evaluate(Evaluator &evaluator,
   auto minAccess = AccessLevel::Private;
   if (attached->getModuleContext()->isExternallyConsumed())
     minAccess = AccessLevel::Public;
-  bool attachedIsObjcVisible =
+  bool attachedIsObjcVisible = isKnownObjC ||
       objc_translation::isVisibleToObjC(attached, minAccess);
 
   SmallVector<ValueDecl *, 4> lookupResults;

@@ -90,21 +90,32 @@ _**Note:** This is in reverse chronological order, so newer entries are added to
   }
   ```
 
-* References to `optional` methods on a protocol metatype, as well as references to dynamically looked up methods on the `AnyObject` metatype are now supported. These references always have the type of a function that accepts a single argument and returns an optional value of function type:
+* References to `optional` methods on a protocol metatype, as well as references to dynamically looked up methods on `AnyObject` are now supported on par with other function references. The type of such a reference (formerly an immediate optional by mistake) has been altered to that of a function that takes a single argument and returns an optional value of function type:
 
   ```swift
   class Object {
-    @objc func getTag() -> Int
-  }
-
-  @objc protocol P {
-    @objc optional func didUpdateObject(withTag tag: Int)
+    @objc func getTag() -> Int { ... }
   }
 
   let getTag: (AnyObject) -> (() -> Int)? = AnyObject.getTag
 
-  let didUpdateObject: (any P) -> ((Int) -> Void)? = P.didUpdateObject
+  @objc protocol Delegate {
+    @objc optional func didUpdateObject(withTag tag: Int)
+  }
+
+  let didUpdateObjectWithTag: (Delegate) -> ((Int) -> Void)? = Delegate.didUpdateObject
   ```
+
+  > **Warning**  
+  > Due to the type change, selectors for aforementioned method references that require writing out their type explicitly for disambiguation will no longer compile. To fix this, simply adjust the written type, or resort to a `#if swift(<5.7)` directive when compatibility with older compiler versions is warranted. For example:
+  >
+  > ```swift
+  > #if swift(<5.7)
+  > let decidePolicyForNavigationAction = #selector(WKNavigationDelegate.webView(_:decidePolicyFor:decisionHandler:) as ((WKNavigationDelegate) -> (WKWebView, WKNavigationAction, @escaping (WKNavigationActionPolicy) -> Void) -> Void)?)
+  > #else
+  > let decidePolicyForNavigationAction = #selector(WKNavigationDelegate.webView(_:decidePolicyFor:decisionHandler:) as (WKNavigationDelegate) -> ((WKWebView, WKNavigationAction, @escaping (WKNavigationActionPolicy) -> Void) -> Void)?)
+  > #endif
+  > ```
 
 * [SE-0349][]:
 
@@ -390,6 +401,18 @@ _**Note:** This is in reverse chronological order, so newer entries are added to
   the result type provides a generalization where the callee chooses the
   resulting type and value.
 
+* The compiler now correctly emits errors for `@available` attributes on stored properties with the `lazy` modifier or with attached property wrappers. Previously, the attribute was accepted on this subset of stored properties but the resulting binary would crash at runtime when type metadata was unavailable.
+
+  ```swift
+  struct S {
+    @available(macOS 99, *) // error: stored properties cannot be marked potentially unavailable with '@available'
+    lazy var a: Int = 42
+  
+    @available(macOS 99, *) // error: stored properties cannot be marked potentially unavailable with '@available'
+    @Wrapper var b: Int
+  }
+  ```
+  
 * The compiler now correctly emits warnings for more kinds of expressions where a protocol conformance is used and may be unavailable at runtime. Previously, member reference expressions and type erasing expressions that used potentially unavailable conformances were not diagnosed, leading to potential crashes at runtime.
 
   ```swift

@@ -1658,6 +1658,11 @@ namespace {
         return recordMutableVarParent(parent, inout->getSubExpr());
       }
 
+      // Look through an expression that opens an existential
+      if (auto openExist = dyn_cast<OpenExistentialExpr>(subExpr)) {
+        return recordMutableVarParent(parent, openExist->getSubExpr());
+      }
+
       return false;
     }
 
@@ -4357,10 +4362,13 @@ ProtocolConformance *GetImplicitSendableRequest::evaluate(
   if (classDecl) {
     if (Type superclass = classDecl->getSuperclass()) {
       auto classModule = classDecl->getParentModule();
-      if (auto inheritedConformance = TypeChecker::conformsToProtocol(
-              classDecl->mapTypeIntoContext(superclass),
-              proto, classModule, /*allowMissing=*/false,
-              /*allowUnavailable=*/false)) {
+      auto inheritedConformance = TypeChecker::conformsToProtocol(
+          classDecl->mapTypeIntoContext(superclass),
+          proto, classModule, /*allowMissing=*/false);
+      if (inheritedConformance.hasUnavailableConformance())
+        inheritedConformance = ProtocolConformanceRef::forInvalid();
+
+      if (inheritedConformance) {
         inheritedConformance = inheritedConformance
             .mapConformanceOutOfContext();
         if (inheritedConformance.isConcrete()) {

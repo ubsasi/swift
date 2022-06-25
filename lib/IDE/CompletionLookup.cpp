@@ -1565,6 +1565,15 @@ void CompletionLookup::addConstructorCallsForType(
   if (!Sink.addInitsToTopLevel)
     return;
 
+  // Existential types cannot be instantiated. e.g. 'MyProtocol()'.
+  if (type->isExistentialType())
+    return;
+
+  // 'AnyObject' is not initializable.
+  // FIXME: Should we do this in 'AnyObjectLookupRequest'?
+  if (type->isAnyObject())
+    return;
+
   assert(CurrDeclContext);
 
   auto results =
@@ -2012,9 +2021,10 @@ void CompletionLookup::foundDecl(ValueDecl *D, DeclVisibilityKind Reason,
 
     if (auto *GP = dyn_cast<GenericTypeParamDecl>(D)) {
       addGenericTypeParamRef(GP, Reason, dynamicLookupInfo);
-      for (auto *protocol : GP->getConformingProtocols())
-        addConstructorCallsForType(protocol->getDeclaredInterfaceType(),
-                                   GP->getName(), Reason, dynamicLookupInfo);
+      auto type =
+          CurrDeclContext->mapTypeIntoContext(GP->getDeclaredInterfaceType());
+      addConstructorCallsForType(type, GP->getName(), Reason,
+                                 dynamicLookupInfo);
       return;
     }
 

@@ -601,6 +601,7 @@ static swift::file_types::ID computeFileTypeForPath(const StringRef Path) {
     // then iterate over all preceeding possible extension variants.
     while (llvm::sys::path::has_extension(PathStem)) {
       auto NextExtension = llvm::sys::path::extension(PathStem);
+      PathStem = llvm::sys::path::stem(PathStem);
       Extension = NextExtension.str() + Extension;
       FileType = file_types::lookupTypeForExtension(Extension);
       if (FileType != swift::file_types::ID::TY_INVALID)
@@ -1723,6 +1724,13 @@ static bool performCompileStepsPostSILGen(CompilerInstance &Instance,
                           publicCMOSymbols))
     return true;
 
+  if (IRGenOpts.UseSingleModuleLLVMEmission) {
+    // Pretend the other files that drivers/build systems expect exist by
+    // creating empty files.
+    if (writeEmptyOutputFilesFor(Context, ParallelOutputFilenames, IRGenOpts))
+      return true;
+  }
+
   return generateCode(Instance, OutputFilename, IRModule.getModule(),
                       HashGlobal);
 }
@@ -1758,7 +1766,9 @@ static void emitIndexDataForSourceFile(SourceFile *PrimarySourceFile,
     if (OutputFile.empty())
       OutputFile = PSPs.OutputFilename;
     (void) index::indexAndRecord(PrimarySourceFile, OutputFile,
-                                 opts.IndexStorePath, opts.IndexSystemModules,
+                                 opts.IndexStorePath,
+                                 !opts.IndexIgnoreClangModules,
+                                 opts.IndexSystemModules,
                                  opts.IndexIgnoreStdlib, isDebugCompilation,
                                  Invocation.getTargetTriple(),
                                  *Instance.getDependencyTracker(),
@@ -1773,6 +1783,7 @@ static void emitIndexDataForSourceFile(SourceFile *PrimarySourceFile,
                                  opts.InputsAndOutputs
                                    .copyIndexUnitOutputFilenames(),
                                  moduleToken, opts.IndexStorePath,
+                                 !opts.IndexIgnoreClangModules,
                                  opts.IndexSystemModules,
                                  opts.IndexIgnoreStdlib,
                                  isDebugCompilation,

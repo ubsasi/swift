@@ -365,6 +365,16 @@ static void collectPossibleCalleesByQualifiedLookup(
   if (!baseInstanceTy->mayHaveMembers())
     return;
 
+  if (name == DeclNameRef::createConstructor()) {
+    // Existential types cannot be instantiated. e.g. 'MyProtocol()'.
+    if (baseInstanceTy->isExistentialType())
+      return;
+
+    // 'AnyObject' is not initializable.
+    if (baseInstanceTy->isAnyObject())
+      return;
+  }
+
   // Make sure we've resolved implicit members.
   namelookup::installSemanticMembersIfNeeded(baseInstanceTy, name);
 
@@ -1088,7 +1098,7 @@ class ExprContextAnalyzer {
       break;
     }
     case StmtKind::ForEach:
-      if (auto SEQ = cast<ForEachStmt>(Parent)->getSequence()) {
+      if (auto SEQ = cast<ForEachStmt>(Parent)->getParsedSequence()) {
         if (containsTarget(SEQ)) {
           recordPossibleType(Context.getSequenceType());
         }

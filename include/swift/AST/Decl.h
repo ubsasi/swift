@@ -3634,7 +3634,7 @@ public:
   bool isActor() const;
 
   /// Whether this nominal type qualifies as a distributed actor, meaning that
-  /// it is either a distributed actor.
+  /// it is either a distributed actor or a DistributedActor constrained protocol.
   bool isDistributedActor() const;
 
   /// Whether this nominal type qualifies as any actor (plain or distributed).
@@ -6393,6 +6393,9 @@ public:
   /// A function is concurrent if it has the @Sendable attribute.
   bool isSendable() const;
 
+  /// Determine if function has 'nonisolated' attribute
+  bool isNonisolated() const;
+
   /// Returns true if the function is a suitable 'async' context.
   ///
   /// Functions that are an 'async' context can make calls to 'async' functions.
@@ -6740,7 +6743,7 @@ public:
   bool hasDynamicSelfResult() const;
 
   /// The async function marked as the alternative to this function, if any.
-  AbstractFunctionDecl *getAsyncAlternative() const;
+  AbstractFunctionDecl *getAsyncAlternative(bool isKnownObjC = false) const;
 
   /// If \p asyncAlternative is set, then compare its parameters to this
   /// (presumed synchronous) function's parameters to find the index of the

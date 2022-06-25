@@ -2327,7 +2327,12 @@ bool AddExplicitExistentialCoercion::isRequired(
   if (auto *anchor = getAsExpr(locator.getAnchor())) {
     // If this is erasure related to `Self`, let's look through
     // the call, if any.
-    if (isa<UnresolvedDotExpr>(anchor)) {
+    if (auto *UDE = dyn_cast<UnresolvedDotExpr>(anchor)) {
+      // If this is an implicit `makeIterator` call, let's skip the check.
+      if (UDE->isImplicit() &&
+          cs.getContextualTypePurpose(UDE->getBase()) == CTP_ForEachSequence)
+        return false;
+
       auto parentExpr = cs.getParentExpr(anchor);
       if (parentExpr && isa<CallExpr>(parentExpr))
         anchor = parentExpr;
@@ -2372,4 +2377,22 @@ AddExplicitExistentialCoercion::create(ConstraintSystem &cs, Type resultTy,
                                        ConstraintLocator *locator) {
   return new (cs.getAllocator())
       AddExplicitExistentialCoercion(cs, resultTy, locator);
+}
+
+bool RenameConflictingPatternVariables::diagnose(const Solution &solution,
+                                                 bool asNote) const {
+  ConflictingPatternVariables failure(solution, ExpectedType,
+                                      getConflictingVars(), getLocator());
+  return failure.diagnose(asNote);
+}
+
+RenameConflictingPatternVariables *
+RenameConflictingPatternVariables::create(ConstraintSystem &cs, Type expectedTy,
+                                          ArrayRef<VarDecl *> conflicts,
+                                          ConstraintLocator *locator) {
+  unsigned size = totalSizeToAlloc<VarDecl *>(conflicts.size());
+  void *mem = cs.getAllocator().Allocate(
+      size, alignof(RenameConflictingPatternVariables));
+  return new (mem)
+      RenameConflictingPatternVariables(cs, expectedTy, conflicts, locator);
 }

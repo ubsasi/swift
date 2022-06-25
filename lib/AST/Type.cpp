@@ -158,7 +158,10 @@ bool TypeBase::isStructurallyUninhabited() {
 }
 
 bool TypeBase::isAny() {
-  return isEqual(getASTContext().TheAnyType);
+  Type constraint = this;
+  if (auto existential = constraint->getAs<ExistentialType>())
+    constraint = existential->getConstraintType();
+  return constraint->isEqual(getASTContext().TheAnyType);
 }
 
 bool TypeBase::isPlaceholder() {
@@ -303,7 +306,9 @@ ExistentialLayout::ExistentialLayout(CanProtocolCompositionType type) {
       protoDecl = parameterized->getProtocol();
       containsParameterized = true;
     }
-    containsNonObjCProtocol |= !protoDecl->isObjC();
+    containsNonObjCProtocol |=
+        !protoDecl->isObjC() &&
+        !protoDecl->isSpecificProtocol(KnownProtocolKind::Sendable);
     protocols.push_back(protoDecl);
   }
 }
@@ -391,84 +396,51 @@ bool CanType::isTypeErasedGenericClassTypeImpl(CanType type) {
   return false;
 }
 
-static bool archetypeConformsTo(ArchetypeType *archetype, KnownProtocolKind protocol) {
-  auto &ctx = archetype->getASTContext();
-  auto expectedProto = ctx.getProtocol(protocol);
-  if (!expectedProto)
-    return false;
-
-  for (auto proto : archetype->getConformsTo()) {
-    if (proto == expectedProto || proto->inheritsFrom(expectedProto))
-      return true;
-  }
-
-  return false;
-}
-
-bool TypeBase::isActorType() {
+NominalTypeDecl *TypeBase::getAnyActor() {
   // Nominal types: check whether the declaration is an actor.
-  if (auto nominal = getAnyNominal())
-    return nominal->isActor();
+  if (auto nominal = getAnyNominal()) {
+    if (nominal->isAnyActor())
+      return nominal;
+  }
 
   // Archetypes check for conformance to Actor.
   if (auto archetype = getAs<ArchetypeType>()) {
-    return archetypeConformsTo(archetype, KnownProtocolKind::Actor);
+    for (auto proto : archetype->getConformsTo()) {
+      if (proto->isAnyActor())
+        return proto;
+    }
+
+    return nullptr;
   }
 
   // Existential types: check for Actor protocol.
   if (isExistentialType()) {
-    auto actorProto = getASTContext().getProtocol(KnownProtocolKind::Actor);
-    if (!actorProto)
-      return false;
-
     auto layout = getExistentialLayout();
     if (auto superclass = layout.getSuperclass()) {
-      if (superclass->isActorType())
-        return true;
+      if (auto actor = superclass->getAnyActor())
+        return actor;
     }
 
     for (auto proto : layout.getProtocols()) {
-      if (proto->isActor())
-        return true;
+      if (proto->isAnyActor())
+        return proto;
     }
 
-    return false;
+    return nullptr;
   }
 
+  return nullptr;
+}
+
+bool TypeBase::isActorType() {
+  if (auto actor = getAnyActor())
+    return actor->isActor();
   return false;
 }
 
 bool TypeBase::isDistributedActor() {
-  // Nominal types: check whether the declaration is an actor.
-  if (auto *nominal = getAnyNominal()) {
-    if (auto *classDecl = dyn_cast<ClassDecl>(nominal))
-      return classDecl->isDistributedActor();
-
-    if (isa<StructDecl>(nominal) || isa<EnumDecl>(nominal))
-      return false;
-  }
-
-  // Archetypes check for conformance to DistributedActor.
-  if (auto archetype = getAs<ArchetypeType>()) {
-    return archetypeConformsTo(archetype, KnownProtocolKind::DistributedActor);
-  }
-
-  // Existential types: check for DistributedActor protocol conformance.
-  if (isExistentialType()) {
-    auto actorProto = getASTContext().getDistributedActorDecl();
-    if (!actorProto)
-      return false;
-
-    // TODO(distributed): Inheritance is not yet supported.
-
-    auto layout = getExistentialLayout();
-    return llvm::any_of(layout.getProtocols(),
-                        [&actorProto](ProtocolDecl *protocol) {
-                          return protocol == actorProto ||
-                                 protocol->inheritsFrom(actorProto);
-                        });
-  }
-
+  if (auto actor = getAnyActor())
+    return actor->isDistributedActor();
   return false;
 }
 
@@ -789,6 +761,17 @@ CanType CanType::getOptionalObjectTypeImpl(CanType type) {
   return CanType();
 }
 
+Type TypeBase::wrapInOptionalType() const {
+  auto &ctx = getASTContext();
+  auto *result = BoundGenericEnumType::get(ctx.getOptionalDecl(), Type(),
+                                           { getCanonicalType() });
+  return result;
+}
+
+CanType CanType::wrapInOptionalTypeImpl(CanType type) {
+  return type->wrapInOptionalType()->getCanonicalType();
+}
+
 Type TypeBase::getAnyPointerElementType(PointerTypeKind &PTK) {
   auto &C = getASTContext();
   if (isUnsafeMutableRawPointer()) {
@@ -971,6 +954,67 @@ Type TypeBase::stripConcurrency(bool recurse, bool dropGlobalActor) {
       return Type(this);
 
     return newFnType;
+  }
+
+  if (auto existentialType = getAs<ExistentialType>()) {
+    auto newConstraintType = existentialType->getConstraintType()
+        ->stripConcurrency(recurse, dropGlobalActor);
+    if (newConstraintType.getPointer() ==
+            existentialType->getConstraintType().getPointer())
+      return Type(this);
+
+    return ExistentialType::get(newConstraintType);
+  }
+
+  if (auto protocolType = getAs<ProtocolType>()) {
+    if (protocolType->getDecl()->isSpecificProtocol(
+            KnownProtocolKind::Sendable))
+      return ProtocolCompositionType::get(getASTContext(), { }, false);
+
+    return Type(this);
+  }
+
+  if (auto protocolCompositionType = getAs<ProtocolCompositionType>()) {
+    SmallVector<Type, 4> newMembers;
+    auto members = protocolCompositionType->getMembers();
+    for (unsigned i : indices(members)) {
+      auto memberType = members[i];
+      auto newMemberType =
+          memberType->stripConcurrency(recurse, dropGlobalActor);
+      if (!newMembers.empty()) {
+        newMembers.push_back(newMemberType);
+        continue;
+      }
+
+      if (memberType.getPointer() != newMemberType.getPointer()) {
+        newMembers.append(members.begin(), members.begin() + i);
+        newMembers.push_back(newMemberType);
+        continue;
+      }
+    }
+
+    if (!newMembers.empty()) {
+      return ProtocolCompositionType::get(
+          getASTContext(), newMembers,
+          protocolCompositionType->hasExplicitAnyObject());
+    }
+
+    return Type(this);
+  }
+
+  if (auto existentialMetatype = getAs<ExistentialMetatypeType>()) {
+    auto instanceType = existentialMetatype->getExistentialInstanceType();
+    auto newInstanceType =
+        instanceType->stripConcurrency(recurse, dropGlobalActor);
+    if (instanceType.getPointer() != newInstanceType.getPointer()) {
+      Optional<MetatypeRepresentation> repr;
+      if (existentialMetatype->hasRepresentation())
+        repr = existentialMetatype->getRepresentation();
+      return ExistentialMetatypeType::get(
+          newInstanceType, repr, getASTContext());
+    }
+
+    return Type(this);
   }
 
   return Type(this);
@@ -1653,7 +1697,7 @@ CanType TypeBase::computeCanonicalType() {
     for (Type t : PPT->getArgs())
       CanArgs.push_back(t->getCanonicalType());
     auto &C = Base->getASTContext();
-    Result = ParameterizedProtocolType::get(C, Base, CanArgs).getPointer();
+    Result = ParameterizedProtocolType::get(C, Base, CanArgs);
     break;
   }
   case TypeKind::Existential: {
@@ -3864,6 +3908,15 @@ operator()(CanType maybeOpaqueType, Type replacementType,
     }
   }
   return substRef;
+}
+
+CanExistentialType CanExistentialType::get(CanType constraint) {
+  assert(!(constraint->isAny() || constraint->isAnyObject()) &&
+         "Any(Object) may not apppear as canonical constraint type");
+  assert(!constraint->is<ExistentialMetatypeType>() &&
+         "Existential metatype may not apppear as canonical constraint type");
+  return CanExistentialType(
+      ExistentialType::get(constraint)->castTo<ExistentialType>());
 }
 
 CanPrimaryArchetypeType
@@ -6239,6 +6292,12 @@ bool TypeBase::hasSimpleTypeRepr() const {
   case TypeKind::OpaqueTypeArchetype:
   case TypeKind::OpenedArchetype:
     return false;
+
+  case TypeKind::PrimaryArchetype: {
+    auto archetype = cast<const PrimaryArchetypeType>(this);
+    auto interface = archetype->getInterfaceType();
+    return interface->hasSimpleTypeRepr();
+  }
 
   case TypeKind::ProtocolComposition: {
     // 'Any', 'AnyObject' and single protocol compositions are simple
