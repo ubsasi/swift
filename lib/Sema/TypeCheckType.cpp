@@ -3572,7 +3572,27 @@ TypeResolver::resolveIdentifierType(IdentTypeRepr *IdType,
     auto *typeAlias = dyn_cast<TypeAliasType>(result.getPointer());
     if (typeAlias && typeAlias->is<ExistentialType>() &&
         typeAlias->getDecl()->hasClangNode()) {
-      return typeAlias->getAs<ExistentialType>()->getConstraintType();
+      auto constraint = typeAlias->getAs<ExistentialType>()->getConstraintType();
+
+      // FIXME: Hack! CFTypeRef, which is a typealias to AnyObject,
+      // has special handling when printing as ObjC, so the typealias
+      // sugar needs to be preserved. See `isCFTypeRef` in PrintAsClang.cpp.
+      //
+      // We can eliminate this hack by fixing the issues with PR #41147,
+      // which added logic to the ClangImporter for when to import as an
+      // existential versus a constraint, but it was reverted in #41207
+      // because it was missing some cases of wrapping in ExistentialType.
+      auto module = typeAlias->getDecl()->getDeclContext()->getParentModule();
+      if ((module->getName().is("Foundation") ||
+          module->getName().is("CoreFoundation")) &&
+          typeAlias->getDecl()->getName() == getASTContext().getIdentifier("CFTypeRef")) {
+        return TypeAliasType::get(typeAlias->getDecl(),
+                                  typeAlias->getParent(),
+                                  typeAlias->getSubstitutionMap(),
+                                  constraint);
+      }
+
+      return constraint;
     }
   }
 
@@ -4007,7 +4027,7 @@ TypeResolver::resolveExistentialType(ExistentialTypeRepr *repr,
   if (constraintType->hasError())
     return ErrorType::get(getASTContext());
 
-  if (!constraintType->isExistentialType()) {
+  if (!constraintType->isConstraintType()) {
     // Emit a tailored diagnostic for the incorrect optional
     // syntax 'any P?' with a fix-it to add parenthesis.
     auto wrapped = constraintType->getOptionalObjectType();
@@ -4021,14 +4041,18 @@ TypeResolver::resolveExistentialType(ExistentialTypeRepr *repr,
         .fixItReplace(repr->getSourceRange(), fix);
       return constraintType;
     }
+    
+    // Diagnose redundant `any` on an already existential type e.g. any (any P)
+    // with a fix-it to remove first any.
+    if (constraintType->is<ExistentialType>()) {
+      diagnose(repr->getLoc(), diag::redundant_any_in_existential, constraintType)
+          .fixItRemove(repr->getAnyLoc());
+      return constraintType;
+    }
 
-    auto anyStart = repr->getAnyLoc();
-    auto anyEnd = Lexer::getLocForEndOfToken(getASTContext().SourceMgr,
-                                             anyStart);
     diagnose(repr->getLoc(), diag::any_not_existential,
-             constraintType->isTypeParameter(),
-             constraintType)
-      .fixItRemove({anyStart, anyEnd});
+             constraintType->isTypeParameter(), constraintType)
+        .fixItRemove(repr->getAnyLoc());
     return constraintType;
   }
 

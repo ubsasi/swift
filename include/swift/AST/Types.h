@@ -5313,8 +5313,8 @@ class ParameterizedProtocolType final : public TypeBase,
 public:
   /// Retrieve an instance of a protocol composition type with the
   /// given set of members.
-  static Type get(const ASTContext &C, ProtocolType *base,
-                  ArrayRef<Type> args);
+  static ParameterizedProtocolType *get(const ASTContext &C, ProtocolType *base,
+                                        ArrayRef<Type> args);
 
   ProtocolType *getBaseType() const {
     return Base;
@@ -5354,6 +5354,13 @@ private:
                             RecursiveTypeProperties properties);
 };
 BEGIN_CAN_TYPE_WRAPPER(ParameterizedProtocolType, Type)
+  static CanParameterizedProtocolType get(const ASTContext &C,
+                                          ProtocolType *base,
+                                          ArrayRef<Type> args) {
+    return CanParameterizedProtocolType(
+        ParameterizedProtocolType::get(C, base, args));
+  }
+
   CanProtocolType getBaseType() const {
     return CanProtocolType(getPointer()->getBaseType());
   }
@@ -5391,16 +5398,34 @@ struct ExistentialTypeGeneralization {
 class ExistentialType final : public TypeBase {
   Type ConstraintType;
 
+  /// Whether to print this existential type with the 'any' keyword,
+  /// e.g. in diagnostics.
+  ///
+  /// Any and AnyObject need not use 'any', and they are printed
+  /// in diagnostics without 'any' unless wrapped in MetatypeType.
+  /// This field should only be used by TypePrinter.
+  bool PrintWithAny;
+
   ExistentialType(Type constraintType,
+                  bool printWithAny,
                   const ASTContext *canonicalContext,
                   RecursiveTypeProperties properties)
       : TypeBase(TypeKind::Existential, canonicalContext, properties),
-        ConstraintType(constraintType) {}
+        ConstraintType(constraintType), PrintWithAny(printWithAny) {}
 
 public:
-  static Type get(Type constraint, bool forceExistential = false);
+  static Type get(Type constraint);
 
   Type getConstraintType() const { return ConstraintType; }
+
+  bool shouldPrintWithAny() const { return PrintWithAny; }
+
+  void forcePrintWithAny(llvm::function_ref<void(Type)> print) {
+    bool oldValue = PrintWithAny;
+    PrintWithAny = true;
+    print(this);
+    PrintWithAny = oldValue;
+  }
 
   bool requiresClass() const {
     if (auto protocol = ConstraintType->getAs<ProtocolType>())
@@ -5420,6 +5445,7 @@ public:
   }
 };
 BEGIN_CAN_TYPE_WRAPPER(ExistentialType, Type)
+  static CanExistentialType get(CanType constraint);
   PROXY_CAN_TYPE_SIMPLE_GETTER(getConstraintType)
 END_CAN_TYPE_WRAPPER(ExistentialType, Type)
 

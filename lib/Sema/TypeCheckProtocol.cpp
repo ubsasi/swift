@@ -4198,8 +4198,10 @@ ConformanceChecker::resolveWitnessViaLookup(ValueDecl *requirement) {
       if (behavior != DiagnosticBehavior::Ignore) {
         bool isError = behavior < DiagnosticBehavior::Warning;
         
+        // Avoid relying on the lifetime of 'this'.
+        const DeclContext *DC = this->DC;
         diagnoseOrDefer(requirement, isError,
-                        [this, requirement, witness, sendFrom](
+                        [DC, requirement, witness, sendFrom](
                           NormalProtocolConformance *conformance) {
           diagnoseSendabilityErrorBasedOn(conformance->getProtocol(), sendFrom,
                                           [&](DiagnosticBehavior limit) {
@@ -6416,7 +6418,19 @@ void TypeChecker::checkConformancesInContext(IterableDeclContext *idc) {
         if (!classDecl->isExplicitActor()) {
           dc->getSelfNominalTypeDecl()
               ->diagnose(diag::actor_protocol_illegal_inheritance,
-                         dc->getSelfNominalTypeDecl()->getName())
+                         dc->getSelfNominalTypeDecl()->getName(),
+                         proto->getName())
+              .fixItReplace(nominal->getStartLoc(), "actor");
+        }
+      }
+    } else if (proto->isSpecificProtocol(KnownProtocolKind::AnyActor)) {
+      if (auto classDecl = dyn_cast<ClassDecl>(nominal)) {
+        if (!classDecl->isExplicitActor() &&
+            !classDecl->isExplicitDistributedActor()) {
+          dc->getSelfNominalTypeDecl()
+              ->diagnose(diag::actor_protocol_illegal_inheritance,
+                         dc->getSelfNominalTypeDecl()->getName(),
+                         proto->getName())
               .fixItReplace(nominal->getStartLoc(), "actor");
         }
       }

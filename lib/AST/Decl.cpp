@@ -2847,7 +2847,7 @@ static Type mapSignatureFunctionType(ASTContext &ctx, Type type,
     // Functions and subscripts cannot overload differing only in opaque return
     // types. Replace the opaque type with `Any`.
     if (type->is<OpaqueTypeArchetypeType>()) {
-      type = ProtocolCompositionType::get(ctx, {}, /*hasAnyObject*/ false);
+      type = ctx.getAnyExistentialType();
     }
 
     return mapSignatureParamType(ctx, type);
@@ -7588,7 +7588,8 @@ bool AbstractFunctionDecl::hasDynamicSelfResult() const {
   return isa<ConstructorDecl>(this);
 }
 
-AbstractFunctionDecl *AbstractFunctionDecl::getAsyncAlternative() const {
+AbstractFunctionDecl *
+AbstractFunctionDecl::getAsyncAlternative(bool isKnownObjC) const {
   // Async functions can't have async alternatives
   if (hasAsync())
     return nullptr;
@@ -7612,7 +7613,8 @@ AbstractFunctionDecl *AbstractFunctionDecl::getAsyncAlternative() const {
   }
 
   auto *renamedDecl = evaluateOrDefault(
-      getASTContext().evaluator, RenamedDeclRequest{this, avAttr}, nullptr);
+      getASTContext().evaluator, RenamedDeclRequest{this, avAttr, isKnownObjC},
+      nullptr);
   auto *alternative = dyn_cast_or_null<AbstractFunctionDecl>(renamedDecl);
   if (!alternative || !alternative->hasAsync())
     return nullptr;
@@ -7738,6 +7740,10 @@ bool AbstractFunctionDecl::argumentNameIsAPIByDefault() const {
 
 bool AbstractFunctionDecl::isSendable() const {
   return getAttrs().hasAttribute<SendableAttr>();
+}
+
+bool AbstractFunctionDecl::isNonisolated() const {
+  return getAttrs().hasAttribute<NonisolatedAttr>();
 }
 
 bool AbstractFunctionDecl::isBackDeployed() const {

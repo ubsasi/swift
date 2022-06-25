@@ -421,7 +421,7 @@ bool RequirementFailure::diagnoseAsNote() {
   // Layout requirement doesn't have a second type, let's always
   // `AnyObject`.
   auto requirementTy = req.getKind() == RequirementKind::Layout
-                           ? getASTContext().getAnyObjectType()
+                           ? getASTContext().getAnyObjectConstraint()
                            : req.getSecondType();
 
   emitDiagnosticAt(reqDC->getAsDecl(), getDiagnosticAsNote(), getLHS(),
@@ -795,6 +795,10 @@ bool GenericArgumentsMismatchFailure::diagnoseAsError() {
       diagnostic = getDiagnosticFor(purpose);
       break;
     }
+
+    case ConstraintLocator::ResultBuilderBodyResult:
+      diagnostic = diag::cannot_convert_result_builder_result_to_return_type;
+      break;
 
     case ConstraintLocator::AutoclosureResult:
     case ConstraintLocator::ApplyArgToParam:

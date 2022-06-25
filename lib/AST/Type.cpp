@@ -158,7 +158,10 @@ bool TypeBase::isStructurallyUninhabited() {
 }
 
 bool TypeBase::isAny() {
-  return isEqual(getASTContext().TheAnyType);
+  Type constraint = this;
+  if (auto existential = constraint->getAs<ExistentialType>())
+    constraint = existential->getConstraintType();
+  return constraint->isEqual(getASTContext().TheAnyType);
 }
 
 bool TypeBase::isPlaceholder() {
@@ -303,7 +306,9 @@ ExistentialLayout::ExistentialLayout(CanProtocolCompositionType type) {
       protoDecl = parameterized->getProtocol();
       containsParameterized = true;
     }
-    containsNonObjCProtocol |= !protoDecl->isObjC();
+    containsNonObjCProtocol |=
+        !protoDecl->isObjC() &&
+        !protoDecl->isSpecificProtocol(KnownProtocolKind::Sendable);
     protocols.push_back(protoDecl);
   }
 }
@@ -949,6 +954,67 @@ Type TypeBase::stripConcurrency(bool recurse, bool dropGlobalActor) {
       return Type(this);
 
     return newFnType;
+  }
+
+  if (auto existentialType = getAs<ExistentialType>()) {
+    auto newConstraintType = existentialType->getConstraintType()
+        ->stripConcurrency(recurse, dropGlobalActor);
+    if (newConstraintType.getPointer() ==
+            existentialType->getConstraintType().getPointer())
+      return Type(this);
+
+    return ExistentialType::get(newConstraintType);
+  }
+
+  if (auto protocolType = getAs<ProtocolType>()) {
+    if (protocolType->getDecl()->isSpecificProtocol(
+            KnownProtocolKind::Sendable))
+      return ProtocolCompositionType::get(getASTContext(), { }, false);
+
+    return Type(this);
+  }
+
+  if (auto protocolCompositionType = getAs<ProtocolCompositionType>()) {
+    SmallVector<Type, 4> newMembers;
+    auto members = protocolCompositionType->getMembers();
+    for (unsigned i : indices(members)) {
+      auto memberType = members[i];
+      auto newMemberType =
+          memberType->stripConcurrency(recurse, dropGlobalActor);
+      if (!newMembers.empty()) {
+        newMembers.push_back(newMemberType);
+        continue;
+      }
+
+      if (memberType.getPointer() != newMemberType.getPointer()) {
+        newMembers.append(members.begin(), members.begin() + i);
+        newMembers.push_back(newMemberType);
+        continue;
+      }
+    }
+
+    if (!newMembers.empty()) {
+      return ProtocolCompositionType::get(
+          getASTContext(), newMembers,
+          protocolCompositionType->hasExplicitAnyObject());
+    }
+
+    return Type(this);
+  }
+
+  if (auto existentialMetatype = getAs<ExistentialMetatypeType>()) {
+    auto instanceType = existentialMetatype->getExistentialInstanceType();
+    auto newInstanceType =
+        instanceType->stripConcurrency(recurse, dropGlobalActor);
+    if (instanceType.getPointer() != newInstanceType.getPointer()) {
+      Optional<MetatypeRepresentation> repr;
+      if (existentialMetatype->hasRepresentation())
+        repr = existentialMetatype->getRepresentation();
+      return ExistentialMetatypeType::get(
+          newInstanceType, repr, getASTContext());
+    }
+
+    return Type(this);
   }
 
   return Type(this);
@@ -1631,7 +1697,7 @@ CanType TypeBase::computeCanonicalType() {
     for (Type t : PPT->getArgs())
       CanArgs.push_back(t->getCanonicalType());
     auto &C = Base->getASTContext();
-    Result = ParameterizedProtocolType::get(C, Base, CanArgs).getPointer();
+    Result = ParameterizedProtocolType::get(C, Base, CanArgs);
     break;
   }
   case TypeKind::Existential: {
@@ -3842,6 +3908,15 @@ operator()(CanType maybeOpaqueType, Type replacementType,
     }
   }
   return substRef;
+}
+
+CanExistentialType CanExistentialType::get(CanType constraint) {
+  assert(!(constraint->isAny() || constraint->isAnyObject()) &&
+         "Any(Object) may not apppear as canonical constraint type");
+  assert(!constraint->is<ExistentialMetatypeType>() &&
+         "Existential metatype may not apppear as canonical constraint type");
+  return CanExistentialType(
+      ExistentialType::get(constraint)->castTo<ExistentialType>());
 }
 
 CanPrimaryArchetypeType

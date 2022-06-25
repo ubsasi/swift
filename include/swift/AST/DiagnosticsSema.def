@@ -4527,8 +4527,8 @@ ERROR(actor_inheritance,none,
       (bool))
 
 ERROR(actor_protocol_illegal_inheritance,none,
-      "non-actor type %0 cannot conform to the 'Actor' protocol",
-      (DeclName))
+      "non-actor type %0 cannot conform to the %1 protocol",
+      (DeclName, DeclName))
 ERROR(distributed_actor_conformance_missing_system_type,none,
       "distributed actor %0 does not declare ActorSystem it can be used with.",
       (DeclName))
@@ -4759,6 +4759,9 @@ ERROR(unchecked_not_inheritance_clause,none,
 ERROR(unchecked_not_existential,none,
       "'unchecked' attribute cannot apply to non-protocol type %0", (Type))
 
+ERROR(redundant_any_in_existential,none,
+       "redundant 'any' has no effect on existential type %0",
+       (Type))
 ERROR(any_not_existential,none,
        "'any' has no effect on %select{concrete type|type parameter}0 %1",
        (bool, Type))
@@ -6196,6 +6199,10 @@ ERROR(result_builder_requires_explicit_var_initialization,none,
 ERROR(cannot_declare_computed_var_in_result_builder,none,
       "cannot declare local %select{lazy|wrapped|computed|observed}0 variable "
       "in result builder", (unsigned))
+ERROR(cannot_convert_result_builder_result_to_return_type,none,
+      "cannot convert result builder result type %0 to return type %1",
+      (Type,Type))
+
 
 //------------------------------------------------------------------------------
 // MARK: Tuple Shuffle Diagnostics

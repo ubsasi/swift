@@ -608,10 +608,10 @@ ASTContext::ASTContext(
     : LangOpts(langOpts), TypeCheckerOpts(typeckOpts), SILOpts(silOpts),
       SearchPathOpts(SearchPathOpts), ClangImporterOpts(ClangImporterOpts),
       SymbolGraphOpts(SymbolGraphOpts), SourceMgr(SourceMgr), Diags(Diags),
-      PreModuleImportCallback(PreModuleImportCallback),
       evaluator(Diags, langOpts), TheBuiltinModule(createBuiltinModule(*this)),
       StdlibModuleName(getIdentifier(STDLIB_NAME)),
       SwiftShimsModuleName(getIdentifier(SWIFT_SHIMS_NAME)),
+      PreModuleImportCallback(PreModuleImportCallback),
       TheErrorType(new (*this, AllocationArena::Permanent) ErrorType(
           *this, Type(), RecursiveTypeProperties::HasError)),
       TheUnresolvedType(new (*this, AllocationArena::Permanent)
@@ -956,7 +956,11 @@ ASTContext::getPointerPointeePropertyDecl(PointerTypeKind ptrKind) const {
   llvm_unreachable("bad pointer kind");
 }
 
-CanType ASTContext::getAnyObjectType() const {
+CanType ASTContext::getAnyExistentialType() const {
+  return ExistentialType::get(TheAnyType)->getCanonicalType();
+}
+
+CanType ASTContext::getAnyObjectConstraint() const {
   if (getImpl().AnyObjectType) {
     return getImpl().AnyObjectType;
   }
@@ -965,6 +969,11 @@ CanType ASTContext::getAnyObjectType() const {
     ProtocolCompositionType::get(
       *this, {}, /*HasExplicitAnyObject=*/true));
   return getImpl().AnyObjectType;
+}
+
+CanType ASTContext::getAnyObjectType() const {
+  return ExistentialType::get(getAnyObjectConstraint())
+      ->getCanonicalType();
 }
 
 #define KNOWN_SDK_TYPE_DECL(MODULE, NAME, DECLTYPE, GENERIC_ARGS) \
@@ -1916,24 +1925,12 @@ void ASTContext::loadObjCMethods(
   PrettyStackTraceSelector stackTraceSelector("looking for", selector);
   PrettyStackTraceDecl stackTraceDecl("...in", tyDecl);
 
-  // @objc protocols cannot have @objc extension members, so if we've recorded
-  // everything in the protocol definition, we've recorded everything. And we
-  // only ever use the ObjCSelector version of `NominalTypeDecl::lookupDirect()`
-  // on protocols in primary file typechecking, so we don't care about protocols
-  // that need to be loaded from files.
-  // TODO: Rework `ModuleLoader::loadObjCMethods()` to support protocols too if
-  //       selector-based `NominalTypeDecl::lookupDirect()` ever needs to work
-  //       in more situations.
-  ClassDecl *classDecl = dyn_cast<ClassDecl>(tyDecl);
-  if (!classDecl)
-    return;
-
   for (auto &loader : getImpl().ModuleLoaders) {
     // Ignore the Clang importer if we've been asked for Swift-only results.
     if (swiftOnly && loader.get() == getClangModuleLoader())
       continue;
 
-    loader->loadObjCMethods(classDecl, selector, isInstanceMethod,
+    loader->loadObjCMethods(tyDecl, selector, isInstanceMethod,
                             previousGeneration, methods);
   }
 }
@@ -3336,9 +3333,9 @@ ProtocolCompositionType::build(const ASTContext &C, ArrayRef<Type> Members,
   return compTy;
 }
 
-Type ParameterizedProtocolType::get(const ASTContext &C,
-                                    ProtocolType *baseTy,
-                                    ArrayRef<Type> args) {
+ParameterizedProtocolType *ParameterizedProtocolType::get(const ASTContext &C,
+                                                          ProtocolType *baseTy,
+                                                          ArrayRef<Type> args) {
   assert(args.size() > 0);
 
   bool isCanonical = baseTy->isCanonical();
@@ -4254,19 +4251,17 @@ ProtocolType::ProtocolType(ProtocolDecl *TheDecl, Type Parent,
                            RecursiveTypeProperties properties)
   : NominalType(TypeKind::Protocol, &Ctx, TheDecl, Parent, properties) { }
 
-Type ExistentialType::get(Type constraint, bool forceExistential) {
+Type ExistentialType::get(Type constraint) {
   auto &C = constraint->getASTContext();
-  if (!forceExistential) {
-    // FIXME: Any and AnyObject don't yet use ExistentialType.
-    if (constraint->isAny() || constraint->isAnyObject())
-      return constraint;
-
-    // ExistentialMetatypeType is already an existential type.
-    if (constraint->is<ExistentialMetatypeType>())
-      return constraint;
-  }
+  // ExistentialMetatypeType is already an existential type.
+  if (constraint->is<ExistentialMetatypeType>())
+    return constraint;
 
   assert(constraint->isConstraintType());
+
+  bool printWithAny = true;
+  if (constraint->isEqual(C.TheAnyType) || constraint->isAnyObject())
+    printWithAny = false;
 
   auto properties = constraint->getRecursiveProperties();
   if (constraint->is<ParameterizedProtocolType>())
@@ -4278,7 +4273,7 @@ Type ExistentialType::get(Type constraint, bool forceExistential) {
     return entry;
 
   const ASTContext *canonicalContext = constraint->isCanonical() ? &C : nullptr;
-  return entry = new (C, arena) ExistentialType(constraint,
+  return entry = new (C, arena) ExistentialType(constraint, printWithAny,
                                                 canonicalContext,
                                                 properties);
 }
