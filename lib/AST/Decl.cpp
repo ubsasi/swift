@@ -2259,6 +2259,9 @@ AbstractStorageDecl::getAccessStrategy(AccessSemantics semantics,
     assert(hasStorage());
     return AccessStrategy::getStorage();
 
+  case AccessSemantics::DistributedThunk:
+    return AccessStrategy::getDistributedThunkDispatchStrategy();
+
   case AccessSemantics::Ordinary:
     // Skip these checks for local variables, both because they're unnecessary
     // and because we won't necessarily have computed access.
@@ -3062,13 +3065,13 @@ void ValueDecl::setIsObjC(bool value) {
 bool ValueDecl::isSemanticallyFinal() const {
   // Actor types are semantically final.
   if (auto classDecl = dyn_cast<ClassDecl>(this)) {
-    if (classDecl->isActor())
+    if (classDecl->isAnyActor())
       return true;
   }
 
   // As are members of actor types.
   if (auto classDecl = getDeclContext()->getSelfClassDecl()) {
-    if (classDecl->isActor())
+    if (classDecl->isAnyActor())
       return true;
   }
 
@@ -4249,7 +4252,11 @@ static Type computeNominalType(NominalTypeDecl *decl, DeclTypeKind kind) {
   // If `decl` is a nested type, find the parent type.
   Type ParentTy;
   DeclContext *dc = decl->getDeclContext();
-  if (!isa<ProtocolDecl>(decl) && dc->isTypeContext()) {
+  bool isObjCProtocol = isa<ProtocolDecl>(decl) && decl->hasClangNode();
+
+  // Objective-C protocols, unlike Swift protocols, could be nested
+  // in other types.
+  if ((isObjCProtocol || !isa<ProtocolDecl>(decl)) && dc->isTypeContext()) {
     switch (kind) {
     case DeclTypeKind::DeclaredType: {
       if (auto *nominal = dc->getSelfNominalTypeDecl())
@@ -6411,10 +6418,6 @@ bool VarDecl::isLet() const {
 
 bool VarDecl::isAsyncLet() const {
   return getAttrs().hasAttribute<AsyncAttr>();
-}
-
-bool VarDecl::isDistributed() const {
-  return getAttrs().hasAttribute<DistributedActorAttr>();
 }
 
 bool VarDecl::isKnownToBeLocal() const {

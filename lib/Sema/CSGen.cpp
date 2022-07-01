@@ -1301,7 +1301,7 @@ namespace {
                            ctx.Id_Regex.str());
         return Type();
       }
-      SmallVector<TupleTypeElt, 4> matchElements {ctx.getSubstringType()};
+      SmallVector<TupleTypeElt, 4> matchElements;
       if (decodeRegexCaptureTypes(ctx,
                                   E->getSerializedCaptureStructure(),
                                   /*atomType*/ ctx.getSubstringType(),
@@ -1310,6 +1310,7 @@ namespace {
                            diag::regex_capture_types_failed_to_decode);
         return Type();
       }
+      assert(!matchElements.empty() && "Should have decoded at least an atom");
       if (matchElements.size() == 1)
         return BoundGenericStructType::get(
             regexDecl, Type(), matchElements.front().getType());
@@ -3950,8 +3951,20 @@ generateForEachStmtConstraints(
     forEachStmtInfo.makeIteratorVar = PB;
 
     // Type of sequence expression has to conform to Sequence protocol.
+    //
+    // Note that the following emulates having `$generator` separately
+    // type-checked by introducing a `TVO_PrefersSubtypeBinding` type
+    // variable that would make sure that result of `.makeIterator` would
+    // get ranked standalone.
     {
-      cs.addConstraint(ConstraintKind::ConformsTo, cs.getType(sequenceExpr),
+      auto *externalIteratorType = cs.createTypeVariable(
+          cs.getConstraintLocator(sequenceExpr), TVO_PrefersSubtypeBinding);
+
+      cs.addConstraint(ConstraintKind::Equal, externalIteratorType,
+                       cs.getType(sequenceExpr),
+                       externalIteratorType->getImpl().getLocator());
+
+      cs.addConstraint(ConstraintKind::ConformsTo, externalIteratorType,
                        sequenceProto->getDeclaredInterfaceType(),
                        contextualLocator);
 

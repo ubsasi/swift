@@ -26,6 +26,7 @@
 #include "swift/AST/TypeCheckRequests.h"
 #include "swift/AST/TypeVisitor.h"
 #include "swift/AST/ExistentialLayout.h"
+#include "swift/Basic/Defer.h"
 
 using namespace swift;
 
@@ -421,9 +422,9 @@ static bool checkDistributedTargetResultType(
             addCodableFixIt(resultNominalType, diag);
           }
         }
-
-        return true;
-      }
+      } // end if: diagnose
+      
+      return true;
     }
   }
 
@@ -482,7 +483,12 @@ bool swift::checkDistributedFunction(AbstractFunctionDecl *func) {
 
 bool CheckDistributedFunctionRequest::evaluate(
     Evaluator &evaluator, AbstractFunctionDecl *func) const {
-  assert(func->isDistributed());
+  if (auto *accessor = dyn_cast<AccessorDecl>(func)) {
+    auto *var = cast<VarDecl>(accessor->getStorage());
+    assert(var->isDistributed() && accessor->isGetter());
+  } else {
+    assert(func->isDistributed());
+  }
 
   auto &C = func->getASTContext();
   auto DC = func->getDeclContext();
@@ -502,9 +508,25 @@ bool CheckDistributedFunctionRequest::evaluate(
     serializationRequirements = getDistributedSerializationRequirementProtocols(
         getDistributedActorSystemType(actor)->getAnyNominal(),
         C.getProtocol(KnownProtocolKind::DistributedActorSystem));
+  } else if (isa<ProtocolDecl>(DC)) {
+    if (auto seqReqTy =
+        getConcreteReplacementForMemberSerializationRequirement(func)) {
+      auto seqReqTyDes = seqReqTy->castTo<ExistentialType>()->getConstraintType()->getDesugaredType();
+      for (auto req : flattenDistributedSerializationTypeToRequiredProtocols(seqReqTyDes)) {
+        serializationRequirements.insert(req);
+      }
+    }
+
+    // The distributed actor constrained protocol has no serialization requirements
+    // or actor system defined, so these will only be enforced, by implementations
+    // of DAs conforming to it, skip checks here.
+    if (serializationRequirements.empty()) {
+      return false;
+    }
   } else {
-    llvm_unreachable("Cannot handle types other than extensions and actor "
-                     "declarations in distributed function checking.");
+    llvm_unreachable("Distributed function detected in type other than extension, "
+                     "distributed actor, or protocol! This should not be possible "
+                     ", please file a bug.");
   }
 
   // If the requirement is exactly `Codable` we diagnose it ia bit nicer.
@@ -577,23 +599,26 @@ bool swift::checkDistributedActorProperty(VarDecl *var, bool diagnose) {
 
   /// === Check if the declaration is a valid combination of attributes
   if (var->isStatic()) {
-    var->diagnose(diag::distributed_property_cannot_be_static,
-                      var->getName());
+    if (diagnose)
+      var->diagnose(diag::distributed_property_cannot_be_static,
+                    var->getName());
     // TODO(distributed): fixit, offer removing the static keyword
     return true;
   }
 
   // it is not a computed property
   if (var->isLet() || var->hasStorageOrWrapsStorage()) {
-    var->diagnose(diag::distributed_property_can_only_be_computed,
-                  var->getDescriptiveKind(), var->getName());
+    if (diagnose)
+      var->diagnose(diag::distributed_property_can_only_be_computed,
+                    var->getDescriptiveKind(), var->getName());
     return true;
   }
 
   // distributed properties cannot have setters
   if (var->getWriteImpl() != swift::WriteImplKind::Immutable) {
-    var->diagnose(diag::distributed_property_can_only_be_computed_get_only,
-                  var->getName());
+    if (diagnose)
+      var->diagnose(diag::distributed_property_can_only_be_computed_get_only,
+                    var->getName());
     return true;
   }
 
@@ -652,11 +677,34 @@ void TypeChecker::checkDistributedActor(SourceFile *SF, NominalTypeDecl *nominal
   // If applicable, this will create the default 'init(transport:)' initializer
   (void)nominal->getDefaultInitializer();
 
+
   for (auto member : nominal->getMembers()) {
+    // A distributed computed property needs to have a thunk for
+    // its getter accessor.
+    if (auto *var = dyn_cast<VarDecl>(member)) {
+      if (!var->isDistributed())
+        continue;
+
+      if (auto thunk = var->getDistributedThunk())
+        SF->DelayedFunctions.push_back(thunk);
+
+      continue;
+    }
+
     // --- Ensure all thunks
     if (auto func = dyn_cast<AbstractFunctionDecl>(member)) {
       if (!func->isDistributed())
         continue;
+
+      if (!isa<ProtocolDecl>(nominal)) {
+        auto systemTy = getConcreteReplacementForProtocolActorSystemType(func);
+        if (!systemTy || systemTy->hasError()) {
+          nominal->diagnose(
+              diag::distributed_actor_conformance_missing_system_type,
+              nominal->getName());
+          return;
+        }
+      }
 
       if (auto thunk = func->getDistributedThunk()) {
         SF->DelayedFunctions.push_back(thunk);
@@ -673,6 +721,13 @@ void TypeChecker::checkDistributedActor(SourceFile *SF, NominalTypeDecl *nominal
   // Also, the 'id' var must be added before the 'actorSystem'.
   // See NOTE (id-before-actorSystem) for more details.
   (void)nominal->getDistributedActorIDProperty();
+}
+
+void TypeChecker::checkDistributedFunc(FuncDecl *func) {
+  if (!func->isDistributed())
+    return;
+
+  swift::checkDistributedFunction(func);
 }
 
 llvm::SmallPtrSet<ProtocolDecl *, 2>

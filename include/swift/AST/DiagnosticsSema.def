@@ -3603,10 +3603,10 @@ ERROR(designated_init_in_extension,none,
       "designated initializer cannot be declared in an extension of %0; "
       "did you mean this to be a convenience initializer?",
       (DeclName))
-ERROR(cfclass_designated_init_in_extension,none,
+ERROR(designated_init_in_extension_no_convenience_tip,none,
       "designated initializer cannot be declared in an extension of %0",
       (DeclName))
-ERROR(enumstruct_convenience_init,none,
+ERROR(no_convenience_keyword_init,none,
       "initializers in %0 are not marked with 'convenience'",
       (StringRef))
 ERROR(nonclass_convenience_init,none,
@@ -4817,6 +4817,9 @@ ERROR(distributed_actor_func_static,none,
 ERROR(distributed_actor_func_not_in_distributed_actor,none,
       "'distributed' method can only be declared within 'distributed actor'",
       ())
+ERROR(distributed_method_requirement_must_be_async_throws,none, // FIXME(distributed): this is an implementation limitation we should lift
+      "'distributed' protocol requirement %0 must currently be declared explicitly 'async throws'",
+      (DeclName))
 ERROR(distributed_actor_user_defined_special_property,none,
       "property %0 cannot be defined explicitly, as it conflicts with "
       "distributed actor synthesized stored property",
@@ -4830,6 +4833,9 @@ ERROR(distributed_property_cannot_be_static,none,
 ERROR(distributed_property_can_only_be_computed,none,
       "%0 %1 cannot be 'distributed', only computed properties can",
       (DescriptiveDeclKind, DeclName))
+ERROR(distributed_property_accessor_only_get_can_be_distributed,none,
+      "only 'get' accessors may be 'distributed'",
+      ())
 NOTE(distributed_actor_isolated_property,none,
       "access to %0 %1 is only permitted within distributed actor %2",
       (DescriptiveDeclKind, DeclName, DeclName))
@@ -4889,6 +4895,9 @@ ERROR(string_processing_lib_missing,none,
 ERROR(regex_capture_types_failed_to_decode,none,
       "failed to decode capture types for regular expression literal; this may "
       "be a compiler bug", ())
+
+ERROR(must_import_regex_builder_module,none,
+      "regex builder requires the 'RegexBuilder' module be imported'", ())
 
 //------------------------------------------------------------------------------
 // MARK: Type Check Types

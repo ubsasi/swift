@@ -431,10 +431,11 @@ static bool varIsSafeAcrossActors(const ModuleDecl *fromModule,
     if (var->getAttrs().hasAttribute<NonisolatedAttr>())
       return true;
 
-    // If it's distributed, it's not okay.
-    if (auto nominalParent = var->getDeclContext()->getSelfNominalTypeDecl())
+    // If it's distributed, generally variable access is not okay...
+    if (auto nominalParent = var->getDeclContext()->getSelfNominalTypeDecl()) {
       if (nominalParent->isDistributedActor())
         return false;
+    }
 
     // If it's actor-isolated but in the same module, then it's OK too.
     return (fromModule == var->getDeclContext()->getParentModule());
@@ -488,13 +489,21 @@ static Optional<PartialApplyThunkInfo> decomposePartialApplyThunk(
 
 /// Find the immediate member reference in the given expression.
 static Optional<std::pair<ConcreteDeclRef, SourceLoc>>
-findMemberReference(Expr *expr) {
+findReference(Expr *expr) {
+  // Look through a function conversion.
+  if (auto fnConv = dyn_cast<FunctionConversionExpr>(expr))
+    expr = fnConv->getSubExpr();
+
   if (auto declRef = dyn_cast<DeclRefExpr>(expr))
     return std::make_pair(declRef->getDeclRef(), declRef->getLoc());
 
   if (auto otherCtor = dyn_cast<OtherConstructorDeclRefExpr>(expr)) {
     return std::make_pair(otherCtor->getDeclRef(), otherCtor->getLoc());
   }
+
+  Expr *inner = expr->getValueProvidingExpr();
+  if (inner != expr)
+    return findReference(inner);
 
   return None;
 }
@@ -1827,7 +1836,7 @@ namespace {
         // like based on the original written syntax, e.g., "self.method".
         if (auto partialApply = decomposePartialApplyThunk(
                 apply, Parent.getAsExpr())) {
-          if (auto memberRef = findMemberReference(partialApply->fn)) {
+          if (auto memberRef = findReference(partialApply->fn)) {
             // NOTE: partially-applied thunks are never annotated as
             // implicitly async, regardless of whether they are escaping.
             checkReference(
@@ -1848,7 +1857,7 @@ namespace {
       // NOTE: SelfApplyExpr is a subtype of ApplyExpr
       if (auto call = dyn_cast<SelfApplyExpr>(expr)) {
         Expr *fn = call->getFn()->getValueProvidingExpr();
-        if (auto memberRef = findMemberReference(fn)) {
+        if (auto memberRef = findReference(fn)) {
           checkReference(
               call->getBase(), memberRef->first, memberRef->second,
               /*partialApply=*/None, call);
@@ -2083,6 +2092,8 @@ namespace {
 
         if (auto conversion = dyn_cast<ImplicitConversionExpr>(expr))
           expr = conversion->getSubExpr();
+        if (auto fnConv = dyn_cast<FunctionConversionExpr>(expr))
+          expr = fnConv->getSubExpr();
       } while (prior != expr);
 
       if (auto call = dyn_cast<DotSyntaxCallExpr>(expr)) {
@@ -2242,15 +2253,7 @@ namespace {
     Optional<std::pair<bool, bool>>
     checkDistributedAccess(SourceLoc declLoc, ValueDecl *decl,
                            Expr *context) {
-      // Cannot reference properties or subscripts of distributed actors.
-      if (isPropOrSubscript(decl)) {
-        ctx.Diags.diagnose(
-            declLoc, diag::distributed_actor_isolated_non_self_reference,
-            decl->getDescriptiveKind(), decl->getName());
-        noteIsolatedActorMember(decl, context);
-        return None;
-      }
-
+      // If base of the call is 'local' we permit skip distributed checks.
       if (auto baseSelf = findReferencedBaseSelf(context)) {
         if (baseSelf->getAttrs().hasAttribute<KnownToBeLocalAttr>()) {
         return std::make_pair(
@@ -2259,20 +2262,40 @@ namespace {
         }
       }
 
-      // Check that we have a distributed function.
-      auto func = dyn_cast<AbstractFunctionDecl>(decl);
-      if (!func || !func->isDistributed()) {
-        ctx.Diags.diagnose(declLoc,
-                           diag::distributed_actor_isolated_method)
-          .fixItInsert(decl->getAttributeInsertionLoc(true), "distributed ");
+      // Check that we have a distributed function or computed property.
+      if (auto afd = dyn_cast<AbstractFunctionDecl>(decl)) {
+        if (!afd->isDistributed()) {
+          ctx.Diags.diagnose(declLoc, diag::distributed_actor_isolated_method)
+              .fixItInsert(decl->getAttributeInsertionLoc(true),
+                           "distributed ");
 
-        noteIsolatedActorMember(decl, context);
-        return None;
+          noteIsolatedActorMember(decl, context);
+          return None;
+        }
+
+        return std::make_pair(
+            /*setThrows=*/!afd->hasThrows(),
+            /*isDistributedThunk=*/true);
       }
 
-      return std::make_pair(
-          /*setThrows=*/!func->hasThrows(),
-          /*isDistributedThunk=*/true);
+      if (auto *var = dyn_cast<VarDecl>(decl)) {
+        if (var->isDistributed()) {
+          bool explicitlyThrowing = false;
+          if (auto getter = var->getAccessor(swift::AccessorKind::Get)) {
+            explicitlyThrowing = getter->hasThrows();
+          }
+          return std::make_pair(
+              /*setThrows*/ !explicitlyThrowing,
+              /*isDistributedThunk=*/true);
+        }
+      }
+
+      // This is either non-distributed variable, subscript, or something else.
+      ctx.Diags.diagnose(declLoc,
+                         diag::distributed_actor_isolated_non_self_reference,
+                         decl->getDescriptiveKind(), decl->getName());
+      noteIsolatedActorMember(decl, context);
+      return None;
     }
 
     /// Attempts to identify and mark a valid cross-actor use of a synchronous
@@ -2289,8 +2312,27 @@ namespace {
       // is it an access to a property?
       if (isPropOrSubscript(decl)) {
         // Cannot reference properties or subscripts of distributed actors.
-        if (isDistributed && !checkDistributedAccess(declLoc, decl, context))
-          return AsyncMarkingResult::NotDistributed;
+        if (isDistributed) {
+          bool setThrows = false;
+          bool usesDistributedThunk = false;
+          if (auto access = checkDistributedAccess(declLoc, decl, context)) {
+            std::tie(setThrows, usesDistributedThunk) = *access;
+          } else {
+            return AsyncMarkingResult::NotDistributed;
+          }
+
+          // distributed computed property access, mark it throws + async
+          if (auto lookupExpr = dyn_cast_or_null<LookupExpr>(context)) {
+            if (auto memberRef = dyn_cast<MemberRefExpr>(lookupExpr)) {
+              memberRef->setImplicitlyThrows(true);
+              memberRef->setAccessViaDistributedThunk();
+            } else {
+              llvm_unreachable("expected distributed prop to be a MemberRef");
+            }
+          } else {
+            llvm_unreachable("expected distributed prop to have LookupExpr");
+          }
+        }
 
         if (auto declRef = dyn_cast_or_null<DeclRefExpr>(context)) {
           if (usageEnv(declRef) == VarRefUseEnv::Read) {
@@ -2328,7 +2370,9 @@ namespace {
         // and the fact that the reference may be just an argument to an apply
         ApplyExpr *apply = applyStack.back();
         Expr *fn = apply->getFn()->getValueProvidingExpr();
-        if (auto memberRef = findMemberReference(fn)) {
+        if (auto fnConv = dyn_cast<FunctionConversionExpr>(fn))
+          fn = fnConv->getSubExpr()->getValueProvidingExpr();
+        if (auto memberRef = findReference(fn)) {
           auto concDecl = memberRef->first;
           if (decl == concDecl.getDecl() && !apply->isImplicitlyAsync()) {
 
@@ -2348,10 +2392,11 @@ namespace {
         bool setThrows = false;
         bool usesDistributedThunk = false;
         if (isDistributed) {
-          if (auto access = checkDistributedAccess(declLoc, decl, context))
+          if (auto access = checkDistributedAccess(declLoc, decl, context)) {
             std::tie(setThrows, usesDistributedThunk) = *access;
-          else
+          } else {
             return AsyncMarkingResult::NotDistributed;
+          }
         }
 
         // Mark call as implicitly 'async', and also potentially as
@@ -2445,7 +2490,8 @@ namespace {
 
       // If we are not in an asynchronous context, complain.
       if (!getDeclContext()->isAsyncContext()) {
-        if (auto calleeDecl = apply->getCalledValue()) {
+        if (auto calleeDecl = apply->getCalledValue(
+                /*skipFunctionConversions=*/true)) {
           ctx.Diags.diagnose(
               apply->getLoc(), diag::actor_isolated_call_decl,
               *unsatisfiedIsolation,
@@ -3820,8 +3866,9 @@ bool HasIsolatedSelfRequest::evaluate(
     return false;
 
   // For accessors, consider the storage declaration.
-  if (auto accessor = dyn_cast<AccessorDecl>(value))
+  if (auto accessor = dyn_cast<AccessorDecl>(value)) {
     value = accessor->getStorage();
+  }
 
   // Check whether this member can be isolated to an actor at all.
   auto memberIsolation = getMemberIsolationPropagation(value);
@@ -4513,7 +4560,7 @@ static AnyFunctionType *applyUnsafeConcurrencyToFunctionType(
     return fnType;
 
   AnyFunctionType *outerFnType = nullptr;
-  if (func && func->hasImplicitSelfDecl()) {
+  if ((subscript && numApplies > 1) || (func && func->hasImplicitSelfDecl())) {
     outerFnType = fnType;
     fnType = outerFnType->getResult()->castTo<AnyFunctionType>();
 
@@ -4603,7 +4650,8 @@ static AnyFunctionType *applyUnsafeConcurrencyToFunctionType(
 AnyFunctionType *swift::adjustFunctionTypeForConcurrency(
     AnyFunctionType *fnType, ValueDecl *decl, DeclContext *dc,
     unsigned numApplies, bool isMainDispatchQueue,
-    llvm::function_ref<Type(const AbstractClosureExpr *)> getType) {
+    llvm::function_ref<Type(const AbstractClosureExpr *)> getType,
+    llvm::function_ref<Type(Type)> openType) {
   // Apply unsafe concurrency features to the given function type.
   bool strictChecking = contextRequiresStrictConcurrencyChecking(dc, getType);
   fnType = applyUnsafeConcurrencyToFunctionType(
@@ -4626,7 +4674,7 @@ AnyFunctionType *swift::adjustFunctionTypeForConcurrency(
       LLVM_FALLTHROUGH;
 
     case ActorIsolation::GlobalActor:
-      globalActorType = isolation.getGlobalActor();
+      globalActorType = openType(isolation.getGlobalActor());
       break;
     }
   }
