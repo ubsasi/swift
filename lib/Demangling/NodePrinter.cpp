@@ -306,7 +306,9 @@ private:
     case Node::Kind::MetatypeRepresentation:
     case Node::Kind::Module:
     case Node::Kind::Tuple:
-    case Node::Kind::ParameterizedProtocol:
+    case Node::Kind::ConstrainedExistential:
+    case Node::Kind::ConstrainedExistentialRequirementList:
+    case Node::Kind::ConstrainedExistentialSelf:
     case Node::Kind::Protocol:
     case Node::Kind::ProtocolSymbolicReference:
     case Node::Kind::ReturnType:
@@ -596,6 +598,9 @@ private:
     case Node::Kind::BackDeploymentFallback:
     case Node::Kind::ExtendedExistentialTypeShape:
     case Node::Kind::Uniquable:
+    case Node::Kind::UniqueExtendedExistentialTypeShapeSymbolicReference:
+    case Node::Kind::NonUniqueExtendedExistentialTypeShapeSymbolicReference:
+    case Node::Kind::SymbolicExtendedExistentialType:
       return false;
     }
     printer_unreachable("bad node kind");
@@ -2273,8 +2278,16 @@ NodePointer NodePrinter::print(NodePointer Node, unsigned depth,
     }
     return nullptr;
   }
-  case Node::Kind::ParameterizedProtocol: {
-    printBoundGeneric(Node, depth);
+  case Node::Kind::ConstrainedExistential: {
+    Printer << "any ";
+    print(Node->getChild(0), depth + 1);
+    Printer << "<";
+    print(Node->getChild(1), depth + 1);
+    Printer << ">";
+    return nullptr;
+  }
+  case Node::Kind::ConstrainedExistentialRequirementList: {
+    printChildren(Node, depth, ", ");
     return nullptr;
   }
   case Node::Kind::ExistentialMetatype: {
@@ -2291,6 +2304,9 @@ NodePointer NodePrinter::print(NodePointer Node, unsigned depth,
     Printer << ".Type";
     return nullptr;
   }
+  case Node::Kind::ConstrainedExistentialSelf:
+    Printer << "Self";
+    return nullptr;
   case Node::Kind::MetatypeRepresentation: {
     Printer << Node->getText();
     return nullptr;
@@ -2991,6 +3007,33 @@ NodePointer NodePrinter::print(NodePointer Node, unsigned depth,
     print(type, depth + 1);
 
     Options.DisplayWhereClauses = savedDisplayWhereClauses;
+    return nullptr;
+  }
+  case Node::Kind::UniqueExtendedExistentialTypeShapeSymbolicReference:
+    Printer << "unique existential shape symbolic reference 0x";
+    Printer.writeHex(Node->getIndex());
+    return nullptr;
+  case Node::Kind::NonUniqueExtendedExistentialTypeShapeSymbolicReference:
+    Printer << "non-unique existential shape symbolic reference 0x";
+    Printer.writeHex(Node->getIndex());
+    return nullptr;
+  case Node::Kind::SymbolicExtendedExistentialType: {
+    auto shape = Node->getChild(0);
+    bool isUnique =
+      (shape->getKind() ==
+         Node::Kind::UniqueExtendedExistentialTypeShapeSymbolicReference);
+    Printer << "symbolic existential type ("
+            << (isUnique ? "" : "non-")
+            << "unique) 0x";
+    Printer.writeHex(shape->getIndex());
+    Printer << " <";
+    print(Node->getChild(1), depth + 1);
+    if (Node->getNumChildren() > 2) {
+      Printer << ", ";
+      print(Node->getChild(2), depth + 1);
+    }
+    Printer << ">";
+
     return nullptr;
   }
   }

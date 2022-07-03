@@ -2714,14 +2714,37 @@ ManglingError Remangler::mangleObjCAsyncCompletionHandlerImpl(Node *node,
                                                               unsigned depth) {
   return MANGLING_ERROR(ManglingError::UnsupportedNodeKind, node);
 }
-ManglingError Remangler::mangleParameterizedProtocol(Node *node,
-                                                     unsigned int depth) {
+ManglingError Remangler::mangleConstrainedExistential(Node *node,
+                                                      unsigned int depth) {
+  return MANGLING_ERROR(ManglingError::UnsupportedNodeKind, node);
+}
+ManglingError
+Remangler::mangleConstrainedExistentialRequirementList(Node *node,
+                                                       unsigned int depth) {
+  return MANGLING_ERROR(ManglingError::UnsupportedNodeKind, node);
+}
+ManglingError Remangler::mangleConstrainedExistentialSelf(Node *node,
+                                                          unsigned int depth) {
   return MANGLING_ERROR(ManglingError::UnsupportedNodeKind, node);
 }
 ManglingError Remangler::mangleUniquable(Node *node, unsigned int depth) {
   return MANGLING_ERROR(ManglingError::UnsupportedNodeKind, node);
 }
 ManglingError Remangler::mangleExtendedExistentialTypeShape(Node *node,
+                                                     unsigned int depth) {
+  return MANGLING_ERROR(ManglingError::UnsupportedNodeKind, node);
+}
+ManglingError Remangler::mangleSymbolicExtendedExistentialType(Node *node,
+                                                     unsigned int depth) {
+  return MANGLING_ERROR(ManglingError::UnsupportedNodeKind, node);
+}
+ManglingError Remangler::
+mangleUniqueExtendedExistentialTypeShapeSymbolicReference(Node *node,
+                                                     unsigned int depth) {
+  return MANGLING_ERROR(ManglingError::UnsupportedNodeKind, node);
+}
+ManglingError Remangler::
+mangleNonUniqueExtendedExistentialTypeShapeSymbolicReference(Node *node,
                                                      unsigned int depth) {
   return MANGLING_ERROR(ManglingError::UnsupportedNodeKind, node);
 }

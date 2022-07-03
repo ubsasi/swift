@@ -119,7 +119,11 @@ public:
 
   Type createProtocolTypeFromDecl(ProtocolDecl *protocol);
 
-  Type createParameterizedProtocolType(Type base, ArrayRef<Type> args);
+  Type createConstrainedExistentialType(Type base,
+                                        ArrayRef<BuiltRequirement> constraints);
+
+  Type createSymbolicExtendedExistentialType(NodePointer shapeNode,
+                                             ArrayRef<Type> genArgs);
 
   Type createExistentialMetatypeType(Type instance,
                      Optional<Demangle::ImplMetatypeRepresentation> repr=None);
