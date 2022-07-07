@@ -241,9 +241,7 @@ public:
       if (builder.getASTContext().LangOpts.Target.isOSBinFormatWasm()) {
         auto IntTy = SILType::getBuiltinIntegerType(32, builder.getASTContext());
         auto UnsafeRawPointerTy = SILType::getRawPointerType(builder.getASTContext());
-        auto zeroVal = SILValue(builder.createIntegerLiteral(loc, IntTy, 0));
         auto stackBuffer = SILValue(builder.createAllocStack(loc, IntTy));
-        builder.createStore(loc, zeroVal, stackBuffer, StoreOwnershipQualifier::Unqualified);
         auto nonePointer = builder.createUncheckedAddrCast(loc, stackBuffer, UnsafeRawPointerTy);
         args.push_back(SILValue(nonePointer));
       }
