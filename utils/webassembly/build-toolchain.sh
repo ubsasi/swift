@@ -66,18 +66,16 @@ HOST_TOOLCHAIN_DESTDIR=$SOURCE_PATH/host-toolchain-sdk
 DIST_TOOLCHAIN_DESTDIR=$SOURCE_PATH/dist-toolchain-sdk
 DIST_TOOLCHAIN_SDK=$DIST_TOOLCHAIN_DESTDIR/$TOOLCHAIN_NAME
 
-
-HOST_BUILD_ROOT=$SOURCE_PATH/host-build
-TARGET_BUILD_ROOT=$SOURCE_PATH/target-build
-HOST_BUILD_DIR=$HOST_BUILD_ROOT/Ninja-Release
+BUILD_ROOT="$SOURCE_PATH/build"
+TARGET_BUILD_ROOT="$BUILD_ROOT/target-build"
+HOST_BUILD_DIR="$BUILD_ROOT/host-build"
 
 build_host_toolchain() {
   # Build the host toolchain and SDK first.
-  env SWIFT_BUILD_ROOT="$HOST_BUILD_ROOT" \
+  env SWIFT_BUILD_ROOT="$BUILD_ROOT" \
     "$SOURCE_PATH/swift/utils/build-script" \
     --preset-file="$UTILS_PATH/build-presets.ini" \
     --preset=$HOST_BUILD_PRESET \
-    --build-dir="$HOST_BUILD_DIR" \
     HOST_ARCHITECTURE="$(uname -m)" \
     INSTALL_DESTDIR="$HOST_TOOLCHAIN_DESTDIR"
 }

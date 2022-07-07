@@ -253,8 +253,7 @@ jobs:
       - name: Clean build directory
         if: ${{ matrix.clean_build_dir }}
         run: |
-          rm -rf ${{ github.workspace }}/target-build \
-            ${{ github.workspace }}/host-build \
+          rm -rf ${{ github.workspace }}/build \
             ${{ github.workspace }}/build-sdk \
             ${{ github.workspace }}/host-toolchain-sdk \
             ${{ github.workspace }}/dist-toolchain-sdk
