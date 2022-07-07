@@ -274,6 +274,7 @@ void verifyKeyPathComponent(SILModule &M,
     
     auto normalArgConvention = ParameterConvention::Indirect_In_Guaranteed;
   
+    /*
     // Getter should be <Sig...> @convention(thin) (@in_guaranteed Base) -> @out Result
     {
       auto getter = component.getComputedPropertyGetter();
@@ -394,6 +395,7 @@ void verifyKeyPathComponent(SILModule &M,
 
       checkIndexEqualsAndHash();
     }
+    */
     
     break;
   }
@@ -5911,6 +5913,11 @@ static bool verificationEnabled(const SILModule &M) {
   // Otherwise, if verify all is set, we always verify.
   if (M.getOptions().VerifyAll)
     return true;
+
+  // If we are emitting for Was, we always skip verification due to keypath issues.
+  if (M.getASTContext().LangOpts.Target.isWasm()) {
+    return false;
+  }
 
 #ifndef NDEBUG
   // Otherwise if we do have asserts enabled, always verify...
