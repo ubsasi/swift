@@ -148,7 +148,8 @@ jobs:
             "run_full_test": false,
             "run_e2e_test": false,
             "build_hello_wasm": true,
-            "clean_build_dir": true
+            "clean_build_dir": true,
+            "host_build_preset": "webassembly_host_base,install,RA"
           }
           EOS
           )
@@ -257,6 +258,11 @@ jobs:
             ${{ github.workspace }}/build-sdk \
             ${{ github.workspace }}/host-toolchain-sdk \
             ${{ github.workspace }}/dist-toolchain-sdk
+
+      - name: Set HOST_BUILD_PRESET environment variable
+        if: ${{ matrix.host_build_preset }}
+        run: |
+          echo "HOST_BUILD_PRESET=${{ matrix.host_build_preset }}" >> $GITHUB_ENV
 
       - name: Build ${{ matrix.target }} installable archive
         env:

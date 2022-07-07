@@ -10,7 +10,7 @@ WASI_SYSROOT_PATH="$BUILD_SDK_PATH/wasi-sysroot"
 case $(uname -s) in
   Darwin)
     OS_SUFFIX=macos_$(uname -m)
-    HOST_PRESET=webassembly-host-install
+    DEFAULT_HOST_BUILD_PRESET=webassembly_host_base,install,RA
     HOST_SUFFIX=macosx-$(uname -m)
   ;;
   Linux)
@@ -26,7 +26,7 @@ case $(uname -s) in
       echo "Unknown Ubuntu version"
       exit 1
     fi
-    HOST_PRESET=webassembly-linux-host-install
+    DEFAULT_HOST_BUILD_PRESET=webassembly_host_linux,install,RA
     HOST_SUFFIX=linux-$(uname -m)
   ;;
   *)
@@ -34,6 +34,10 @@ case $(uname -s) in
     exit 1
   ;;
 esac
+
+if [[ -z "$HOST_BUILD_PRESET" ]]; then
+  HOST_BUILD_PRESET="$DEFAULT_HOST_BUILD_PRESET"
+fi
 
 BUILD_HOST_TOOLCHAIN=1
 TOOLCHAIN_CHANNEL=${TOOLCHAIN_CHANNEL:-DEVELOPMENT}
@@ -72,7 +76,7 @@ build_host_toolchain() {
   env SWIFT_BUILD_ROOT="$HOST_BUILD_ROOT" \
     "$SOURCE_PATH/swift/utils/build-script" \
     --preset-file="$UTILS_PATH/build-presets.ini" \
-    --preset=$HOST_PRESET \
+    --preset=$HOST_BUILD_PRESET \
     --build-dir="$HOST_BUILD_DIR" \
     HOST_ARCHITECTURE="$(uname -m)" \
     INSTALL_DESTDIR="$HOST_TOOLCHAIN_DESTDIR"
