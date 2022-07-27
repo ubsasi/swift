@@ -2632,10 +2632,15 @@ namespace {
         }
 
         // Otherwise, we have concurrent access. Complain.
+        bool preconcurrencyContext =
+            getActorIsolationOfContext(
+              const_cast<DeclContext *>(getDeclContext())).preconcurrency();
+
         ctx.Diags.diagnose(
             loc, diag::concurrent_access_of_local_capture,
             parent.dyn_cast<LoadExpr *>(),
-            var->getDescriptiveKind(), var->getName());
+            var->getDescriptiveKind(), var->getName())
+          .warnUntilSwiftVersionIf(preconcurrencyContext, 6);
         return true;
       }
 
@@ -2859,13 +2864,18 @@ namespace {
           }
         }
 
+        // Does the reference originate from a @preconcurrency context?
+        bool preconcurrencyContext =
+          result.options.contains(ActorReferenceResult::Flags::Preconcurrency);
+
         ctx.Diags.diagnose(
             loc, diag::actor_isolated_non_self_reference,
             decl->getDescriptiveKind(),
             decl->getName(),
             useKind,
             refKind + 1, refGlobalActor,
-            result.isolation);
+            result.isolation)
+          .warnUntilSwiftVersionIf(preconcurrencyContext, 6);
 
         noteIsolatedActorMember(decl, context);
 
@@ -5118,6 +5128,10 @@ ActorReferenceResult ActorReferenceResult::forReference(
   // This is a cross-actor reference, so determine what adjustments we need
   // to perform.
   Options options = None;
+
+  // Note if the reference originates from a @preconcurrency-isolated context.
+  if (contextIsolation.preconcurrency())
+    options |= Flags::Preconcurrency;
 
   // If the declaration isn't asynchronous, promote to async.
   if (!isAsyncDecl(declRef))

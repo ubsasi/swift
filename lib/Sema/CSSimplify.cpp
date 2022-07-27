@@ -1468,6 +1468,7 @@ namespace {
   enum class OpenedExistentialAdjustmentFlags {
     /// The argument should be made inout after opening.
     InOut = 0x01,
+    LValue = 0x02,
   };
 
   using OpenedExistentialAdjustments =
@@ -1540,6 +1541,12 @@ shouldOpenExistentialCallArgument(
   }
 
   OpenedExistentialAdjustments adjustments;
+
+  // The argument may be a "var" instead of a "let".
+  if (auto lv = argTy->getAs<LValueType>()) {
+    argTy = lv->getObjectType();
+    adjustments |= OpenedExistentialAdjustmentFlags::LValue;
+  }
 
   // If the argument is inout, strip it off and we can add it back.
   if (auto inOutArg = argTy->getAs<InOutType>()) {
@@ -1945,6 +1952,9 @@ static ConstraintSystem::TypeMatchResult matchCallArguments(
         OpenedArchetypeType *opened;
         std::tie(argTy, opened) = cs.openExistentialType(
             existentialType, cs.getConstraintLocator(loc));
+
+        if (adjustments.contains(OpenedExistentialAdjustmentFlags::LValue))
+          argTy = LValueType::get(argTy);
 
         if (adjustments.contains(OpenedExistentialAdjustmentFlags::InOut))
           argTy = InOutType::get(argTy);
@@ -4569,8 +4579,18 @@ bool ConstraintSystem::repairFailures(
         if (lhs->isPlaceholder())
           return true;
 
-        conversionsOrFixes.push_back(
-            TreatRValueAsLValue::create(*this, getConstraintLocator(locator)));
+        auto *loc = getConstraintLocator(locator);
+        // If this `inout` is in incorrect position, it should be diagnosed
+        // by other fixes.
+        if (loc->directlyAt<InOutExpr>()) {
+          if (!getArgumentLocator(castToExpr(anchor))) {
+            conversionsOrFixes.push_back(
+                RemoveAddressOf::create(*this, lhs, rhs, loc));
+            return true;
+          }
+        }
+
+        conversionsOrFixes.push_back(TreatRValueAsLValue::create(*this, loc));
         return true;
       }
     }
@@ -4769,10 +4789,14 @@ bool ConstraintSystem::repairFailures(
       if (repairByInsertingExplicitCall(lhs, rhs))
         return true;
 
-      if (isa<InOutExpr>(AE->getSrc())) {
+      if (auto *inoutExpr = dyn_cast<InOutExpr>(AE->getSrc())) {
+        auto *loc = getConstraintLocator(inoutExpr);
+
+        if (hasFixFor(loc, FixKind::RemoveAddressOf))
+          return true;
+
         conversionsOrFixes.push_back(
-            RemoveAddressOf::create(*this, lhs, rhs,
-                                    getConstraintLocator(locator)));
+            RemoveAddressOf::create(*this, lhs, rhs, loc));
         return true;
       }
 
@@ -7397,6 +7421,12 @@ ConstraintSystem::SolutionKind ConstraintSystem::simplifyConformsToConstraint(
       }
     }
 
+    if (loc->isLastElement<LocatorPathElt::MemberRefBase>()) {
+      auto *fix = ContextualMismatch::create(*this, protocolTy, type, loc);
+      if (!recordFix(fix))
+        return SolutionKind::Solved;
+    }
+
     // If this is an implicit Hashable conformance check generated for each
     // index argument of the keypath subscript component, we could just treat
     // it as though it conforms.
@@ -9778,7 +9808,7 @@ ConstraintSystem::simplifyUnresolvedMemberChainBaseConstraint(
       return SolutionKind::Solved;
 
     auto *memberRef = findResolvedMemberRef(memberLoc);
-    if (memberRef && memberRef->isStatic()) {
+    if (memberRef && (memberRef->isStatic() || isa<TypeAliasDecl>(memberRef))) {
       return simplifyConformsToConstraint(
           resultTy, baseTy, ConstraintKind::ConformsTo,
           getConstraintLocator(memberLoc, ConstraintLocator::MemberRefBase),
